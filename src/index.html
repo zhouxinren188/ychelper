@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>云仓助手</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- 左侧导航 -->
+    <div class="sidebar">
+      <div class="sidebar-title" style="-webkit-app-region: drag;">云仓助手</div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">商家端</div>
+        <div class="nav-item active" data-page="shopLabel">店铺打标</div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">仓库端</div>
+        <div class="nav-item" data-page="acceptance">验收上架</div>
+      </div>
+    </div>
+
+    <!-- 右侧区域 -->
+    <div class="right-area">
+      <!-- 标题栏（仅在右侧顶部） -->
+      <div class="titlebar">
+        <div class="titlebar-left" style="-webkit-app-region: drag;"></div>
+        <div class="titlebar-right">
+          <span class="department-name" id="departmentName"></span>
+          <div class="window-controls">
+            <button class="win-btn" onclick="window.electronAPI.minimize()">&#8722;</button>
+            <button class="win-btn close-btn" onclick="window.electronAPI.close()">&times;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 主内容区 -->
+      <div class="main-content">
+      <!-- 店铺打标页面 -->
+      <div class="page active" id="page-shopLabel">
+        <div class="page-header">
+          <span class="page-icon">📋</span>
+          <span class="page-title">店铺打标</span>
+        </div>
+
+        <div class="content-body">
+          <!-- 左侧表单 -->
+          <div class="form-panel">
+            <!-- 快捷模式 -->
+            <div class="form-row">
+              <label class="form-label">快捷模式</label>
+              <div class="form-field mode-field">
+                <select id="modeSelect">
+                  <option value="">入仓打标（下拉可选择）</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="modeManageBtn">模式管理</button>
+                <button class="btn btn-danger btn-sm" id="modeSaveBtn">保存模式</button>
+              </div>
+            </div>
+
+            <!-- 商品SKU -->
+            <div class="form-row">
+              <label class="form-label">商品SKU</label>
+              <div class="form-field sku-field">
+                <input type="text" id="skuInput" placeholder="多个SKU用逗号分隔" />
+                <button class="btn btn-primary btn-sm" id="importSkuBtn">导入文本</button>
+              </div>
+            </div>
+
+            <!-- 选择店铺 -->
+            <div class="form-row">
+              <label class="form-label">选择店铺</label>
+              <div class="form-field">
+                <div class="searchable-select" id="shopSelectWrapper">
+                  <input type="text" class="searchable-input" id="shopSearchInput" placeholder="请选择店铺（可输入搜索）" autocomplete="off" />
+                  <span class="searchable-arrow">&#9662;</span>
+                  <div class="searchable-dropdown" id="shopDropdown"></div>
+                  <input type="hidden" id="shopSelect" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 选择仓库 -->
+            <div class="form-row">
+              <label class="form-label">选择仓库</label>
+              <div class="form-field">
+                <select id="warehouseSelect">
+                  <option value="">请选择仓库</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- 采购数量 -->
+            <div class="form-row">
+              <label class="form-label">采购数量</label>
+              <div class="form-field">
+                <input type="number" id="purchaseQty" min="1" value="10" placeholder="请输入采购数量" />
+              </div>
+            </div>
+
+            <!-- 配置信息 -->
+            <div class="config-section">
+              <div class="config-title">配置信息</div>
+              <div class="config-box">
+                <div class="config-grid">
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgImportShopProduct" />
+                    <span>导入店铺商品</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgEnableShopProduct" />
+                    <span>启用店铺商品</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgEnableMasterData" />
+                    <span>启用商品主数据</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgDisableMasterData" />
+                    <span>停用商品主数据</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgInventoryRatio" />
+                    <span>维护库存比例</span>
+                    <input type="text" class="config-inline-input" id="cfgInventoryRatioValue" placeholder="" value="100" />
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgJdLabel" />
+                    <span>京配打标生效</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgEnablePurchase" />
+                    <span>启用采购入库</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgDisableShopProduct" />
+                    <span>停用店铺商品</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgLogistics" />
+                    <span>维护物流属性</span>
+                  </label>
+                  <label class="config-item">
+                    <input type="checkbox" id="cfgCancelJdLabel" />
+                    <span>取消京配打标</span>
+                  </label>
+                </div>
+
+                <div class="logistics-row">
+                  <span>物流属性：</span>
+                  <span>长</span>
+                  <input type="number" id="logLength" class="logistics-input" value="210" /> <span>mm</span>
+                  <span>宽</span>
+                  <input type="number" id="logWidth" class="logistics-input" value="150" /> <span>mm</span>
+                  <span>高</span>
+                  <input type="number" id="logHeight" class="logistics-input" value="100" /> <span>mm</span>
+                </div>
+                <div class="logistics-row">
+                  <span>步骤延时：</span>
+                  <input type="number" id="stepDelay" class="logistics-input" value="10" /> <span>秒</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="action-buttons">
+              <button class="btn btn-action btn-add" id="addTaskBtn">添加任务</button>
+              <button class="btn btn-action btn-exec" id="execTaskBtn">执行任务</button>
+              <button class="btn btn-action btn-open-dir" id="openDirBtn">打开输出目录</button>
+            </div>
+          </div>
+
+          <!-- 右侧面板 -->
+          <div class="right-panel">
+            <!-- 任务列表 -->
+            <div class="task-list-section">
+              <div class="section-header">任务列表</div>
+              <div class="task-table-wrapper">
+                <table class="task-table">
+                  <thead>
+                    <tr>
+                      <th style="width:50px">序号</th>
+                      <th>sku</th>
+                      <th>店铺</th>
+                      <th>操作模式</th>
+                      <th style="width:80px">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="taskTableBody">
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 执行日志 -->
+            <div class="log-section">
+              <div class="log-header">
+                <span>执行日志</span>
+                <label class="auto-accept-label">
+                  <input type="checkbox" id="autoAccept" />
+                  <span>开启自动验收</span>
+                </label>
+              </div>
+              <div class="log-box" id="logBox"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 验收上架页面 -->
+      <div class="page" id="page-acceptance">
+        <div class="page-header">
+          <span class="page-icon">📦</span>
+          <span class="page-title">验收上架</span>
+        </div>
+
+        <div class="content-body">
+          <!-- 左侧操作面板 -->
+          <div class="form-panel wms-panel">
+            <!-- WMS 登录区块 -->
+            <div class="wms-login-section">
+              <div class="wms-status-row">
+                <span class="wms-status-dot" id="wmsStatusDot"></span>
+                <span class="wms-status-text" id="wmsStatusText">WMS 未登录</span>
+              </div>
+              <div class="wms-warehouse-name" id="wmsWarehouseName" style="display:none;"></div>
+              <div class="wms-credential-box">
+                <input type="text" id="wmsUsername" placeholder="WMS 账号" autocomplete="off" />
+                <input type="password" id="wmsPassword" placeholder="WMS 密码" autocomplete="off" />
+              </div>
+              <button class="btn btn-primary wms-login-btn" id="wmsLoginBtn">登录 WMS 系统</button>
+            </div>
+
+            <!-- 操作按钮组 -->
+            <div class="wms-action-section">
+              <button class="btn wms-btn wms-btn-query" id="wmsQueryBtn" disabled>查询待验收单据</button>
+              <div class="wms-location-row">
+                <label class="wms-location-label">上架储位号：</label>
+                <input type="text" id="wmsLocationInput" class="wms-location-input" placeholder="请输入储位号" autocomplete="off" />
+              </div>
+              <button class="btn wms-btn wms-btn-receive" id="wmsReceiveBtn" disabled>一键验收</button>
+              <div class="wms-divider"></div>
+              <button class="btn wms-btn wms-btn-auto" id="wmsAutoBtn" disabled>开启自动验收</button>
+              <div class="wms-stats-row" id="wmsStatsRow">已验收单据：<span id="wmsStatOrders">0</span> 已验收SKU：<span id="wmsStatSkus">0</span></div>
+            </div>
+          </div>
+
+          <!-- 右侧面板 -->
+          <div class="right-panel">
+            <!-- 入库单据表格 -->
+            <div class="wms-table-section">
+              <div class="section-header">
+                <span>入库单据</span>
+                <span class="wms-order-count" id="wmsOrderCount"></span>
+              </div>
+              <div class="wms-table-wrapper">
+                <table class="wms-order-table">
+                  <thead>
+                    <tr>
+                      <th style="width:36px"><input type="checkbox" id="wmsSelectAll" title="全选/取消全选" /></th>
+                      <th style="width:50px">序号</th>
+                      <th>入库单号</th>
+                      <th>单据类型</th>
+                      <th>供应商/店铺</th>
+                      <th style="width:80px">预期数量</th>
+                      <th style="width:80px">单据状态</th>
+                      <th>创建时间</th>
+                    </tr>
+                  </thead>
+                  <tbody id="wmsOrderTableBody">
+                    <tr class="wms-empty-row">
+                      <td colspan="8" class="wms-empty-state">暂无数据，请先登录 WMS 后查询</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 执行日志 -->
+            <div class="log-section">
+              <div class="log-header">
+                <span>执行日志</span>
+              </div>
+              <div class="log-box" id="wmsLogBox"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- main-content -->
+    </div><!-- right-area -->
+  </div><!-- app-container -->
+
+  <!-- 模式管理弹窗 -->
+  <div class="modal-overlay" id="modeModal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <span>模式管理</span>
+        <button class="modal-close" id="modeModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="mode-list" id="modeList"></div>
+        <div class="mode-empty" id="modeEmpty">暂无保存的模式</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 保存模式弹窗 -->
+  <div class="modal-overlay" id="saveModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span>保存模式</span>
+        <button class="modal-close" id="saveModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group-modal">
+          <label>模式名称</label>
+          <input type="text" id="modeNameInput" placeholder="请输入模式名称" />
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="confirmSaveMode">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/renderer.js"></script>
+</body>
+</html>

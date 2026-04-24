@@ -1,0 +1,8 @@
+node_modules/
+dist/
+app.log
+stdout.log
+stderr.log
+*.blockmap
+src/icon.png
+nul
