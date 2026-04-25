@@ -638,12 +638,59 @@ ipcMain.handle('get-csrf-token', async () => {
 
 // ========== IPC: 快捷模式 ==========
 
+const DEFAULT_MODES = [
+  {
+    name: '下标',
+    config: {
+      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
+      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
+      jdLabel: false, enablePurchase: false, disableShopProduct: false,
+      logistics: false, cancelJdLabel: true,
+      logLength: '210', logWidth: '150', logHeight: '100',
+      stepDelay: 10, purchaseQty: 0, autoAccept: false
+    }
+  },
+  {
+    name: '店铺打标',
+    config: {
+      importShopProduct: true, enableShopProduct: true, enableMasterData: true,
+      disableMasterData: false, inventoryRatio: true, inventoryRatioValue: '100',
+      jdLabel: true, enablePurchase: true, disableShopProduct: false,
+      logistics: true, cancelJdLabel: false,
+      logLength: '210', logWidth: '150', logHeight: '100',
+      stepDelay: 10, purchaseQty: 0, autoAccept: false
+    }
+  },
+  {
+    name: '采购入库',
+    config: {
+      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
+      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
+      jdLabel: false, enablePurchase: true, disableShopProduct: false,
+      logistics: false, cancelJdLabel: false,
+      logLength: '210', logWidth: '150', logHeight: '100',
+      stepDelay: 60, purchaseQty: 10, autoAccept: false
+    }
+  },
+  {
+    name: '打标（仅勾标）',
+    config: {
+      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
+      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
+      jdLabel: true, enablePurchase: false, disableShopProduct: false,
+      logistics: false, cancelJdLabel: false,
+      logLength: '210', logWidth: '150', logHeight: '100',
+      stepDelay: 60, purchaseQty: 10, autoAccept: false
+    }
+  }
+];
+
 ipcMain.handle('get-modes', async () => {
-  return storeGet('modes', []);
+  return storeGet('modes', DEFAULT_MODES);
 });
 
 ipcMain.handle('save-mode', async (event, mode) => {
-  const modes = storeGet('modes', []);
+  const modes = storeGet('modes', DEFAULT_MODES);
   const existIndex = modes.findIndex(m => m.name === mode.name);
   if (existIndex >= 0) {
     modes[existIndex] = mode;
@@ -655,7 +702,7 @@ ipcMain.handle('save-mode', async (event, mode) => {
 });
 
 ipcMain.handle('delete-mode', async (event, modeName) => {
-  const modes = storeGet('modes', []);
+  const modes = storeGet('modes', DEFAULT_MODES);
   const filtered = modes.filter(m => m.name !== modeName);
   storeSet('modes', filtered);
   return filtered;
@@ -683,9 +730,10 @@ ipcMain.handle('open-file-dialog', async () => {
 
 // ========== IPC: Excel 生成 ==========
 
-// 初始化输出目录（使用桌面下的"云仓助手输出"文件夹）
+// 初始化输出目录（使用安装目录下的"云仓助手输出"文件夹）
 app.whenReady().then(() => {
-  const outputDir = path.join(app.getPath('desktop'), '云仓助手输出');
+  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const outputDir = path.join(appDir, '云仓助手输出');
   excelGen.setOutputDir(outputDir);
 });
 
@@ -732,7 +780,8 @@ ipcMain.handle('generate-excel', async (event, { type, data }) => {
 
 // 打开文件所在目录
 ipcMain.handle('open-output-dir', async () => {
-  const outputDir = path.join(app.getPath('desktop'), '云仓助手输出');
+  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const outputDir = path.join(appDir, '云仓助手输出');
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
