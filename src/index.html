@@ -9,16 +9,37 @@
   <div class="app-container">
     <!-- 左侧导航 -->
     <div class="sidebar">
-      <div class="sidebar-title" style="-webkit-app-region: drag;">云仓助手</div>
+      <div class="sidebar-title" style="-webkit-app-region: drag;">云仓助手 <span id="appVersion" style="font-size:11px;color:#999;font-weight:normal;"></span></div>
+
+      <!-- 订阅状态 -->
+      <div class="sub-info" id="subInfo">
+        <div class="sub-info-badge" id="subBadge">加载中</div>
+        <div class="sub-info-row">
+          <div class="sub-info-days" id="subDays"></div>
+          <div class="sub-info-renew" id="subRenew">去订阅</div>
+        </div>
+        <div class="sub-info-invite" id="subInvite"></div>
+      </div>
 
       <div class="nav-section">
         <div class="nav-section-title">商家端</div>
         <div class="nav-item active" data-page="shopLabel">店铺打标</div>
+        <div class="nav-item" data-page="abnormalOrders">异常订单处理</div>
       </div>
 
       <div class="nav-section">
         <div class="nav-section-title">仓库端</div>
-        <div class="nav-item" data-page="acceptance">验收上架</div>
+        <div class="nav-item" data-page="acceptance">验收商品</div>
+        <div class="nav-item" data-page="wmsPrintOutbound">打印出库</div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">自动化处理</div>
+        <div class="nav-item" data-page="shopManage">店铺管理</div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <div class="sidebar-contact" id="sidebarContact">有问题就点我！</div>
       </div>
     </div>
 
@@ -53,7 +74,7 @@
               <label class="form-label">快捷模式</label>
               <div class="form-field mode-field">
                 <select id="modeSelect">
-                  <option value="">入仓打标（下拉可选择）</option>
+                  <option value="">请选择（可下拉选择）</option>
                 </select>
                 <button class="btn btn-primary btn-sm" id="modeManageBtn">模式管理</button>
                 <button class="btn btn-danger btn-sm" id="modeSaveBtn">保存模式</button>
@@ -66,6 +87,16 @@
               <div class="form-field sku-field">
                 <input type="text" id="skuInput" placeholder="多个SKU用逗号分隔" />
                 <button class="btn btn-primary btn-sm" id="importSkuBtn">导入文本</button>
+              </div>
+            </div>
+
+            <!-- 选择事业部 -->
+            <div class="form-row">
+              <label class="form-label">事业部门</label>
+              <div class="form-field">
+                <select id="deptSelect">
+                  <option value="" disabled selected hidden>请选择事业部</option>
+                </select>
               </div>
             </div>
 
@@ -209,11 +240,11 @@
         </div>
       </div>
 
-      <!-- 验收上架页面 -->
+      <!-- 收货页面 -->
       <div class="page" id="page-acceptance">
         <div class="page-header">
           <span class="page-icon">📦</span>
-          <span class="page-title">验收上架</span>
+          <span class="page-title">验收商品</span>
         </div>
 
         <div class="content-body">
@@ -227,8 +258,16 @@
               </div>
               <div class="wms-warehouse-name" id="wmsWarehouseName" style="display:none;"></div>
               <div class="wms-credential-box">
-                <input type="text" id="wmsUsername" placeholder="WMS 账号" autocomplete="off" />
-                <input type="password" id="wmsPassword" placeholder="WMS 密码" autocomplete="off" />
+                <div class="wms-input-wrap">
+                  <input type="text" id="wmsUsername" class="wms-input" placeholder="WMS 账号" autocomplete="off" />
+                  <div class="wms-account-arrow" id="wmsAccountArrow">
+                    <svg viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <div class="wms-account-dropdown" id="wmsAccountDropdown"></div>
+                </div>
+                <input type="password" id="wmsPassword" class="wms-input" placeholder="WMS 密码" autocomplete="off" />
               </div>
               <button class="btn btn-primary wms-login-btn" id="wmsLoginBtn">登录 WMS 系统</button>
             </div>
@@ -238,7 +277,7 @@
               <button class="btn wms-btn wms-btn-query" id="wmsQueryBtn" disabled>查询待验收单据</button>
               <div class="wms-location-row">
                 <label class="wms-location-label">上架储位号：</label>
-                <input type="text" id="wmsLocationInput" class="wms-location-input" placeholder="请输入储位号" autocomplete="off" />
+                <input type="text" id="wmsLocationInput" class="wms-location-input" placeholder="请输入储位号" value="A-1-1-1" autocomplete="off" />
               </div>
               <button class="btn wms-btn wms-btn-receive" id="wmsReceiveBtn" disabled>一键验收</button>
               <div class="wms-divider"></div>
@@ -288,6 +327,241 @@
           </div>
         </div>
       </div>
+
+      <!-- 店铺管理页面 -->
+
+      <!-- 打印出库页面（嵌入 WMS 出库处理列表） -->
+      <div class="page" id="page-wmsPrintOutbound">
+        <div style="display:flex; flex-direction:column; height:100%;">
+          <div style="padding:8px 18px; background:#fafafa; border-bottom:1px solid #e8e8e8; display:flex; align-items:center; gap:12px;">
+            <span style="font-size:14px; font-weight:bold; color:#333;">打印出库</span>
+            <span id="wmsPrintStatus" style="font-size:12px; color:#999;">未登录 WMS</span>
+            <a id="wmsPrintLoginBtn" href="#" style="font-size:12px; color:#1890ff; text-decoration:none; cursor:pointer;">请登录</a>
+            <button id="wmsPrintRefreshBtn" class="btn" style="margin-left:auto; padding:4px 12px; font-size:12px;">刷新</button>
+            <button id="wmsPrintOpenBtn" class="btn" style="padding:4px 12px; font-size:12px;">新窗口打开</button>
+          </div>
+          <div id="wmsPrintWebviewContainer" style="flex:1; position:relative;">
+            <div id="wmsPrintPlaceholder" style="display:flex; align-items:center; justify-content:center; height:100%; color:#999; font-size:14px;">
+              请先登录仓库端（验收商品页面），登录后此处将自动加载出库处理页面
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-shopManage">
+        <div class="page-header">
+          <span class="page-icon">🏪</span>
+          <span class="page-title">店铺管理</span>
+          <span class="ao-header-stats">
+            <span class="ao-stat-item">今日处理店铺：<b id="smTodayShops" style="color:#7b2d8e">0</b></span>
+            <span class="ao-stat-item">今日提取SKU：<b id="smTodaySkus" style="color:#e67e22">0</b></span>
+          </span>
+        </div>
+        <div class="ao-body">
+          <!-- 筛选栏 -->
+          <div class="ao-filter-bar">
+            <div class="ao-filter-grid">
+              <div class="ao-filter-item">
+                <label>店铺选择</label>
+                <div class="sm-shop-inline">
+                  <select id="smShopSelect"><option value="">请先添加店铺</option></select>
+                  <span class="sm-shop-status-inline offline" id="smStatusTag">离线</span>
+                </div>
+              </div>
+              <div class="ao-filter-item">
+                <label>&nbsp;</label>
+                <div class="sm-btn-group">
+                  <button class="btn btn-danger btn-sm" id="smManageBtn">管理店铺</button>
+                  <button class="btn btn-primary btn-sm" id="smLoginBtn">登录后台</button>
+                </div>
+              </div>
+              <div class="ao-filter-item"></div>
+              <div class="ao-filter-item">
+                <label>上架时间</label>
+                <div class="sm-range-inline">
+                  <input type="date" id="smDateFrom" />
+                  <span>至</span>
+                  <input type="date" id="smDateTo" />
+                </div>
+              </div>
+              <div class="ao-filter-item">
+                <label>售价范围</label>
+                <div class="sm-range-inline">
+                  <input type="number" id="smPriceMin" placeholder="最低" min="0" step="0.01" />
+                  <span>至</span>
+                  <input type="number" id="smPriceMax" placeholder="最高" min="0" step="0.01" />
+                </div>
+              </div>
+              <div class="ao-filter-item">
+                <label>商品状态</label>
+                <div class="sm-radio-group">
+                  <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="在售" checked />在售</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="已下架" />已下架</label>
+                </div>
+              </div>
+              <div class="ao-filter-item ao-filter-item-wide">
+                <label>商品数量</label>
+                <div class="sm-radio-group">
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="全部" checked />全部</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="第1个" />SKU第1个</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最后1个" />SKU最后1个</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最低价" />最低价</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最高价" />最高价</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="N个" />随机<input type="number" id="smQtyN" min="1" value="10" class="sm-qty-input" />个</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 操作按钮组 -->
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-shrink:0;">
+            <div class="ao-action-bar">
+              <button class="btn ao-btn" id="smQueryBtn" disabled>查询商品</button>
+              <button class="btn ao-btn" id="smExportBtn" disabled>导出 TXT</button>
+              <button class="btn ao-btn" id="smSendBtn" disabled>发送到打标</button>
+              <button class="btn ao-btn" id="smSendDownBtn" disabled>发送到下标</button>
+            </div>
+            <button class="btn" id="smOpenShopBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">🌐 打开店铺后台</button>
+            <button class="btn" id="smCaptureBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">&#128269; 开始抓包</button>
+            <span id="smCaptureStatus" style="font-size:11px;color:#999;display:none;"></span>
+          </div>
+
+          <!-- 商品列表表格 -->
+          <div class="ao-table-section">
+            <div class="ao-table-header">
+              <span>商品列表</span>
+              <span class="wms-order-count" id="smGoodsCount"></span>
+            </div>
+            <div class="ao-table-wrapper">
+              <table class="ao-table">
+                <thead>
+                  <tr>
+                    <th style="width:32px"><input type="checkbox" id="smSelectAll" /></th>
+                    <th style="width:42px">序号</th>
+                    <th>商品编码</th>
+                    <th>SKU编号</th>
+                    <th style="width:52px">主图</th>
+                    <th>商品名称</th>
+                    <th style="width:80px">售价</th>
+                    <th style="width:100px">上架日期</th>
+                  </tr>
+                </thead>
+                <tbody id="smGoodsTableBody">
+                  <tr class="wms-empty-row"><td colspan="8" class="wms-empty-state">请先登录店铺并查询商品</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 执行日志 -->
+          <div class="log-section">
+            <div class="log-header"><span>执行日志</span></div>
+            <div class="log-box" id="smLogBox"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 异常订单处理页面 -->
+      <div class="page" id="page-abnormalOrders">
+        <div class="page-header">
+          <span class="page-icon">&#9888;</span>
+          <span class="page-title">异常订单处理</span>
+          <span class="ao-header-stats">
+            <span class="ao-stat-item">异常中心：<b id="aoBillExCount" style="color:#7b2d8e">0</b></span>
+            <span class="ao-stat-item">异常订单中心：<b id="aoSoExCount" style="color:#2d7be0">0</b></span>
+          </span>
+        </div>
+
+        <div class="ao-body">
+          <!-- 筛选条件区（横排网格） -->
+          <div class="ao-filter-bar">
+            <div class="ao-filter-grid">
+              <div class="ao-filter-item">
+                <label>商家名称</label>
+                <input type="text" id="aoMerchantName" readonly placeholder="加载中..." />
+              </div>
+              <div class="ao-filter-item">
+                <label>事业部</label>
+                <input type="text" id="aoDeptName" readonly placeholder="加载中..." />
+              </div>
+              <div class="ao-filter-item">
+                <label>年份</label>
+                <select id="aoYear"></select>
+              </div>
+              <div class="ao-filter-item">
+                <label>订单编号</label>
+                <input type="text" id="aoOrderNo" placeholder="CLPS/商家出库单号" />
+              </div>
+              <div class="ao-filter-item">
+                <label>店铺名称</label>
+                <input type="text" id="aoShopName" placeholder="输入店铺名称" />
+              </div>
+              <div class="ao-filter-item">
+                <label>数据来源</label>
+                <select id="aoSource">
+                  <option value="">全部</option>
+                  <option value="billexception">异常中心</option>
+                  <option value="soExceptionCentre">异常订单中心</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- 操作按钮区（筛选与表格之间） -->
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-shrink:0;">
+            <div class="ao-action-bar">
+              <button class="btn btn-primary ao-btn" id="aoQueryBtn">查询</button>
+              <button class="btn ao-btn ao-btn-reset" id="aoResetBtn">重置</button>
+              <button class="btn ao-btn ao-btn-batch" id="aoBatchBtn">批量处理</button>
+            </div>
+            <button class="btn" id="aoCaptureBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">&#128269; 开始抓包</button>
+            <span id="aoCaptureStatus" style="font-size:11px;color:#999;display:none;"></span>
+          </div>
+
+          <!-- 表格区（全宽） -->
+          <div class="ao-table-section">
+            <div class="ao-table-header">
+              <span>异常订单列表</span>
+              <span class="wms-order-count" id="aoOrderCount"></span>
+            </div>
+            <div class="ao-table-wrapper">
+              <table class="ao-table" id="aoOrderTable">
+                <thead>
+                  <tr>
+                    <th style="width:32px"><input type="checkbox" id="aoSelectAll" title="全选"></th>
+                    <th style="width:42px">序号</th>
+                    <th>订单号</th>
+                    <th>CLPS单据号</th>
+                    <th>店铺名称</th>
+                    <th>事业部</th>
+                    <th style="width:130px">异常类型</th>
+                    <th>异常原因</th>
+                    <th style="width:80px">处理方案</th>
+                    <th style="width:130px">异常时间</th>
+                    <th style="width:80px">来源</th>
+                    <th style="width:60px">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="aoOrderTableBody">
+                  <tr class="wms-empty-row"><td colspan="12" class="wms-empty-state">暂无数据，请设置筛选条件后查询</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- 分页栏 -->
+            <div class="ao-pagination" id="aoPagination">
+              <span class="ao-page-info" id="aoPageInfo">显示 0 至 0 共 0 条</span>
+              <div class="ao-page-btns">
+                <button id="aoPageFirst" disabled>首页</button>
+                <button id="aoPagePrev" disabled>上一页</button>
+                <span class="ao-page-nums" id="aoPageNums"><span class="ao-page-num active">1</span></span>
+                <button id="aoPageNext" disabled>下一页</button>
+                <button id="aoPageLast" disabled>尾页</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- main-content -->
     </div><!-- right-area -->
   </div><!-- app-container -->
@@ -322,6 +596,166 @@
           <button class="btn btn-primary" id="confirmSaveMode">保存</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- 被踢下线弹窗 -->
+  <div class="modal-overlay" id="kickedModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span>下线通知</span>
+      </div>
+      <div class="modal-body" style="text-align:center; padding: 24px 16px;">
+        <div style="font-size:36px; margin-bottom:12px;">&#9888;</div>
+        <div style="font-size:14px; color:#333; margin-bottom:8px;">您的账号已在其他设备登录</div>
+        <div style="font-size:12px; color:#999; margin-bottom:16px;">同一账号仅支持单设备同时在线</div>
+        <div class="modal-actions" style="justify-content:center;">
+          <button class="btn btn-primary" id="kickedOkBtn">知道了</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 订阅过期弹窗 -->
+  <div class="modal-overlay" id="expiredModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span>订阅到期</span>
+      </div>
+      <div class="modal-body" style="text-align:center; padding: 24px 16px;">
+        <div style="font-size:36px; margin-bottom:12px;">&#8987;</div>
+        <div style="font-size:14px; color:#333; margin-bottom:8px;">您的订阅已到期</div>
+        <div style="font-size:12px; color:#999; margin-bottom:16px;">请续费后继续使用</div>
+        <div class="modal-actions" style="justify-content:center; gap:12px;">
+          <button class="btn btn-primary" id="expiredRenewBtn">去续费</button>
+          <button class="btn" id="expiredOkBtn">退出</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WMS 未登录确认弹窗 -->
+  <div class="modal-overlay" id="wmsConfirmModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span>提示</span>
+        <button class="modal-close" id="wmsConfirmModalClose">&times;</button>
+      </div>
+      <div class="modal-body" style="text-align:center; padding: 24px 16px;">
+        <div style="font-size:14px; color:#333; margin-bottom:16px;">仓库端未登录，是否前往登录？</div>
+        <div class="modal-actions" style="justify-content:center; gap:12px;">
+          <button class="btn" id="wmsConfirmNo" style="background:#eee;color:#555;padding:6px 20px;">取消</button>
+          <button class="btn btn-primary" id="wmsConfirmYes" style="padding:6px 20px;">去登录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 店铺账号管理弹窗 -->
+  <div class="modal-overlay" id="smShopModal" style="display:none">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <span>店铺账号管理</span>
+        <button class="modal-close" id="smShopModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="mode-list" id="smShopList"></div>
+        <div class="mode-empty" id="smShopEmpty">暂无店铺账号，请点击下方按钮添加</div>
+        <div style="margin-top:12px;text-align:center;">
+          <button class="btn btn-primary" id="smAddShopBtn">+ 添加店铺</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加/编辑店铺弹窗 -->
+  <div class="modal-overlay" id="smEditShopModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span id="smEditShopTitle">添加店铺</span>
+        <button class="modal-close" id="smEditShopModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="smEditShopId" />
+        <div class="form-group-modal">
+          <label>店铺名称 <span style="color:#999;font-size:11px">（选填，登录后自动获取）</span></label>
+          <input type="text" id="smShopName" placeholder="留空则登录后自动获取" />
+        </div>
+        <div class="form-group-modal">
+          <label>登录账号</label>
+          <input type="text" id="smShopUsername" placeholder="shop.jd.com 登录账号" autocomplete="off" />
+        </div>
+        <div class="form-group-modal">
+          <label>登录密码</label>
+          <input type="password" id="smShopPassword" placeholder="登录密码" autocomplete="off" />
+        </div>
+        <div class="form-group-modal">
+          <label>自动发送打标</label>
+          <div class="sm-radio-group">
+            <label class="sm-radio"><input type="radio" name="smAutoSend" value="1" /><span>是</span></label>
+            <label class="sm-radio"><input type="radio" name="smAutoSend" value="0" checked /><span>否</span></label>
+          </div>
+        </div>
+        <div class="modal-actions" style="justify-content:flex-start; gap:12px;">
+          <button class="btn btn-primary" id="smLoginShopBtn" style="min-width:80px;">登录</button>
+          <button class="btn btn-danger" id="smSaveShopBtn" style="min-width:80px;">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 发送到打标确认弹窗 -->
+  <div class="modal-overlay" id="smSendModal" style="display:none">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <span>发送到打标任务</span>
+        <button class="modal-close" id="smSendModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size:13px;color:#333;margin-bottom:14px;" id="smSendInfo">即将发送 0 个SKU到店铺打标任务</div>
+        <div class="form-group-modal">
+          <label>快捷模式</label>
+          <select id="smSendMode" style="width:100%;height:32px;border:1px solid #d9d9d9;border-radius:6px;padding:0 8px;font-size:13px;"></select>
+        </div>
+        <div class="form-group-modal">
+          <label>目标店铺 (商家端)</label>
+          <select id="smSendShop" style="width:100%;height:32px;border:1px solid #d9d9d9;border-radius:6px;padding:0 8px;font-size:13px;"></select>
+        </div>
+        <div class="form-group-modal">
+          <label>目标仓库</label>
+          <select id="smSendWarehouse" style="width:100%;height:32px;border:1px solid #d9d9d9;border-radius:6px;padding:0 8px;font-size:13px;"></select>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="smConfirmSendBtn">确认发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 抓包结果弹窗 -->
+  <div class="modal-overlay" id="captureResultModal" style="display:none">
+    <div class="modal" style="width:750px;max-height:600px;">
+      <div class="modal-header">
+        <span id="captureResultTitle">抓包结果</span>
+        <button class="modal-close" id="captureResultClose">&times;</button>
+      </div>
+      <div class="modal-body" style="padding:12px;">
+        <textarea id="captureResultText" readonly style="width:100%;height:420px;font-family:Consolas,'Courier New',monospace;font-size:11px;border:1px solid #e0e0e0;border-radius:4px;padding:10px;resize:none;background:#1e1e1e;color:#d4d4d4;line-height:1.5;outline:none;"></textarea>
+        <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;">
+          <button class="btn" id="captureResultCopy" style="background:#3498db;color:#fff;padding:6px 16px;">复制内容</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 售后联系弹窗 -->
+  <div id="contactModal" class="contact-modal" style="display:none;">
+    <div class="contact-modal-mask"></div>
+    <div class="contact-modal-body">
+      <div class="contact-modal-title">技术微信</div>
+      <img src="img/contact-wechat.png" class="contact-modal-qr" alt="微信二维码">
+      <div class="contact-modal-tip">微信扫码联系技术</div>
+      <button class="contact-modal-close" id="contactModalClose">关闭</button>
     </div>
   </div>
 

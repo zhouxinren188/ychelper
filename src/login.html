@@ -10,145 +10,429 @@
       background: #fff;
       user-select: none;
       overflow: hidden;
+      height: 100vh;
     }
 
-    .titlebar {
+    /* 整体布局 */
+    .login-container {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* 左侧装饰面板 */
+    .login-left {
+      width: 240px;
+      flex-shrink: 0;
+      background: url('img/login-bg.png') center/cover no-repeat;
+      position: relative;
+      -webkit-app-region: drag;
+    }
+    .login-left-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: linear-gradient(180deg, rgba(230,126,34,0.15) 0%, rgba(211,84,0,0.3) 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 60px;
+    }
+    .login-logo {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.9);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      height: 36px;
-      background: #3a3a3a;
-      -webkit-app-region: drag;
-      padding: 0 10px;
+      justify-content: center;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
-    .titlebar .title {
+    .login-logo img {
+      width: 40px;
+      height: 40px;
+    }
+    .login-app-name {
       color: #fff;
-      font-size: 13px;
+      font-size: 20px;
+      font-weight: bold;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      letter-spacing: 2px;
     }
-    .titlebar .controls {
+
+    /* 右侧表单区域 */
+    .login-right {
+      flex: 1;
       display: flex;
-      gap: 2px;
-      -webkit-app-region: no-drag;
+      flex-direction: column;
+      position: relative;
     }
-    .titlebar .controls button {
+
+    /* 关闭按钮 */
+    .close-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
       width: 32px;
-      height: 28px;
+      height: 32px;
       border: none;
       background: transparent;
-      color: #ccc;
-      font-size: 16px;
+      color: #999;
+      font-size: 20px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
+      border-radius: 4px;
+      -webkit-app-region: no-drag;
+      z-index: 10;
     }
-    .titlebar .controls button:hover {
-      background: rgba(255,255,255,0.15);
-    }
-    .titlebar .controls .close-btn:hover {
+    .close-btn:hover {
       background: #e81123;
       color: #fff;
     }
 
-    .login-body {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: calc(100vh - 36px);
-      padding: 20px 40px;
-    }
-    .login-body h2 {
-      color: #e67e22;
-      font-size: 22px;
-      margin-bottom: 12px;
-    }
-    .login-body .subtitle {
-      color: #888;
-      font-size: 13px;
-      margin-bottom: 30px;
+    /* 可拖动区域 */
+    .drag-area {
+      height: 36px;
+      -webkit-app-region: drag;
+      flex-shrink: 0;
     }
 
+    /* 表单主体 */
+    .form-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 0 50px 30px;
+    }
+    .form-title {
+      font-size: 18px;
+      color: #333;
+      font-weight: bold;
+      margin-bottom: 6px;
+    }
+    .form-title-line {
+      width: 36px;
+      height: 3px;
+      background: #e67e22;
+      border-radius: 2px;
+      margin-bottom: 28px;
+    }
+
+    /* 输入框组 */
+    .input-group {
+      position: relative;
+      margin-bottom: 16px;
+    }
+    .input-group .input-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      fill: #bbb;
+    }
+    .input-group input {
+      width: 100%;
+      height: 42px;
+      border: none;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 0 36px 0 40px;
+      font-size: 14px;
+      outline: none;
+      background: transparent;
+      transition: border-color 0.2s;
+    }
+    .input-group input:focus {
+      border-bottom-color: #e67e22;
+    }
+    .input-group input::placeholder {
+      color: #bbb;
+    }
+
+    /* 账号下拉箭头 */
+    .account-arrow {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+    }
+    .account-arrow:hover {
+      background: #f5f5f5;
+    }
+    .account-arrow svg {
+      width: 12px;
+      height: 12px;
+      fill: #999;
+    }
+    .account-arrow.visible {
+      display: flex;
+    }
+
+    /* 账号下拉列表 */
+    .account-dropdown {
+      display: none;
+      position: absolute;
+      top: 44px;
+      left: 0;
+      right: 0;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      z-index: 100;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .account-dropdown.open {
+      display: block;
+    }
+    .account-option {
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .account-option:hover {
+      background: #fff3e0;
+      color: #e67e22;
+    }
+    .account-option .account-name {
+      flex: 1;
+    }
+    .account-option .account-mask {
+      color: #bbb;
+      font-size: 11px;
+    }
+
+    /* 记住密码 */
+    .remember-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 24px;
+      margin-top: 2px;
+    }
+    .remember-row input[type="checkbox"] {
+      accent-color: #e67e22;
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+    }
+    .remember-row label {
+      font-size: 12px;
+      color: #888;
+      cursor: pointer;
+    }
+
+    /* 登录按钮 */
     .login-btn {
-      width: 260px;
-      height: 46px;
+      width: 100%;
+      height: 42px;
       background: #e67e22;
       color: #fff;
       border: none;
-      border-radius: 6px;
-      font-size: 16px;
+      border-radius: 4px;
+      font-size: 15px;
       cursor: pointer;
       transition: background 0.2s;
+      letter-spacing: 1px;
     }
     .login-btn:hover {
       background: #d35400;
     }
 
-    .credential-box {
-      width: 260px;
-      margin-bottom: 18px;
-    }
-    .credential-box input {
-      width: 100%;
-      height: 38px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
-      padding: 0 12px;
-      font-size: 13px;
-      margin-bottom: 8px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .credential-box input:focus {
-      border-color: #e67e22;
-    }
-    .credential-box input::placeholder {
+    .login-tip {
       color: #bbb;
-    }
-    .save-hint {
-      color: #aaa;
       font-size: 11px;
-      text-align: right;
-      margin-top: -4px;
-      margin-bottom: 4px;
+      text-align: center;
+      margin-top: 16px;
     }
 
-    .tip {
-      color: #aaa;
+    /* 热更新进度条 - 底部紧凑卡片 */
+    .update-overlay {
+      display: none;
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      z-index: 9999;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.13);
+      padding: 12px 24px;
+      min-width: 280px;
+      align-items: center;
+      gap: 8px;
+    }
+    .update-overlay.active {
+      display: flex;
+    }
+    .update-title {
+      font-size: 13px;
+      color: #333;
+      white-space: nowrap;
+    }
+    .update-bar-wrap {
+      flex: 1;
+      min-width: 100px;
+      height: 6px;
+      background: #eee;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .update-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #e67e22, #f39c12);
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+    .update-status {
       font-size: 11px;
-      margin-top: 20px;
+      color: #999;
+      white-space: nowrap;
     }
   </style>
 </head>
 <body>
-  <div class="titlebar">
-    <span class="title">云仓助手</span>
-    <div class="controls">
-      <button onclick="window.electronAPI.close()" class="close-btn">&times;</button>
+  <!-- 热更新进度条 -->
+  <div class="update-overlay" id="updateOverlay">
+    <div class="update-title" id="updateTitle">正在检查更新...</div>
+    <div class="update-bar-wrap">
+      <div class="update-bar" id="updateBar"></div>
     </div>
+    <div class="update-status" id="updateStatus"></div>
   </div>
 
-  <div class="login-body">
-    <h2>云仓助手</h2>
-    <p class="subtitle">填写账号密码后点击登录，将自动填充到登录页面</p>
-    <div class="credential-box">
-      <input type="text" id="username" placeholder="京东账号" autocomplete="off" />
-      <input type="password" id="password" placeholder="密码" autocomplete="off" />
-      <p class="save-hint">账号密码仅保存在本地</p>
+  <div class="login-container">
+    <!-- 左侧装饰面板 -->
+    <div class="login-left">
+      <div class="login-left-overlay">
+        <div class="login-logo">
+          <img src="img/logo.png" alt="logo" />
+        </div>
+        <div class="login-app-name">云仓助手</div>
+      </div>
     </div>
-    <button class="login-btn" id="loginBtn">登录商家端</button>
-    <p class="tip">登录成功后将自动进入主界面</p>
+
+    <!-- 右侧登录表单 -->
+    <div class="login-right">
+      <div class="drag-area">
+        <button class="close-btn" onclick="window.electronAPI.close()">&times;</button>
+      </div>
+
+      <div class="form-area">
+        <div class="form-title">账号登录</div>
+        <div class="form-title-line"></div>
+
+        <div class="input-group" id="usernameGroup">
+          <svg class="input-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v1.2c0 .7.5 1.2 1.2 1.2h16.8c.7 0 1.2-.5 1.2-1.2v-1.2c0-3.2-6.4-4.8-9.6-4.8z"/>
+          </svg>
+          <input type="text" id="username" placeholder="京东账号" autocomplete="off" />
+          <div class="account-arrow" id="accountArrow">
+            <svg viewBox="0 0 12 12" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="account-dropdown" id="accountDropdown"></div>
+        </div>
+
+        <div class="input-group">
+          <svg class="input-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
+          </svg>
+          <input type="password" id="password" placeholder="密码" autocomplete="off" />
+        </div>
+
+        <div class="remember-row">
+          <input type="checkbox" id="rememberCheck" checked />
+          <label for="rememberCheck">记住用户名和密码</label>
+        </div>
+
+        <button class="login-btn" id="loginBtn">登录商家端</button>
+        <p class="login-tip">登录成功后将自动进入主界面</p>
+      </div>
+    </div>
   </div>
 
   <script>
     const usernameInput = document.getElementById('username');
     const passwordInput = document.getElementById('password');
+    const accountArrow = document.getElementById('accountArrow');
+    const accountDropdown = document.getElementById('accountDropdown');
 
-    // 加载已保存的凭据
+    let credentialList = [];
+
+    // 加载已保存的凭据（默认显示最近一次登录的账号）
     window.electronAPI.getCredentials().then(cred => {
       if (cred) {
         usernameInput.value = cred.username || '';
         passwordInput.value = cred.password || '';
+      }
+    });
+
+    // 加载历史账号列表
+    window.electronAPI.getCredentialList().then(list => {
+      credentialList = list || [];
+      if (credentialList.length > 1) {
+        accountArrow.classList.add('visible');
+      }
+    });
+
+    // 渲染下拉列表
+    function renderDropdown() {
+      accountDropdown.innerHTML = '';
+      credentialList.forEach(item => {
+        const opt = document.createElement('div');
+        opt.className = 'account-option';
+        const masked = item.password ? '****' : '';
+        opt.innerHTML = '<span class="account-name">' + item.username + '</span><span class="account-mask">' + masked + '</span>';
+        opt.addEventListener('click', () => {
+          usernameInput.value = item.username;
+          passwordInput.value = item.password || '';
+          closeDropdown();
+        });
+        accountDropdown.appendChild(opt);
+      });
+    }
+
+    // 切换下拉框显示
+    function toggleDropdown() {
+      if (accountDropdown.classList.contains('open')) {
+        closeDropdown();
+      } else {
+        renderDropdown();
+        accountDropdown.classList.add('open');
+      }
+    }
+
+    function closeDropdown() {
+      accountDropdown.classList.remove('open');
+    }
+
+    accountArrow.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleDropdown();
+    });
+
+    // 点击外部关闭下拉框
+    document.addEventListener('click', (e) => {
+      if (!accountDropdown.contains(e.target) && e.target !== accountArrow && !accountArrow.contains(e.target)) {
+        closeDropdown();
       }
     });
 
@@ -159,6 +443,37 @@
       window.electronAPI.saveCredentials({ username, password });
       // 打开登录页面，传递凭据用于自动填充
       window.electronAPI.openWebLogin({ username, password });
+    });
+
+    // 热更新进度监听
+    window.electronAPI.onUpdateProgress((data) => {
+      const overlay = document.getElementById('updateOverlay');
+      const title = document.getElementById('updateTitle');
+      const bar = document.getElementById('updateBar');
+      const status = document.getElementById('updateStatus');
+
+      if (data.stage === 'checking') {
+        overlay.classList.add('active');
+        title.textContent = '正在检查更新...';
+        bar.style.width = '0%';
+        status.textContent = '';
+      } else if (data.stage === 'downloading') {
+        overlay.classList.add('active');
+        title.textContent = '正在下载更新...';
+        bar.style.width = (data.percent || 0) + '%';
+        status.textContent = data.version ? 'v' + data.version : '';
+      } else if (data.stage === 'installing') {
+        overlay.classList.add('active');
+        title.textContent = '正在安装更新...';
+        bar.style.width = '100%';
+        status.textContent = '请稍候';
+      } else if (data.stage === 'done') {
+        title.textContent = '更新完成，正在重启...';
+        bar.style.width = '100%';
+        status.textContent = '';
+      } else if (data.stage === 'none' || data.stage === 'error') {
+        overlay.classList.remove('active');
+      }
     });
   </script>
 </body>

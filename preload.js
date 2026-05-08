@@ -11,7 +11,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCookies: () => ipcRenderer.invoke('get-cookies'),
   getCsrfToken: () => ipcRenderer.invoke('get-csrf-token'),
   getCredentials: () => ipcRenderer.invoke('get-credentials'),
+  getCredentialList: () => ipcRenderer.invoke('get-credential-list'),
   saveCredentials: (cred) => ipcRenderer.invoke('save-credentials', cred),
+
+  // 商家端多账号管理
+  getMerchantAccounts: () => ipcRenderer.invoke('get-merchant-accounts'),
+  saveMerchantAccount: (account) => ipcRenderer.invoke('save-merchant-account', account),
+  deleteMerchantAccount: (id) => ipcRenderer.invoke('delete-merchant-account', id),
+  switchMerchantAccount: (account) => ipcRenderer.invoke('switch-merchant-account', account),
 
   // 快捷模式
   getModes: () => ipcRenderer.invoke('get-modes'),
@@ -40,14 +47,72 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 批量启用/停用商品主数据
   batchToggleMasterData: (params) => ipcRenderer.invoke('batch-toggle-master-data', params),
 
+  // 京配打标生效/取消
+  jdLabelGoods: (params) => ipcRenderer.invoke('jd-label-goods', params),
+
   // WMS 仓库端
   openWmsLogin: (cred) => ipcRenderer.invoke('open-wms-login', cred),
+  openWmsPrintOutbound: () => ipcRenderer.invoke('open-wms-print-outbound'),
+  checkWmsSession: () => ipcRenderer.invoke('check-wms-session'),
   getWmsLoginStatus: () => ipcRenderer.invoke('get-wms-login-status'),
   onWmsLoginSuccess: (callback) => ipcRenderer.on('wms-login-success', (event, data) => callback(data)),
   wmsQueryOrders: (params) => ipcRenderer.invoke('wms-query-orders', params),
   getWmsCredentials: () => ipcRenderer.invoke('get-wms-credentials'),
   saveWmsCredentials: (cred) => ipcRenderer.invoke('save-wms-credentials', cred),
+  getWmsAccounts: () => ipcRenderer.invoke('get-wms-accounts'),
+  saveWmsAccount: (account) => ipcRenderer.invoke('save-wms-account', account),
+  deleteWmsAccount: (id) => ipcRenderer.invoke('delete-wms-account', id),
+  switchWmsAccount: (account) => ipcRenderer.invoke('switch-wms-account', account),
   getWmsLocation: () => ipcRenderer.invoke('get-wms-location'),
   saveWmsLocation: (loc) => ipcRenderer.invoke('save-wms-location', loc),
-  wmsAcceptOrder: (params) => ipcRenderer.invoke('wms-accept-order', params)
+  wmsAcceptOrder: (params) => ipcRenderer.invoke('wms-accept-order', params),
+
+  // 店铺管理
+  getShopAccounts: () => ipcRenderer.invoke('get-shop-accounts'),
+  saveShopAccount: (account) => ipcRenderer.invoke('save-shop-account', account),
+  deleteShopAccount: (id) => ipcRenderer.invoke('delete-shop-account', id),
+  openShopLogin: (cred) => ipcRenderer.invoke('open-shop-login', cred),
+  getShopLoginStatus: () => ipcRenderer.invoke('get-shop-login-status'),
+  checkShopAccountsStatus: () => ipcRenderer.invoke('check-shop-accounts-status'),
+  switchShopAccount: (account) => ipcRenderer.invoke('switch-shop-account', account),
+  onShopLoginSuccess: (callback) => ipcRenderer.on('shop-login-success', (event, data) => callback(data)),
+  shopQueryGoods: (params) => ipcRenderer.invoke('shop-query-goods', params),
+  exportSkuTxt: (params) => ipcRenderer.invoke('export-sku-txt', params),
+  getSmStats: () => ipcRenderer.invoke('get-sm-stats'),
+  updateSmStats: (data) => ipcRenderer.invoke('update-sm-stats', data),
+
+  // 店铺抓包工具
+  openShopPage: () => ipcRenderer.invoke('open-shop-page'),
+  startShopCapture: () => ipcRenderer.invoke('start-shop-capture'),
+  stopShopCapture: () => ipcRenderer.invoke('stop-shop-capture'),
+
+  // 异常订单
+  queryAbnormalOrders: (params) => ipcRenderer.invoke('query-abnormal-orders', params),
+  handleAbnormalOrder: (params) => ipcRenderer.invoke('handle-abnormal-order', params),
+
+  // 网络抓包（开发工具）
+  startNetworkCapture: () => ipcRenderer.invoke('start-network-capture'),
+  stopNetworkCapture: () => ipcRenderer.invoke('stop-network-capture'),
+
+  // 订阅系统
+  checkSubscription: (params) => ipcRenderer.invoke('check-subscription', params),
+  createPaymentOrder: (params) => {
+    return ipcRenderer.invoke('create-payment-order', JSON.stringify(params));
+  },
+  queryPaymentOrder: (orderNo) => ipcRenderer.invoke('query-payment-order', orderNo),
+  generateQRCode: (text) => ipcRenderer.invoke('generate-qrcode', text),
+  getSubscriptionInfo: () => ipcRenderer.invoke('get-subscription-info'),
+  openSubscription: () => ipcRenderer.invoke('open-subscription'),
+  getDeviceId: () => ipcRenderer.invoke('get-device-id'),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  getFeatureFlags: () => ipcRenderer.invoke('get-feature-flags'),
+  paymentSuccessEnter: () => ipcRenderer.invoke('payment-success-enter'),
+  onSessionKicked: (callback) => ipcRenderer.on('session-kicked', () => callback()),
+  onSubscriptionExpired: (callback) => ipcRenderer.on('subscription-expired', () => callback()),
+  onSubscriptionInfo: (callback) => ipcRenderer.on('subscription-info', (event, data) => callback(data)),
+  onDeptList: (callback) => ipcRenderer.on('dept-list', (event, data) => callback(data)),
+  checkDepartmentSubscription: (deptNo) => ipcRenderer.invoke('check-department-subscription', deptNo),
+
+  // 热更新进度
+  onUpdateProgress: (callback) => ipcRenderer.on('update-progress', (event, data) => callback(data))
 });

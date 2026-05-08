@@ -1,6 +1,6 @@
 {
   "name": "cloud-warehouse-assistant",
-  "version": "1.0.1",
+  "version": "1.0.55",
   "description": "云仓助手 - 京东物流云仓自动化工具",
   "main": "main.js",
   "scripts": {
@@ -13,6 +13,7 @@
   "build": {
     "appId": "com.ychelper.cloud-warehouse",
     "productName": "云仓助手",
+    "asar": false,
     "directories": {
       "output": "dist"
     },
@@ -29,6 +30,7 @@
     "artifactName": "ychelper-setup-${version}.${ext}",
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "shortcutName": "云仓助手",
@@ -45,11 +47,15 @@
   "devDependencies": {
     "electron": "^35.0.0",
     "electron-builder": "^26.8.1",
+    "http-mitm-proxy": "^1.1.0",
     "png-to-ico": "^3.0.1"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.3",
+    "puppeteer-core": "^24.42.0",
+    "qrcode": "^1.5.4",
     "xlsx": "^0.18.5"
   }
 }

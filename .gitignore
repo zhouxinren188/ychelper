@@ -6,3 +6,12 @@ stderr.log
 *.blockmap
 src/icon.png
 nul
+
+# 热更新包和临时文件
+*.zip
+temp-ziptest/
+.mitm-ca/
+云仓助手输出/
+
+# 测试脚本
+test-*.js

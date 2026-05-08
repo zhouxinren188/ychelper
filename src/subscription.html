@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>云仓助手 - 订阅</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+      background: #f5f5f5;
+      user-select: none;
+      overflow-y: auto;
+    }
+
+    .sub-container {
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 24px 20px;
+    }
+
+    /* 顶部标题 */
+    .sub-header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .sub-header h1 {
+      font-size: 20px;
+      color: #333;
+      margin-bottom: 4px;
+    }
+    .sub-header .sub-user {
+      font-size: 13px;
+      color: #999;
+    }
+    .sub-header .sub-dept {
+      font-size: 12px;
+      color: #bbb;
+      margin-top: 2px;
+    }
+    .sub-header .sub-status {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 14px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .sub-status.expired {
+      background: #fdecea;
+      color: #e74c3c;
+    }
+    .sub-status.trial {
+      background: #fff3e0;
+      color: #e67e22;
+    }
+    .sub-status.active {
+      background: #e8f5e9;
+      color: #27ae60;
+    }
+
+    /* 版本选择 */
+    .tier-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .tier-card {
+      flex: 1;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 14px 8px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fff;
+      position: relative;
+    }
+    .tier-card:hover {
+      border-color: #f39c12;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .tier-card.selected {
+      border-color: #e67e22;
+      background: #fff8f0;
+      box-shadow: 0 4px 12px rgba(230, 126, 34, 0.2);
+    }
+    .tier-card .tier-name {
+      font-size: 15px;
+      font-weight: bold;
+      color: #333;
+    }
+    .tier-card .tier-badge {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      background: #e74c3c;
+      color: #fff;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: bold;
+    }
+
+    /* 版本介绍 */
+    .tier-intro {
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .tier-intro-title {
+      font-size: 13px;
+      font-weight: bold;
+      color: #333;
+      margin-bottom: 10px;
+    }
+    .tier-intro-table {
+      display: table;
+      width: 100%;
+      font-size: 12px;
+    }
+    .tier-intro-row {
+      display: table-row;
+    }
+    .tier-intro-row > span {
+      display: table-cell;
+      padding: 5px 4px;
+      text-align: center;
+      border-bottom: 1px solid #f0f0f0;
+      color: #666;
+    }
+    .tier-intro-row > span:first-child {
+      text-align: left;
+      color: #333;
+    }
+    .tier-intro-header > span {
+      font-weight: bold;
+      color: #333;
+      border-bottom: 1px solid #ddd;
+    }
+    .tier-intro-row .yes { color: #27ae60; font-weight: bold; }
+    .tier-intro-row .no { color: #bbb; }
+
+    /* 周期选择 */
+    .period-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .period-card {
+      flex: 1;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 14px 6px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fff;
+      position: relative;
+    }
+    .period-card:hover {
+      border-color: #f39c12;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .period-card.selected {
+      border-color: #e67e22;
+      background: #fff8f0;
+      box-shadow: 0 4px 12px rgba(230, 126, 34, 0.2);
+    }
+    .period-card .period-name {
+      font-size: 14px;
+      font-weight: bold;
+      color: #333;
+      margin-bottom: 6px;
+    }
+    .period-card .period-price {
+      font-size: 22px;
+      font-weight: bold;
+      color: #e67e22;
+    }
+    .period-card .period-price .unit {
+      font-size: 12px;
+      font-weight: normal;
+    }
+    .period-card .period-save {
+      font-size: 11px;
+      color: #27ae60;
+      margin-top: 4px;
+    }
+    .period-card .period-badge {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      background: #e74c3c;
+      color: #fff;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-weight: bold;
+    }
+
+    /* 抵扣信息 */
+    .discount-info {
+      display: none;
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    .discount-info.visible {
+      display: block;
+    }
+    .discount-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      color: #666;
+    }
+    .discount-row.discount {
+      color: #27ae60;
+    }
+    .discount-row.final {
+      font-weight: bold;
+      color: #333;
+      border-top: 1px solid #eee;
+      padding-top: 6px;
+      margin-top: 6px;
+      margin-bottom: 0;
+    }
+
+    /* 邀请码 */
+    .invite-section {
+      margin-bottom: 16px;
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .invite-section .invite-title {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    .invite-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .invite-input-row input {
+      flex: 1;
+      height: 34px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 0 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    .invite-input-row input:focus {
+      border-color: #e67e22;
+    }
+    .invite-input-row input:disabled {
+      background: #f5f5f5;
+      color: #999;
+    }
+    .invite-tip {
+      font-size: 11px;
+      color: #999;
+      margin-top: 6px;
+    }
+
+    /* 支付按钮 */
+    .pay-btn {
+      width: 100%;
+      height: 44px;
+      background: #27ae60;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      margin-bottom: 16px;
+      transition: opacity 0.15s;
+    }
+    .pay-btn:hover {
+      opacity: 0.9;
+    }
+    .pay-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    /* 二维码区域 */
+    .qr-section {
+      display: none;
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .qr-section.visible {
+      display: block;
+    }
+    .qr-title {
+      font-size: 14px;
+      color: #333;
+      margin-bottom: 12px;
+    }
+    .qr-box {
+      display: inline-block;
+      padding: 12px;
+      background: #fff;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .qr-box canvas {
+      display: block;
+    }
+    .qr-amount {
+      font-size: 20px;
+      font-weight: bold;
+      color: #e67e22;
+      margin-bottom: 4px;
+    }
+    .qr-amount .unit {
+      font-size: 13px;
+      font-weight: normal;
+    }
+    .qr-hint {
+      font-size: 12px;
+      color: #999;
+    }
+    .qr-status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #3498db;
+    }
+    .qr-status.success {
+      color: #27ae60;
+      font-weight: bold;
+    }
+    .qr-status.error {
+      color: #e74c3c;
+    }
+    .qr-cancel {
+      margin-top: 10px;
+      background: none;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 6px 20px;
+      font-size: 12px;
+      color: #666;
+      cursor: pointer;
+    }
+    .qr-cancel:hover {
+      background: #f5f5f5;
+    }
+
+    /* 我的邀请码 */
+    .my-invite-section {
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .my-invite-title {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    .my-invite-code {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .my-invite-code span {
+      font-size: 20px;
+      font-weight: bold;
+      color: #e67e22;
+      letter-spacing: 4px;
+    }
+    .copy-btn {
+      background: #3498db;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .copy-btn:hover {
+      opacity: 0.85;
+    }
+
+    /* 付费成功提示 */
+    .success-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .success-overlay.visible {
+      display: flex;
+    }
+    .success-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 30px 40px;
+      text-align: center;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+    }
+    .success-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+    .success-title {
+      font-size: 18px;
+      font-weight: bold;
+      color: #27ae60;
+      margin-bottom: 8px;
+    }
+    .success-desc {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 16px;
+    }
+    .success-btn {
+      background: #e67e22;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 40px;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .success-btn:hover {
+      opacity: 0.9;
+    }
+
+    /* 底部说明 */
+    .sub-footer {
+      text-align: center;
+      font-size: 11px;
+      color: #bbb;
+      padding: 10px 0 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="sub-container">
+    <!-- 顶部 -->
+    <div class="sub-header">
+      <h1>云仓助手</h1>
+      <div class="sub-user" id="subUser"></div>
+      <div class="sub-dept" id="subDept"></div>
+      <div class="sub-status expired" id="subStatus">使用时长已到期</div>
+    </div>
+
+    <!-- 版本选择 -->
+    <div class="tier-selector" id="tierSelector">
+      <div class="tier-card selected" data-tier="basic">
+        <div class="tier-name">基础版</div>
+      </div>
+      <div class="tier-card" data-tier="standard">
+        <div class="tier-name">标准版</div>
+      </div>
+      <div class="tier-card" data-tier="premium">
+        <div class="tier-badge">推荐</div>
+        <div class="tier-name">高级版</div>
+      </div>
+    </div>
+
+    <!-- 周期选择 -->
+    <div class="period-selector" id="periodSelector">
+      <div class="period-card selected" data-plan="monthly">
+        <div class="period-name">月度</div>
+        <div class="period-price" id="priceMonthly">98<span class="unit">元</span></div>
+      </div>
+      <div class="period-card" data-plan="quarterly">
+        <div class="period-name">季度</div>
+        <div class="period-price" id="priceQuarterly">298<span class="unit">元</span></div>
+        <div class="period-save" id="saveQuarterly"></div>
+      </div>
+      <div class="period-card" data-plan="yearly">
+        <div class="period-badge">最划算</div>
+        <div class="period-name">年度</div>
+        <div class="period-price" id="priceYearly">1088<span class="unit">元</span></div>
+        <div class="period-save" id="saveYearly"></div>
+      </div>
+    </div>
+
+    <!-- 版本介绍 -->
+    <div class="tier-intro" id="tierIntro">
+      <div class="tier-intro-title">版本功能对比</div>
+      <div class="tier-intro-table">
+        <div class="tier-intro-row tier-intro-header">
+          <span>功能</span>
+          <span>基础版</span>
+          <span>标准版</span>
+          <span>高级版</span>
+        </div>
+        <div class="tier-intro-row">
+          <span>店铺打标</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+        </div>
+        <div class="tier-intro-row">
+          <span>验收商品</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+        </div>
+        <div class="tier-intro-row">
+          <span>账号管理</span>
+          <span class="no">—</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+        </div>
+        <div class="tier-intro-row">
+          <span>打单发货</span>
+          <span class="no">—</span>
+          <span class="yes">✓</span>
+          <span class="yes">✓</span>
+        </div>
+        <div class="tier-intro-row">
+          <span>同时在线设备</span>
+          <span class="yes">1台</span>
+          <span class="yes">2台</span>
+          <span class="yes">3台</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 抵扣信息 -->
+    <div class="discount-info" id="discountInfo">
+      <div class="discount-row">
+        <span>原价</span>
+        <span id="originalPrice">0元</span>
+      </div>
+      <div class="discount-row discount">
+        <span>当前版本剩余抵扣</span>
+        <span id="discountPrice">-0元</span>
+      </div>
+      <div class="discount-row final">
+        <span>实付金额</span>
+        <span id="finalPrice">0元</span>
+      </div>
+    </div>
+
+    <!-- 邀请码输入 -->
+    <div class="invite-section" id="inviteSection">
+      <div class="invite-title">邀请码（首次充值可填写，邀请人可获得同等时长奖励）</div>
+      <div class="invite-input-row">
+        <input type="text" id="inviteCodeInput" placeholder="请输入6位邀请码（可选）" maxlength="6" />
+      </div>
+      <div class="invite-tip">每个事业部订阅拥有独立邀请码，仅首次充值有效</div>
+    </div>
+
+    <!-- 支付按钮 -->
+    <button class="pay-btn" id="payBtn">微信扫码支付</button>
+
+    <!-- 二维码区域 -->
+    <div class="qr-section" id="qrSection">
+      <div class="qr-title">请使用微信扫描下方二维码完成支付</div>
+      <div class="qr-amount" id="qrAmount"></div>
+      <div class="qr-box">
+        <img id="qrImage" style="width:220px;height:220px;" alt="二维码">
+      </div>
+      <div class="qr-hint">支付完成后将自动确认，请勿关闭页面</div>
+      <div class="qr-status" id="qrStatus">等待扫码支付...</div>
+      <button class="qr-cancel" id="qrCancel">取消支付</button>
+    </div>
+
+    <!-- 我的邀请码 -->
+    <div class="my-invite-section" id="myInviteSection" style="display:none;">
+      <div class="my-invite-title">我的邀请码（分享给好友，好友首次充值时填写可获得同等时长奖励）</div>
+      <div class="my-invite-code">
+        <span id="myInviteCode"></span>
+        <button class="copy-btn" id="copyInviteBtn">复制</button>
+      </div>
+    </div>
+
+    <div class="sub-footer">
+      云仓助手 &copy; 2024 | 如有疑问请联系客服
+    </div>
+  </div>
+
+  <!-- 支付成功弹窗 -->
+  <div class="success-overlay" id="successOverlay">
+    <div class="success-box">
+      <div class="success-icon">&#10004;</div>
+      <div class="success-title">支付成功</div>
+      <div class="success-desc" id="successDesc">您的订阅已激活</div>
+      <button class="success-btn" id="successEnterBtn">进入软件</button>
+    </div>
+  </div>
+
+  <script>
+    // 捕获未处理异常
+    window.addEventListener('error', (e) => {
+      console.error('页面错误:', e.message, '行:', e.lineno);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      console.error('未处理的Promise错误:', e.reason);
+    });
+
+    // ========== 页面逻辑 ==========
+    const $ = (sel) => document.querySelector(sel);
+    let currentTier = 'basic';
+    let currentPlan = 'monthly';
+    let currentOrderNo = null;
+    let pollTimer = null;
+    let subInfo = null;
+
+    const priceMatrix = {
+      basic:    { monthly: 98, quarterly: 298, yearly: 1088 },
+      standard: { monthly: 198, quarterly: 598, yearly: 1888 },
+      premium:  { monthly: 498, quarterly: 1488, yearly: 5888 }
+    };
+    const tierNames = { basic: '基础版', standard: '标准版', premium: '高级版' };
+    const planNames = { monthly: '月度', quarterly: '季度', yearly: '年度' };
+
+    // 版本选择
+    document.querySelectorAll('.tier-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        currentTier = card.dataset.tier;
+        updatePeriodPrices();
+      });
+    });
+
+    // 周期选择
+    document.querySelectorAll('.period-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelectorAll('.period-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        currentPlan = card.dataset.plan;
+      });
+    });
+
+    function updatePeriodPrices() {
+      try {
+        const prices = priceMatrix && priceMatrix[currentTier];
+        if (!prices || typeof prices.monthly !== 'number') {
+          console.error('updatePeriodPrices: invalid prices', currentTier, priceMatrix);
+          return;
+        }
+        $('#priceMonthly').innerHTML = `${prices.monthly}<span class="unit">元</span>`;
+        $('#priceQuarterly').innerHTML = `${prices.quarterly}<span class="unit">元</span>`;
+        $('#priceYearly').innerHTML = `${prices.yearly}<span class="unit">元</span>`;
+
+        const monthlyTotal = prices.monthly * 3;
+        const quarterlySave = monthlyTotal - prices.quarterly;
+        $('#saveQuarterly').textContent = quarterlySave > 0 ? `省${quarterlySave}元` : '';
+
+        const yearlyMonthlyTotal = prices.monthly * 12;
+        const yearlySave = yearlyMonthlyTotal - prices.yearly;
+        $('#saveYearly').textContent = yearlySave > 0 ? `省${yearlySave}元` : '';
+      } catch (e) {
+        console.error('updatePeriodPrices error:', e);
+      }
+    }
+
+    function showDiscountInfo(original, discount, final) {
+      $('#originalPrice').textContent = `${original}元`;
+      $('#discountPrice').textContent = `-${discount}元`;
+      $('#finalPrice').textContent = `${final}元`;
+      $('#discountInfo').classList.add('visible');
+    }
+
+    // 接收订阅信息
+    window.electronAPI.onSubscriptionInfo((info) => {
+      subInfo = info;
+      updateUI();
+    });
+
+    function updateUI() {
+      if (!subInfo) return;
+
+      $('#subUser').textContent = `账号: ${subInfo.jd_username || ''}`;
+
+      // 事业部名称
+      if (subInfo.department_name) {
+        $('#subDept').textContent = `事业部: ${subInfo.department_name}`;
+      }
+
+      const statusEl = $('#subStatus');
+      if (subInfo.status === 'expired') {
+        statusEl.textContent = '使用时长已到期，请续费';
+        statusEl.className = 'sub-status expired';
+      } else if (subInfo.status === 'trial') {
+        statusEl.textContent = '试用中';
+        statusEl.className = 'sub-status trial';
+      } else {
+        const tierLabel = tierNames[subInfo.tier] || '';
+        statusEl.textContent = tierLabel ? `${tierLabel} 订阅有效` : '订阅有效';
+        statusEl.className = 'sub-status active';
+      }
+
+      // 邀请码
+      if (subInfo.invite_code) {
+        $('#myInviteSection').style.display = 'block';
+        $('#myInviteCode').textContent = subInfo.invite_code;
+      }
+
+      // 首次充值才显示邀请码输入
+      if (!subInfo.is_first_payment) {
+        $('#inviteSection').style.display = 'none';
+      }
+
+      // 如果用户已有订阅版本，默认选中该版本
+      if (subInfo.tier) {
+        const targetTier = subInfo.tier;
+        if (targetTier !== currentTier) {
+          currentTier = targetTier;
+          document.querySelectorAll('.tier-card').forEach(c => {
+            c.classList.toggle('selected', c.dataset.tier === currentTier);
+          });
+          updatePeriodPrices();
+        }
+      }
+    }
+
+    // 复制邀请码
+    $('#copyInviteBtn').addEventListener('click', () => {
+      const code = $('#myInviteCode').textContent;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = $('#copyInviteBtn');
+        btn.textContent = '已复制';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      });
+    });
+
+    // 支付按钮
+    $('#payBtn').addEventListener('click', async () => {
+      const payBtn = $('#payBtn');
+      payBtn.disabled = true;
+      payBtn.textContent = '正在创建订单...';
+
+      try {
+        if (!window.electronAPI || typeof window.electronAPI.createPaymentOrder !== 'function') {
+          throw new Error('支付接口未初始化，请重启应用');
+        }
+
+        const jdUsername = subInfo?.jd_username || '';
+        const inviteCode = $('#inviteCodeInput').value.trim();
+
+        const payload = {
+          jdUsername,
+          departmentId: subInfo?.department_id || '',
+          tier: currentTier,
+          plan: currentPlan,
+          inviteCode: inviteCode || null
+        };
+
+        const result = await window.electronAPI.createPaymentOrder(payload);
+
+        if (!result || typeof result !== 'object') {
+          throw new Error('服务器返回格式异常');
+        }
+
+        if (result.error) {
+          alert(result.error);
+          payBtn.disabled = false;
+          payBtn.textContent = '微信扫码支付';
+          return;
+        }
+
+        if (result.code_url) {
+          currentOrderNo = result.order_no;
+          const pm = priceMatrix || {};
+          const tierPrices = pm[currentTier] || {};
+          const fallbackPrice = typeof tierPrices[currentPlan] === 'number' ? tierPrices[currentPlan] : 0;
+          const originalYuan = result.original_amount != null ? Math.floor(result.original_amount / 100) : fallbackPrice;
+          const discountYuan = result.discount_amount != null ? Math.floor(result.discount_amount / 100) : 0;
+          const finalYuan = originalYuan - discountYuan;
+
+          if (discountYuan > 0) {
+            showDiscountInfo(originalYuan, discountYuan, finalYuan);
+          }
+
+          showQRCode(result.code_url, finalYuan);
+          startPolling(result.order_no);
+        } else {
+          alert('创建订单失败，请重试');
+          payBtn.disabled = false;
+          payBtn.textContent = '微信扫码支付';
+        }
+      } catch (err) {
+        alert('网络错误: ' + err.message);
+        payBtn.disabled = false;
+        payBtn.textContent = '微信扫码支付';
+      }
+    });
+
+    // 显示二维码
+    async function showQRCode(url, amount) {
+      const qrSection = $('#qrSection');
+      qrSection.classList.add('visible');
+      $('#qrAmount').innerHTML = `${amount}<span class="unit">元</span>`;
+      $('#qrStatus').textContent = '等待扫码支付...';
+      $('#qrStatus').className = 'qr-status';
+
+      const dataUrl = await window.electronAPI.generateQRCode(url);
+      $('#qrImage').src = dataUrl;
+
+      // 隐藏选择区域和支付按钮
+      $('#tierSelector').style.display = 'none';
+      $('#periodSelector').style.display = 'none';
+      $('#tierIntro').style.display = 'none';
+      $('#inviteSection').style.display = 'none';
+      $('#payBtn').style.display = 'none';
+    }
+
+    // 取消支付
+    $('#qrCancel').addEventListener('click', () => {
+      stopPolling();
+      currentOrderNo = null;
+      $('#qrSection').classList.remove('visible');
+      $('#discountInfo').classList.remove('visible');
+
+      $('#tierSelector').style.display = 'flex';
+      $('#periodSelector').style.display = 'flex';
+      $('#tierIntro').style.display = 'block';
+      if (subInfo?.is_first_payment) {
+        $('#inviteSection').style.display = 'block';
+      }
+      $('#payBtn').style.display = 'block';
+      $('#payBtn').disabled = false;
+      $('#payBtn').textContent = '微信扫码支付';
+    });
+
+    // 轮询订单状态
+    function startPolling(orderNo) {
+      stopPolling();
+      let count = 0;
+      pollTimer = setInterval(async () => {
+        count++;
+        if (count > 180) { // 3分钟超时
+          stopPolling();
+          $('#qrStatus').textContent = '支付超时，请重试';
+          $('#qrStatus').className = 'qr-status error';
+          return;
+        }
+
+        try {
+          const result = await window.electronAPI.queryPaymentOrder(orderNo);
+          if (result.status === 'paid') {
+            stopPolling();
+            onPaymentSuccess();
+          }
+        } catch (err) {
+          // 忽略网络错误，继续轮询
+        }
+      }, 2000);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    // 支付成功
+    function onPaymentSuccess() {
+      $('#qrStatus').textContent = '支付成功！';
+      $('#qrStatus').className = 'qr-status success';
+
+      const tierName = tierNames[currentTier] || currentTier;
+      const planName = planNames[currentPlan] || currentPlan;
+      $('#successDesc').textContent = `${tierName} ${planName}套餐已激活，感谢您的支持！`;
+      $('#successOverlay').classList.add('visible');
+    }
+
+    // 进入软件
+    $('#successEnterBtn').addEventListener('click', async () => {
+      $('#successEnterBtn').disabled = true;
+      $('#successEnterBtn').textContent = '正在进入...';
+      try {
+        await window.electronAPI.paymentSuccessEnter();
+      } catch (err) {
+        alert('进入失败: ' + err.message);
+        $('#successEnterBtn').disabled = false;
+        $('#successEnterBtn').textContent = '进入软件';
+      }
+    });
+
+    // 页面关闭时清理
+    window.addEventListener('beforeunload', () => {
+      stopPolling();
+    });
+
+    // 初始化价格显示
+    updatePeriodPrices();
+  </script>
+</body>
+</html>
