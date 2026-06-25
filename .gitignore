@@ -15,3 +15,10 @@ temp-ziptest/
 
 # 测试脚本
 test-*.js
+
+# 临时调试脚本
+capture-proxy.js
+fix-proxy.js
+monitor-net.js
+parse-sa*.js
+scan-*.js

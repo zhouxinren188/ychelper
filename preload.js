@@ -114,5 +114,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkDepartmentSubscription: (deptNo) => ipcRenderer.invoke('check-department-subscription', deptNo),
 
   // 热更新进度
-  onUpdateProgress: (callback) => ipcRenderer.on('update-progress', (event, data) => callback(data))
+  onUpdateProgress: (callback) => ipcRenderer.on('update-progress', (event, data) => callback(data)),
+
+  // 退出确认
+  onShowCloseConfirm: (callback) => ipcRenderer.on('show-close-confirm', () => callback()),
+  confirmClose: () => ipcRenderer.send('confirm-close'),
+
+  // 更新下载（服务器端）
+  onShowUpdateDownloading: (callback) => ipcRenderer.on('show-update-downloading', (event, data) => callback(data)),
+  onUpdateDownloadProgress: (callback) => ipcRenderer.on('update-download-progress', (event, data) => callback(data)),
+  onShowUpdateInstall: (callback) => ipcRenderer.on('show-update-install', (event, data) => callback(data)),
+  onShowUpdateDownloadFailed: (callback) => ipcRenderer.on('show-update-download-failed', (event, data) => callback(data)),
+  confirmUpdateInstall: () => ipcRenderer.send('confirm-update-install'),
+  confirmUpdateInstallByPath: () => ipcRenderer.send('confirm-update-install-by-path'),
+  openExternalDownload: (url) => ipcRenderer.send('open-external-download', url)
 });

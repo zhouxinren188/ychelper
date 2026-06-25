@@ -1,11 +1,14 @@
 {
   "name": "cloud-warehouse-assistant",
-  "version": "1.0.55",
+  "version": "1.0.66",
   "description": "云仓助手 - 京东物流云仓自动化工具",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win"
+    "dev": "electron .",
+    "build": "node scripts/build.js",
+    "build:dir": "node scripts/build.js --dir",
+    "make-hot-update": "node scripts/make-hot-update.js"
   },
   "author": "",
   "license": "UNLICENSED",
@@ -13,12 +16,16 @@
   "build": {
     "appId": "com.ychelper.cloud-warehouse",
     "productName": "云仓助手",
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "src/**/*"
+    ],
     "directories": {
       "output": "dist"
     },
     "files": [
       "main.js",
+      "main.jsc",
       "preload.js",
       "src/**/*",
       "!src/icon.png"
@@ -39,9 +46,8 @@
       "language": 2052
     },
     "publish": {
-      "provider": "github",
-      "owner": "zhouxinren188",
-      "repo": "ychelper"
+      "provider": "generic",
+      "url": "http://150.158.54.108:3000/"
     }
   },
   "devDependencies": {
@@ -51,7 +57,9 @@
     "png-to-ico": "^3.0.1"
   },
   "dependencies": {
+    "7zip-min": "^3.0.1",
     "adm-zip": "^0.5.17",
+    "bytenode": "^1.5.7",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.3",
     "puppeteer-core": "^24.42.0",

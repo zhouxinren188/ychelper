@@ -345,7 +345,8 @@ function renderTaskTable() {
       pending: { text: '等待中', cls: 'status-pending' },
       running: { text: '执行中', cls: 'status-running' },
       success: { text: '成功', cls: 'status-success' },
-      error: { text: '失败', cls: 'status-error' }
+      error: { text: '失败', cls: 'status-error' },
+      partial: { text: '部分失败', cls: 'status-partial' }
     };
     const st = statusMap[task.status] || statusMap.pending;
 
@@ -358,12 +359,18 @@ function renderTaskTable() {
       skuDisplay = `${escapeHtml(task.skus[0])} 等${task.skus.length}个`;
     }
 
+    // 部分失败时显示失败SKU数量
+    let statusHtml = `<span class="${st.cls}">${st.text}</span>`;
+    if (task.status === 'partial' && task.failedLabelSkus && task.failedLabelSkus.length > 0) {
+      statusHtml += ` <span class="fail-count" title="${task.failedLabelSkus.map(escapeHtml).join(', ')}">(${task.failedLabelSkus.length}个失败)</span>`;
+    }
+
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td title="${task.skus.map(escapeHtml).join(', ')}">${skuDisplay}</td>
       <td>${escapeHtml(task.shopName)}</td>
       <td>${escapeHtml(task.modeName || '自定义')}</td>
-      <td><span class="${st.cls}">${st.text}</span></td>
+      <td>${statusHtml}</td>
     `;
 
     // 右键删除任务
@@ -388,6 +395,7 @@ function renderTaskTable() {
     taskTableBody.appendChild(tr);
   });
 }
+
 
 // ========== 执行任务 ==========
 async function executeTasks() {
@@ -426,8 +434,13 @@ async function executeTasks() {
         }
       }
 
-      task.status = 'success';
-      addLog('success', `[${skuLabel}] 全部完成`);
+      if (task.hasLabelFailure) {
+        task.status = 'partial';
+        addLog('warn', `[${skuLabel}] 完成（部分SKU打标失败）`);
+      } else {
+        task.status = 'success';
+        addLog('success', `[${skuLabel}] 全部完成`);
+      }
     } catch (err) {
       task.status = 'error';
       addLog('error', `[${skuLabel}] 失败: ${err.message}`);
@@ -466,7 +479,7 @@ function getTaskSteps(task) {
 // ========== 步骤执行（生成Excel + 预留API上传） ==========
 // ========== 带限频重试的上传函数 ==========
 async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     const uploadRes = await window.electronAPI.uploadExcel(uploadParams);
     const d = uploadRes.data;
 
@@ -488,12 +501,9 @@ async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
     // 先检测限频提示（即使 success=true 也可能是限频）
     const isRateLimit = typeof resMsg === 'string' && (resMsg.includes('只能导入一次') || resMsg.includes('后重试'));
     if (isRateLimit) {
-      // 动态解析错误消息中的等待时间
-      const minMatch = resMsg.match(/(\d+)\s*分钟/);
-      const waitMinutes = minMatch ? parseInt(minMatch[1]) : 1;
       if (attempt < maxRetries) {
-        addLog('warn', `[${sku}] ${label}: ${resMsg}，${waitMinutes}分钟后重试 (${attempt + 1}/${maxRetries})...`);
-        await new Promise(r => setTimeout(r, waitMinutes * 60000));
+        addLog('warn', `[${sku}] ${label}: ${resMsg}，1分钟后重试 (${attempt + 1}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, 60000));
         continue;
       }
       addLog('error', `[${sku}] ${label}失败: ${resMsg}（重试次数已耗尽）`);
@@ -649,7 +659,7 @@ async function executeStep(step, task) {
             toggleOk += batch.length;
             done = true;
             addLog('success', `[${skuLabel}] ${batchLabel} ${actionLabel}成功（${batch.length}个）`);
-          } else {
+          } else if (!isRateLimit) {
             toggleFail += batch.length;
             addLog('warn', `[${skuLabel}] ${batchLabel} ${actionLabel}失败: ${resMsg}`);
           }
@@ -748,7 +758,7 @@ async function executeStep(step, task) {
             mdOk += batch.length;
             done = true;
             addLog('success', `[${skuLabel}] ${batchLabel} ${mdLabel}主数据成功（${batch.length}个）`);
-          } else {
+          } else if (!isRateLimit) {
             mdFail += batch.length;
             addLog('warn', `[${skuLabel}] ${batchLabel} ${mdLabel}主数据失败: ${resMsg}`);
           }
@@ -838,7 +848,7 @@ async function executeStep(step, task) {
             ratioOk += batch.length;
             saved = true;
             addLog('success', `[${skuLabel}] ${batchLabel} 库存比例保存成功（${batch.length}个）`);
-          } else {
+          } else if (!isRateLimit) {
             ratioFail += batch.length;
             addLog('warn', `[${skuLabel}] ${batchLabel} 库存比例保存失败: ${resMsg}`);
           }
@@ -930,7 +940,7 @@ async function executeStep(step, task) {
       }
       const csgMap = csgResult.results || {};
 
-      // 过滤出有完整信息的SKU（需要 id、shopId、deptId）
+      // 过滤出有完整信息的SKU（需要 id、shopId、deptId），同时保留SKU编号用于失败追踪
       const goodArray = [];
       const missingFields = [];
       for (const sku of task.skus) {
@@ -938,10 +948,10 @@ async function executeStep(step, task) {
         if (!info || !info.raw) continue;
         const raw = info.raw;
         if (raw.id && raw.shopId && raw.deptId) {
-          goodArray.push({ id: raw.id, shopId: raw.shopId, deptId: raw.deptId });
+          goodArray.push({ sku, id: raw.id, shopId: raw.shopId, deptId: raw.deptId });
         } else if (raw.id && raw.shopId) {
           // deptId 缺失时尝试用 deptNo 等替代字段
-          goodArray.push({ id: raw.id, shopId: raw.shopId, deptId: raw.deptId || raw.deptNo || '' });
+          goodArray.push({ sku, id: raw.id, shopId: raw.shopId, deptId: raw.deptId || raw.deptNo || '' });
         } else {
           missingFields.push(sku);
         }
@@ -966,6 +976,7 @@ async function executeStep(step, task) {
       const JD_BATCH_DELAY = 5000; // 批次间隔5秒
       let jdSuccessCount = 0;
       let jdFailCount = 0;
+      const failedSkus = []; // 追踪具体失败的SKU
 
       for (let i = 0; i < batches.length; i++) {
         const batchLabel = batches.length > 1 ? `批次${i + 1}/${batches.length} ` : '';
@@ -974,7 +985,7 @@ async function executeStep(step, task) {
         for (let attempt = 0; attempt <= JD_MAX_RETRIES; attempt++) {
           if (attempt > 0) {
             const waitSec = attempt * 15; // 15s, 30s, 45s 递增退避
-            addLog('warn', `[${skuLabel}] ${batchLabel}频控重试第${attempt}次，等待${waitSec}秒...`);
+            addLog('warn', `[${skuLabel}] ${batchLabel}重试第${attempt}次，等待${waitSec}秒...`);
             await sleep(waitSec * 1000);
           }
 
@@ -993,13 +1004,20 @@ async function executeStep(step, task) {
 
           const errMsg = result.error || (result.data && result.data.resultMessage) || '未知错误';
           const isRateLimit = errMsg.includes('频繁') || errMsg.includes('重试');
-          if (isRateLimit && attempt < JD_MAX_RETRIES) {
-            continue; // 频控错误，进入下次重试
+          const isPermissionErr = errMsg.includes('无权限') || errMsg.includes('无权');
+          // 频控错误或权限错误均重试（权限错误可能因csrfToken未初始化导致）
+          const shouldRetry = (isRateLimit || isPermissionErr) && attempt < JD_MAX_RETRIES;
+          if (shouldRetry) {
+            continue; // 进入下次重试
           }
 
-          // 非频控错误或重试耗尽，记录失败但不终止
+          // 非可重试错误或重试耗尽，记录失败但不终止
           addLog('error', `[${skuLabel}] ${batchLabel}京配${label}失败: ${errMsg}`);
           jdFailCount += batches[i].length;
+          // 记录本批次失败的SKU
+          for (const item of batches[i]) {
+            failedSkus.push(item.sku);
+          }
           retryOk = true; // 标记已处理，不再重试
           break;
         }
@@ -1007,6 +1025,9 @@ async function executeStep(step, task) {
         if (!retryOk) {
           addLog('error', `[${skuLabel}] ${batchLabel}重试${JD_MAX_RETRIES}次仍失败，跳过`);
           jdFailCount += batches[i].length;
+          for (const item of batches[i]) {
+            failedSkus.push(item.sku);
+          }
         }
 
         // 批次间等待
@@ -1017,6 +1038,26 @@ async function executeStep(step, task) {
 
       addLog(jdFailCount === 0 ? 'success' : 'warn',
         `[${skuLabel}] 京配${label}完成: 成功${jdSuccessCount}个，失败${jdFailCount}个`);
+
+      // 将失败SKU保存到任务对象上，供UI展示；同时保存到输出目录文件供用户重新操作
+      if (failedSkus.length > 0) {
+        task.failedLabelSkus = failedSkus;
+        task.hasLabelFailure = true;
+        addLog('warn', `[${skuLabel}] 失败的SKU: ${failedSkus.join(', ')}`);
+        // 保存到输出目录（兼容旧版本主进程：如果API不存在则跳过文件保存）
+        if (window.electronAPI.saveFailedLabelSkus) {
+          const saveResult = await window.electronAPI.saveFailedLabelSkus({
+            skus: failedSkus,
+            label,
+            shopName: task.shopName || ''
+          });
+          if (saveResult.success) {
+            addLog('warn', `[${skuLabel}] 失败SKU已保存到输出目录: ${saveResult.fileName}，可重新导入操作`);
+          }
+        } else {
+          addLog('warn', `[${skuLabel}] 请手动复制失败SKU，点击"打开输出目录"保存后重新导入`);
+        }
+      }
       break;
     }
 
@@ -1116,6 +1157,8 @@ async function confirmSaveMode() {
 }
 
 // ========== 日志 ==========
+const LOG_MAX_LINES = 50000;
+
 function addLog(type, message) {
   const now = new Date();
   const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
@@ -1123,6 +1166,10 @@ function addLog(type, message) {
   div.className = `log-${type}`;
   div.textContent = `[${time}] ${message}`;
   logBox.appendChild(div);
+  // 超过上限时移除旧日志
+  while (logBox.childNodes.length > LOG_MAX_LINES) {
+    logBox.removeChild(logBox.firstChild);
+  }
   logBox.scrollTop = logBox.scrollHeight;
 }
 
@@ -1138,7 +1185,7 @@ function pad(n) {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;');
 }
 
 // ========== 可搜索店铺下拉框 ==========
@@ -1325,7 +1372,7 @@ function renderWmsAccountDropdown() {
     const opt = document.createElement('div');
     opt.className = 'wms-account-option';
     const masked = item.password ? '****' : '';
-    opt.innerHTML = '<span class="wms-acct-name">' + item.username + '</span><span class="wms-acct-mask">' + masked + '</span>';
+    opt.innerHTML = '<span class="wms-acct-name">' + escapeHtml(item.username) + '</span><span class="wms-acct-mask">' + masked + '</span>';
     opt.addEventListener('click', () => {
       if (wmsUsernameInput) wmsUsernameInput.value = item.username;
       if (wmsPasswordInput) wmsPasswordInput.value = item.password || '';
@@ -1485,31 +1532,48 @@ function initWmsEventListeners() {
 
     let successCount = 0;
     let failCount = 0;
+    const ORDER_CONCURRENCY = 5; // 最多同时验收5个不同订单
     addWmsLog('info', `开始一键验收，共 ${selectedOrders.length} 个单据...`);
 
-    for (let i = 0; i < selectedOrders.length; i++) {
-      const order = selectedOrders[i];
-      addWmsLog('info', `[${i + 1}/${selectedOrders.length}] 正在验收: ${order.inboundNo}...`);
-      try {
-        const result = await window.electronAPI.wmsAcceptOrder({
-          inboundNo: order.inboundNo,
-          warehouseNo: order.warehouseNo,
-          locationNo
-        });
-        if (result.success) {
-          successCount++;
-          wmsTotalAcceptedOrders++;
-          wmsTotalAcceptedSkus += (result.count || 0);
-          updateWmsStats();
-          const warnMsg = result.warning ? ` (${result.failCount}个SKU失败)` : '';
-          addWmsLog('success', `[${i + 1}/${selectedOrders.length}] ${order.inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+    for (let g = 0; g < selectedOrders.length; g += ORDER_CONCURRENCY) {
+      const group = selectedOrders.slice(g, g + ORDER_CONCURRENCY);
+      const results = await Promise.allSettled(group.map(async (order, idx) => {
+        const orderIdx = g + idx + 1;
+        addWmsLog('info', `[${orderIdx}/${selectedOrders.length}] 正在验收: ${order.inboundNo}...`);
+        try {
+          const result = await window.electronAPI.wmsAcceptOrder({
+            inboundNo: order.inboundNo,
+            warehouseNo: order.warehouseNo,
+            locationNo
+          });
+          return { orderIdx, inboundNo: order.inboundNo, result };
+        } catch (err) {
+          return { orderIdx, inboundNo: order.inboundNo, result: { success: false, error: err.message } };
+        }
+      }));
+
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          const { orderIdx, inboundNo, result } = r.value;
+          if (result.success) {
+            if (result.skipped) {
+              addWmsLog('info', `[${orderIdx}/${selectedOrders.length}] ${inboundNo} 当前无可验收明细，跳过`);
+            } else {
+              successCount++;
+              wmsTotalAcceptedOrders++;
+              wmsTotalAcceptedSkus += (result.count || 0);
+              updateWmsStats();
+              const warnMsg = result.warning ? ` (${result.failCount}个SKU失败: ${result.warning})` : '';
+              addWmsLog('success', `[${orderIdx}/${selectedOrders.length}] ${inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+            }
+          } else {
+            failCount++;
+            addWmsLog('error', `[${orderIdx}/${selectedOrders.length}] ${inboundNo} 验收失败: ${result.error}`);
+          }
         } else {
           failCount++;
-          addWmsLog('error', `[${i + 1}/${selectedOrders.length}] ${order.inboundNo} 验收失败: ${result.error}`);
+          addWmsLog('error', `订单验收异常: ${r.reason?.message || '未知'}`);
         }
-      } catch (err) {
-        failCount++;
-        addWmsLog('error', `[${i + 1}/${selectedOrders.length}] ${order.inboundNo} 异常: ${err.message}`);
       }
     }
 
@@ -1702,6 +1766,9 @@ function addWmsLog(type, message) {
   div.className = `log-${type}`;
   div.textContent = `[${time}] ${message}`;
   wmsLogBox.appendChild(div);
+  while (wmsLogBox.childNodes.length > LOG_MAX_LINES) {
+    wmsLogBox.removeChild(wmsLogBox.firstChild);
+  }
   wmsLogBox.scrollTop = wmsLogBox.scrollHeight;
 }
 
@@ -1792,34 +1859,49 @@ async function runAutoAcceptance() {
 
     let successCount = 0;
     let failCount = 0;
+    const ORDER_CONCURRENCY = 5; // 最多同时验收5个不同订单
 
-    for (let i = 0; i < wmsOrders.length; i++) {
+    // 将订单按并发数分组，每组最多 ORDER_CONCURRENCY 个订单同时验收
+    for (let g = 0; g < wmsOrders.length; g += ORDER_CONCURRENCY) {
       if (!wmsAutoMode) {
         addWmsLog('warn', '[自动验收] 已手动关闭，中止验收');
         break;
       }
-      const order = wmsOrders[i];
-      addWmsLog('info', `[自动验收] [${i + 1}/${wmsOrders.length}] 正在验收: ${order.inboundNo}...`);
-      try {
-        const result = await window.electronAPI.wmsAcceptOrder({
-          inboundNo: order.inboundNo,
-          warehouseNo: order.warehouseNo,
-          locationNo
-        });
-        if (result.success) {
-          successCount++;
-          wmsTotalAcceptedOrders++;
-          wmsTotalAcceptedSkus += (result.count || 0);
-          updateWmsStats();
-          const warnMsg = result.warning ? ` (${result.failCount}个SKU失败)` : '';
-          addWmsLog('success', `[自动验收] [${i + 1}/${wmsOrders.length}] ${order.inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+      const group = wmsOrders.slice(g, g + ORDER_CONCURRENCY);
+      const results = await Promise.allSettled(group.map(async (order, idx) => {
+        const orderIdx = g + idx + 1;
+        addWmsLog('info', `[自动验收] [${orderIdx}/${wmsOrders.length}] 正在验收: ${order.inboundNo}...`);
+        try {
+          const result = await window.electronAPI.wmsAcceptOrder({
+            inboundNo: order.inboundNo,
+            warehouseNo: order.warehouseNo,
+            locationNo
+          });
+          return { orderIdx, inboundNo: order.inboundNo, result };
+        } catch (err) {
+          return { orderIdx, inboundNo: order.inboundNo, result: { success: false, error: err.message } };
+        }
+      }));
+
+      // 处理本轮并发结果
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          const { orderIdx, inboundNo, result } = r.value;
+          if (result.success) {
+            successCount++;
+            wmsTotalAcceptedOrders++;
+            wmsTotalAcceptedSkus += (result.count || 0);
+            updateWmsStats();
+            const warnMsg = result.warning ? ` (${result.failCount}个SKU失败: ${result.warning})` : '';
+            addWmsLog('success', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+          } else {
+            failCount++;
+            addWmsLog('error', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 验收失败: ${result.error}`);
+          }
         } else {
           failCount++;
-          addWmsLog('error', `[自动验收] [${i + 1}/${wmsOrders.length}] ${order.inboundNo} 验收失败: ${result.error}`);
+          addWmsLog('error', `[自动验收] 订单验收异常: ${r.reason?.message || '未知'}`);
         }
-      } catch (err) {
-        failCount++;
-        addWmsLog('error', `[自动验收] [${i + 1}/${wmsOrders.length}] ${order.inboundNo} 异常: ${err.message}`);
       }
     }
 
@@ -1980,6 +2062,119 @@ function initSubscriptionListeners() {
     });
   }
 }
+
+  // ========== 退出确认弹窗 ==========
+  if (window.electronAPI.onShowCloseConfirm) {
+    window.electronAPI.onShowCloseConfirm(() => {
+      const modal = document.getElementById('closeConfirmModal');
+      if (modal) modal.style.display = 'flex';
+    });
+  }
+  const closeConfirmYes = document.getElementById('closeConfirmYes');
+  if (closeConfirmYes) {
+    closeConfirmYes.addEventListener('click', () => {
+      const modal = document.getElementById('closeConfirmModal');
+      if (modal) modal.style.display = 'none';
+      window.electronAPI.confirmClose();
+    });
+  }
+  const closeConfirmNo = document.getElementById('closeConfirmNo');
+  if (closeConfirmNo) {
+    closeConfirmNo.addEventListener('click', () => {
+      const modal = document.getElementById('closeConfirmModal');
+      if (modal) modal.style.display = 'none';
+    });
+  }
+  const closeConfirmCancelBtn = document.getElementById('closeConfirmCancelBtn');
+  if (closeConfirmCancelBtn) {
+    closeConfirmCancelBtn.addEventListener('click', () => {
+      const modal = document.getElementById('closeConfirmModal');
+      if (modal) modal.style.display = 'none';
+    });
+  }
+
+  // ========== 更新下载进度弹窗 ==========
+  if (window.electronAPI.onShowUpdateDownloading) {
+    window.electronAPI.onShowUpdateDownloading((data) => {
+      const text = document.getElementById('updateDownloadText');
+      if (text) text.textContent = `正在下载 v${data.version}...`;
+      const modal = document.getElementById('updateDownloadModal');
+      if (modal) modal.style.display = 'flex';
+    });
+  }
+  if (window.electronAPI.onUpdateDownloadProgress) {
+    window.electronAPI.onUpdateDownloadProgress((data) => {
+      const bar = document.getElementById('updateDownloadBar');
+      const pct = document.getElementById('updateDownloadPct');
+      if (bar) bar.style.width = data.percent + '%';
+      if (pct) pct.textContent = data.percent + '%';
+    });
+  }
+
+  // ========== 更新安装确认弹窗 ==========
+  if (window.electronAPI.onShowUpdateInstall) {
+    window.electronAPI.onShowUpdateInstall((data) => {
+      // 隐藏下载进度弹窗
+      const dlModal = document.getElementById('updateDownloadModal');
+      if (dlModal) dlModal.style.display = 'none';
+      // 显示安装确认弹窗
+      const text = document.getElementById('updateInstallText');
+      if (text && data.version) text.textContent = `新版本 v${data.version} 已下载完成`;
+      const modal = document.getElementById('updateInstallModal');
+      if (modal) modal.style.display = 'flex';
+    });
+  }
+  const updateInstallYes = document.getElementById('updateInstallYes');
+  if (updateInstallYes) {
+    updateInstallYes.addEventListener('click', () => {
+      const modal = document.getElementById('updateInstallModal');
+      if (modal) modal.style.display = 'none';
+      window.electronAPI.confirmUpdateInstallByPath();
+    });
+  }
+  const updateInstallNo = document.getElementById('updateInstallNo');
+  if (updateInstallNo) {
+    updateInstallNo.addEventListener('click', () => {
+      const modal = document.getElementById('updateInstallModal');
+      if (modal) modal.style.display = 'none';
+    });
+  }
+
+  // ========== 更新下载失败弹窗 ==========
+  if (window.electronAPI.onShowUpdateDownloadFailed) {
+    window.electronAPI.onShowUpdateDownloadFailed((data) => {
+      const dlModal = document.getElementById('updateDownloadModal');
+      if (dlModal) dlModal.style.display = 'none';
+      const modal = document.getElementById('updateFailedModal');
+      if (modal) modal.style.display = 'flex';
+      // 存储下载URL供按钮使用
+      window._updateFailedUrl = data.url;
+    });
+  }
+  const updateFailedYes = document.getElementById('updateFailedYes');
+  if (updateFailedYes) {
+    updateFailedYes.addEventListener('click', () => {
+      const modal = document.getElementById('updateFailedModal');
+      if (modal) modal.style.display = 'none';
+      if (window._updateFailedUrl) {
+        window.electronAPI.openExternalDownload(window._updateFailedUrl);
+      }
+    });
+  }
+  const updateFailedNo = document.getElementById('updateFailedNo');
+  if (updateFailedNo) {
+    updateFailedNo.addEventListener('click', () => {
+      const modal = document.getElementById('updateFailedModal');
+      if (modal) modal.style.display = 'none';
+    });
+  }
+  const updateFailedClose = document.getElementById('updateFailedClose');
+  if (updateFailedClose) {
+    updateFailedClose.addEventListener('click', () => {
+      const modal = document.getElementById('updateFailedModal');
+      if (modal) modal.style.display = 'none';
+    });
+  }
 
 // ========== 店铺管理模块 ==========
 
@@ -2872,6 +3067,9 @@ function addSmLog(type, message) {
   div.className = `log-${type}`;
   div.textContent = `[${time}] ${message}`;
   smLogBox.appendChild(div);
+  while (smLogBox.childNodes.length > LOG_MAX_LINES) {
+    smLogBox.removeChild(smLogBox.firstChild);
+  }
   smLogBox.scrollTop = smLogBox.scrollHeight;
 }
 
@@ -3225,9 +3423,7 @@ function renderAoTable() {
 }
 
 function esc(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+  return escapeHtml(str);
 }
 
 function formatAoTime(val) {

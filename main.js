@@ -122,7 +122,7 @@ function startHeartbeat() {
         storeSet('subscriptionInfo', {
           ...subInfo,
           status: result.status,
-          tier: result.tier || 'standard',
+          tier: result.tier || subInfo.tier || 'basic',
           days_remaining: result.days_remaining,
           subscription_end: result.subscription_end
         });
@@ -130,23 +130,8 @@ function startHeartbeat() {
       }
 
       if (result.reason === 'session_kicked') {
-          const subInfo = storeGet('subscriptionInfo', {});
-          if (subInfo.tier === 'premium') {
-            try {
-              const jdUsername = storeGet('credentials', {}).username || '';
-              const userData = storeGet('userData', {});
-              const departmentId = userData.selectedDeptId || userData.departmentId || '';
-              const merchantName = userData.merchantName || '';
-              const departmentName = userData.selectedDeptName || '';
-              const reSub = await checkSubscription(jdUsername, departmentId, merchantName, departmentName);
-              if (reSub.session_token) {
-                currentSessionToken = reSub.session_token;
-                return;
-              }
-            } catch (e) {
-              console.error('Premium 用户重新登录失败:', e.message);
-            }
-          }
+        // 被踢下线：说明有新设备登录了同一事业部
+        // 不自动重连，否则会与新设备互相踢，形成死循环
         }
         stopHeartbeat();
         currentSessionToken = null;
@@ -254,12 +239,26 @@ function loadStore() {
     if (fs.existsSync(storePath)) {
       return JSON.parse(fs.readFileSync(storePath, 'utf-8'));
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    // 配置文件损坏时备份而非返回空对象覆盖
+    console.error('[存储] config.json 解析失败，备份损坏文件:', e.message);
+    try {
+      const backupPath = storePath + '.corrupt.' + Date.now();
+      fs.renameSync(storePath, backupPath);
+      console.error('[存储] 损坏文件已备份至:', backupPath);
+    } catch (backupErr) {
+      console.error('[存储] 备份损坏文件失败:', backupErr.message);
+    }
+  }
   return {};
 }
 
 function saveStore(data) {
-  fs.writeFileSync(storePath, JSON.stringify(data, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(storePath, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('[存储] 写入 config.json 失败:', e.message);
+  }
 }
 
 function storeGet(key, defaultVal) {
@@ -631,10 +630,11 @@ async function checkLoginStatus(url) {
           const deptPairs = [];
           deptList.forEach(d => {
             if (d.sellerName) merchantSet.add(d.sellerName);
-            if (d.deptName) {
-              deptSet.add(d.deptName);
-              if (!deptPairs.find(p => p.deptName === d.deptName)) {
-                deptPairs.push({ id: String(d.id || d.deptId || ''), deptNo: d.deptNo || '', deptName: d.deptName, sellerId: String(d.sellerId || '') });
+            const displayName = d.deptName || d.sellerName || '';
+            if (displayName) {
+              deptSet.add(displayName);
+              if (!deptPairs.find(p => p.deptNo === (d.deptNo || ''))) {
+                deptPairs.push({ id: String(d.id || d.deptId || ''), deptNo: d.deptNo || '', deptName: displayName, sellerId: String(d.sellerId || ''), sellerName: d.sellerName || '' });
               }
             }
           });
@@ -774,7 +774,7 @@ async function checkLoginStatus(url) {
     const deptPairs = userData.deptPairs || [];
     const selectedDept = await selectDepartment(deptPairs);
     const departmentId = selectedDept.deptNo || userData.departmentId || '';
-    const departmentName = selectedDept.deptName || '';
+    const departmentName = selectedDept.deptName || selectedDept.sellerName || userData.departmentName || merchantName || '';
 
     // 存储选中的事业部信息
     userData.selectedDeptId = departmentId;
@@ -792,7 +792,7 @@ async function checkLoginStatus(url) {
         currentSessionToken = subResult.session_token;
         storeSet('subscriptionInfo', {
           status: subResult.status,
-          tier: subResult.tier || 'standard',
+          tier: subResult.tier || 'basic',
           invite_code: subResult.invite_code,
           days_remaining: subResult.days_remaining,
           subscription_end: subResult.subscription_end,
@@ -802,19 +802,32 @@ async function checkLoginStatus(url) {
           department_name: departmentName
         });
         isCheckingSubscription = false;
+        isLoggingIn = false;
         createMainWindow();
         startHeartbeat();
       } else {
         // 订阅过期，进入付费窗口
         isCheckingSubscription = false;
+        // 也存储 subscriptionInfo，确保后续 open-subscription 能拿到 department_id
+        storeSet('subscriptionInfo', {
+          status: subResult.status,
+          tier: subResult.tier || 'basic',
+          invite_code: subResult.invite_code,
+          days_remaining: subResult.days_remaining,
+          subscription_end: subResult.subscription_end,
+          trial_end: subResult.trial_end,
+          is_first_payment: subResult.is_first_payment,
+          department_id: subResult.department_id || departmentId,
+          department_name: subResult.department_name || departmentName
+        });
         createSubscriptionWindow({
           jd_username: jdUsername,
           status: subResult.status,
-          tier: subResult.tier || 'standard',
+          tier: subResult.tier || 'basic',
           invite_code: subResult.invite_code,
           is_first_payment: subResult.is_first_payment,
-          department_id: departmentId,
-          department_name: departmentName
+          department_id: subResult.department_id || departmentId,
+          department_name: subResult.department_name || departmentName
         });
       }
     } catch (subErr) {
@@ -1102,14 +1115,40 @@ function createMainWindow() {
     }
   });
 
+  let isAppQuitting = false;
+  app.on('before-quit', () => { isAppQuitting = true; });
+
+  mainWindow.on('close', (event) => {
+    if (!isAppQuitting && !isCheckingSubscription) {
+      event.preventDefault();
+      // 通知渲染进程显示自定义退出确认弹窗
+      mainWindow.webContents.send('show-close-confirm');
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
-    // 主窗口关闭时销毁隐藏的 WMS 窗口
+    // 主窗口关闭时销毁所有隐藏窗口，确保进程退出
     wmsIsQuitting = true;
     if (wmsLoginWindow && !wmsLoginWindow.isDestroyed()) {
       wmsLoginWindow.destroy();
       wmsLoginWindow = null;
     }
+    if (jdPageWindow && !jdPageWindow.isDestroyed()) {
+      jdPageWindow.destroy();
+      jdPageWindow = null;
+    }
+    if (shopPageWindow && !shopPageWindow.isDestroyed()) {
+      shopPageWindow.destroy();
+      shopPageWindow = null;
+    }
+    if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+      webLoginWindow.destroy();
+      webLoginWindow = null;
+    }
+    // 停止心跳
+    stopHeartbeat();
+    currentSessionToken = null;
   });
 }
 
@@ -1123,9 +1162,17 @@ autoUpdater.on('checking-for-update', () => {
 
 autoUpdater.on('update-available', (info) => {
   console.log('发现新版本:', info.version);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', { status: 'downloading', version: info.version });
-  }
+  autoUpdaterActive = true;
+  // 用热更新的进度通道显示 autoUpdater 下载状态
+  sendUpdateProgress('downloading', { version: info.version, percent: 0 });
+  // 60秒后如果还没下载完成，回退到服务器端检测
+  setTimeout(() => {
+    if (autoUpdaterActive && !fullUpdateChecked) {
+      console.log('autoUpdater 下载超时，回退到服务器端检测');
+      autoUpdaterActive = false;
+      checkForFullUpdate();
+    }
+  }, 60000);
 });
 
 autoUpdater.on('update-not-available', () => {
@@ -1134,31 +1181,128 @@ autoUpdater.on('update-not-available', () => {
 
 autoUpdater.on('download-progress', (progress) => {
   console.log(`下载进度: ${Math.round(progress.percent)}%`);
+  // 用热更新的进度通道显示 autoUpdater 下载进度
+  sendUpdateProgress('downloading', { percent: Math.round(progress.percent) });
 });
 
 autoUpdater.on('update-downloaded', (info) => {
   console.log('更新下载完成:', info.version);
-  const activeWindow = mainWindow || subscriptionWindow || loginWindow || BrowserWindow.getFocusedWindow();
+  fullUpdateChecked = true;
+  autoUpdaterActive = false;
+  // 通知渲染进程显示自定义更新弹窗
+  const activeWindow = mainWindow || subscriptionWindow || loginWindow;
   if (activeWindow) {
-    dialog.showMessageBox(activeWindow, {
-      type: 'info',
-      title: '更新提示',
-      message: `新版本 ${info.version} 已下载完成，重启应用后生效。`,
-      buttons: ['立即重启', '稍后重启']
-    }).then(result => {
-      if (result.response === 0) {
-        autoUpdater.quitAndInstall();
-      }
-    });
+    activeWindow.webContents.send('show-update-install', { version: info.version });
   } else {
-    // 没有可用窗口时直接安装
     autoUpdater.quitAndInstall();
   }
 });
 
 autoUpdater.on('error', (err) => {
   console.log('自动更新错误:', err.message);
+  // autoUpdater 失败时，重置标志并使用服务器端检测作为备选
+  autoUpdaterActive = false;
+  fullUpdateChecked = false;
+  checkForFullUpdate();
 });
+
+// ========== 服务器端全量更新检测（不依赖GitHub） ==========
+let fullUpdateChecked = false;
+let autoUpdaterActive = false;
+
+async function checkForFullUpdate() {
+  if (fullUpdateChecked) return;
+  if (autoUpdaterActive) return; // autoUpdater 正在下载，暂不干预
+  fullUpdateChecked = true;
+
+  try {
+    const currentVersion = app.getVersion();
+    const checkUrl = `${API_BASE_URL}/api/update/full-check?version=${currentVersion}`;
+    const checkData = await new Promise((resolve, reject) => {
+      const req = net.request(checkUrl);
+      req.on('response', (response) => {
+        let data = '';
+        response.on('data', chunk => data += chunk);
+        response.on('end', () => {
+          try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('解析响应失败')); }
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    if (!checkData.needUpdate || !checkData.downloadUrl) {
+      console.log('服务器端更新检测: 当前已是最新版本');
+      return;
+    }
+
+    console.log('服务器端更新检测: 发现新版本', checkData.version);
+    const activeWindow = mainWindow || subscriptionWindow || loginWindow;
+    if (!activeWindow) return;
+
+    // 静默下载安装包（不弹原生对话框）
+    const downloadUrl = checkData.downloadUrl;
+    const tempDir = app.getPath('temp');
+    const filename = downloadUrl.split('/').pop() || `ychelper-setup-${checkData.version}.exe`;
+    const savePath = path.join(tempDir, filename);
+
+    // 通知渲染进程显示下载进度
+    activeWindow.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
+
+    try {
+      await new Promise((resolve, reject) => {
+        const https = require('https');
+        const http = require('http');
+        const mod = downloadUrl.startsWith('https') ? https : http;
+
+        const req = mod.get(downloadUrl, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            const redirectUrl = res.headers.location;
+            const redirectMod = redirectUrl.startsWith('https') ? https : http;
+            redirectMod.get(redirectUrl, downloadFile);
+            return;
+          }
+          downloadFile(res);
+        });
+
+        function downloadFile(res) {
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode}`));
+            return;
+          }
+          const totalBytes = parseInt(res.headers['content-length'] || 0);
+          let receivedBytes = 0;
+          const fileStream = fs.createWriteStream(savePath);
+
+          res.on('data', (chunk) => {
+            receivedBytes += chunk.length;
+            const pct = totalBytes ? Math.round(receivedBytes / totalBytes * 100) : 0;
+            activeWindow.webContents.send('update-download-progress', { percent: pct });
+          });
+
+          res.pipe(fileStream);
+          fileStream.on('finish', () => { fileStream.close(); resolve(); });
+          fileStream.on('error', reject);
+        }
+
+        req.on('error', reject);
+      });
+
+      // 下载完成，通知渲染进程显示安装确认弹窗
+      activeWindow.webContents.send('show-update-install', { version: checkData.version });
+
+      // 记录安装包路径，供 confirm-update-install-by-path IPC 使用
+      global._pendingUpdateInstaller = savePath;
+
+    } catch (dlErr) {
+      console.error('下载安装包失败:', dlErr.message);
+      activeWindow.webContents.send('show-update-download-failed', { url: downloadUrl });
+    }
+  } catch (err) {
+    console.log('服务器端更新检测失败:', err.message);
+  }
+}
 
 // ========== 热更新（轻量级源文件更新） ==========
 
@@ -1219,6 +1363,12 @@ async function checkForHotUpdate() {
     if (!checkData.needUpdate) {
       console.log('热更新: 已是最新版本');
       sendUpdateProgress('none');
+
+      // 即使没有热更新，也检查是否有全量更新（交给启动时的 checkForFullUpdate 处理，不在此弹窗）
+      if (checkData.fullUpdate && checkData.fullUpdate.downloadUrl) {
+        console.log('热更新检测: 发现全量更新', checkData.fullUpdate.version, '（交给启动检测处理）');
+      }
+
       return false;
     }
 
@@ -1274,9 +1424,10 @@ async function checkForHotUpdate() {
     storeSet('_hotUpdateAttempt', { targetVersion: newVersion, timestamp: Date.now() });
 
     // 确定应用目录
-    // 打包后: resources/app/  开发模式: __dirname
+    // 打包后: resources/app.asar.unpacked/  开发模式: __dirname
+    // asar:true 后 src/ 在 app.asar.unpacked 中，热更新仅覆盖 src/
     const appDir = app.isPackaged
-      ? path.join(path.dirname(app.getPath('exe')), 'resources', 'app')
+      ? path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked')
       : __dirname;
 
     // 先解压到临时目录
@@ -1287,6 +1438,18 @@ async function checkForHotUpdate() {
 
     const zip = new AdmZip(zipPath);
     zip.extractAllTo(stagingDir, true);
+
+    // 安全检查：阻止热更新覆盖主进程字节码文件
+    const protectedFiles = ['main.js', 'main.jsc', 'preload.js', 'preload.jsc'];
+    const zipEntries = zip.getEntries();
+    for (const entry of zipEntries) {
+      const entryName = path.basename(entry.entryName);
+      if (protectedFiles.includes(entryName)) {
+        console.warn(`热更新: ZIP 包含受保护文件 ${entry.entryName}，跳过此文件`);
+        const targetPath = path.join(stagingDir, entry.entryName);
+        if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+      }
+    }
 
     // 复制文件到应用目录（处理 Program Files 等需要管理员权限的目录）
     try {
@@ -1361,6 +1524,21 @@ function copyDirSync(src, dest) {
       fs.copyFileSync(srcPath, destPath);
     }
   }
+}
+
+// ========== 单实例锁：防止多实例运行导致互相踢人 ==========
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  // 已有实例在运行，弹窗提示后退出
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 有人尝试打开第二个实例，聚焦到已有窗口
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
 }
 
 // 禁用 Chromium 自动化标记（防止京东检测 navigator.webdriver）
@@ -1492,17 +1670,23 @@ app.whenReady().then(async () => {
     // 无更新，显示登录窗口
     if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
 
-    // 延迟检查 electron-updater（大版本更新备选）
+    // 延迟检查更新：autoUpdater + 服务器端检测双重保障
     setTimeout(() => {
+      // 1. autoUpdater（GitHub 源）
       autoUpdater.checkForUpdatesAndNotify().catch(err => {
-        console.log('检查更新失败:', err.message);
+        console.log('GitHub更新检查失败:', err.message);
       });
-    }, 8000);
+      // 2. 3秒后如果 autoUpdater 未成功，用服务器端检测兜底
+      setTimeout(() => {
+        checkForFullUpdate();
+      }, 3000);
+    }, 5000);
   });
 });
 
 app.on('before-quit', () => {
   wmsIsQuitting = true;
+  stopHeartbeat();
   // 清理隐藏的JD页面窗口
   if (jdPageWindow && !jdPageWindow.isDestroyed()) {
     jdPageWindow.close();
@@ -1511,9 +1695,8 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  if (!isCheckingSubscription) {
-    app.quit();
-  }
+  // 所有窗口关闭时退出应用（包括隐藏窗口被销毁后）
+  app.quit();
 });
 
 // ========== IPC: 窗口控制 ==========
@@ -1526,6 +1709,29 @@ ipcMain.on('window-minimize', (event) => {
 ipcMain.on('window-close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win) win.close();
+});
+
+// 渲染进程确认退出
+ipcMain.on('confirm-close', () => {
+  app.quit();
+});
+
+// 渲染进程确认安装更新（autoUpdater）
+ipcMain.on('confirm-update-install', () => {
+  autoUpdater.quitAndInstall();
+});
+
+// 渲染进程确认安装更新（服务器下载的安装包）
+ipcMain.on('confirm-update-install-by-path', () => {
+  if (global._pendingUpdateInstaller) {
+    shell.openPath(global._pendingUpdateInstaller);
+    app.quit();
+  }
+});
+
+// 渲染进程点击浏览器下载
+ipcMain.on('open-external-download', (event, url) => {
+  shell.openExternal(url);
 });
 
 // ========== IPC: 登录 ==========
@@ -1793,6 +1999,32 @@ ipcMain.handle('open-output-dir', async () => {
     fs.mkdirSync(outputDir, { recursive: true });
   }
   shell.openPath(outputDir);
+});
+
+// 保存失败的打标SKU到输出目录的文本文件
+ipcMain.handle('save-failed-label-skus', async (event, { skus, label, shopName }) => {
+  try {
+    const appDir = app.isPackaged ? app.getPath('documents') : __dirname;
+    const outputDir = path.join(appDir, '云仓助手输出');
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const safeShopName = (shopName || '未知店铺').replace(/[\\/:*?"<>|]/g, '_');
+    const baseName = `京配${label || '打标'}失败SKU_${safeShopName}_${dateStr}`;
+    // 同一天同店铺可能多次失败，用序号避免覆盖
+    let seq = 1;
+    let fileName = `${baseName}.txt`;
+    while (fs.existsSync(path.join(outputDir, fileName))) {
+      fileName = `${baseName}_${seq}.txt`;
+      seq++;
+    }
+    const filePath = path.join(outputDir, fileName);
+    fs.writeFileSync(filePath, skus.join('\n'), 'utf-8');
+    return { success: true, filePath, fileName };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 // ========== IPC: 店铺管理 ==========
@@ -2300,7 +2532,7 @@ function getSkuItemId(skuItem) {
 async function triggerSkuExpandByProductId(win, productId) {
   const result = await win.webContents.executeJavaScript(`
     (function() {
-      const pid = "${productId}";
+      const pid = ${JSON.stringify(productId)};
       // 1. 通过 data-row-key 或 data-id 精确找行
       let row = document.querySelector('tr[data-row-key="' + pid + '"]') ||
                 document.querySelector('[data-row-key="' + pid + '"]') ||
@@ -3035,15 +3267,27 @@ function captureProductListResponse(win, timeoutMs = 30000) {
  */
 function injectQueryParams(win, queryParams) {
   return new Promise((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutId);
+      win.webContents.removeListener('dom-ready', onDomReady);
+      resolve();
+    };
     const onDomReady = () => {
       win.webContents.executeJavaScript(
         `window.__ychelper_query_params__ = ${JSON.stringify(queryParams)};`
       ).then(() => {
         console.log('[店铺商品] 查询参数已注入 (dom-ready)');
-        resolve();
-      }).catch(() => resolve());
+        done();
+      }).catch(() => done());
     };
     win.webContents.once('dom-ready', onDomReady);
+    const timeoutId = setTimeout(() => {
+      console.warn('[店铺商品] injectQueryParams 超时(30s)，强制继续');
+      done();
+    }, 30000);
   });
 }
 
@@ -4749,17 +4993,19 @@ ipcMain.handle('wms-accept-order', async (event, { inboundNo, warehouseNo, locat
         locationNo: '',
         probe_anchor_warehouseNo: warehouseNo
       });
-      if (!detailResult.success || !detailResult.resultValue || !detailResult.resultValue.list) {
+      if (!detailResult.success || !detailResult.resultValue) {
         return { success: false, error: `查询明细失败(第${pageNum}页): ${detailResult.resultMessage || '未知错误'}` };
       }
-      allItems = allItems.concat(detailResult.resultValue.list);
+      const list = detailResult.resultValue.list || [];
+      allItems = allItems.concat(list);
       hasMore = detailResult.resultValue.hasNextPage;
       pageNum++;
     }
 
     console.log(`WMS 验收: ${inboundNo} 共 ${allItems.length} 个SKU`);
     if (allItems.length === 0) {
-      return { success: false, error: '该订单没有可验收的明细' };
+      console.log(`WMS 验收: ${inboundNo} 当前无可验收明细（可能正在被其他人操作），跳过`);
+      return { success: true, count: 0, skipped: true };
     }
 
     // Step 3: 构建批量提交数据
@@ -4786,9 +5032,8 @@ ipcMain.handle('wms-accept-order', async (event, { inboundNo, warehouseNo, locat
       locationType: '1'
     }));
 
-    // Step 4: 分批提交验收（API 限制每批最多 100 条，并发 5 批）
+    // Step 4: 分批提交验收（API 限制每批最多 100 条，同一订单内顺序提交避免锁冲突）
     const BATCH_SIZE = 100;
-    const CONCURRENCY = 5;
     let totalSuccess = 0;
     let totalFail = 0;
     const failMessages = [];
@@ -4798,47 +5043,44 @@ ipcMain.handle('wms-accept-order', async (event, { inboundNo, warehouseNo, locat
     for (let i = 0; i < submitList.length; i += BATCH_SIZE) {
       batches.push(submitList.slice(i, i + BATCH_SIZE));
     }
-    console.log(`WMS 验收: ${inboundNo} 共 ${batches.length} 批，并发 ${CONCURRENCY}`);
+    console.log(`WMS 验收: ${inboundNo} 共 ${batches.length} 批，顺序提交`);
 
-    // 每次并发提交 CONCURRENCY 个批次
-    for (let g = 0; g < batches.length; g += CONCURRENCY) {
-      const group = batches.slice(g, g + CONCURRENCY);
-      const results = await Promise.allSettled(group.map((batch, idx) => {
-        const batchNum = g + idx + 1;
-        console.log(`WMS 验收: ${inboundNo} 提交第 ${batchNum}/${batches.length} 批 (${batch.length} 条)`);
-        return wmsApiCall('/receiving/entire/order/batchSubmit', {
+    // 逐批顺序提交（同一订单并发会导致 WMS "其他人正在操作中" 锁冲突）
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batch = batches[batchIdx];
+      console.log(`WMS 验收: ${inboundNo} 提交第 ${batchIdx + 1}/${batches.length} 批 (${batch.length} 条)`);
+      try {
+        const submitResult = await wmsApiCall('/receiving/entire/order/batchSubmit', {
           scanReceivingSubmitDtoList: batch,
           openLocationValidation: true,
           probe_anchor_warehouseNo: warehouseNo
         });
-      }));
 
-      for (let r = 0; r < results.length; r++) {
-        const batch = group[r];
-        const result = results[r];
-        if (result.status === 'fulfilled') {
-          const submitResult = result.value;
-          if (submitResult.success) {
-            if (Array.isArray(submitResult.resultValue)) {
-              for (const item of submitResult.resultValue) {
-                if (item.state === false) {
-                  totalFail++;
-                  failMessages.push(item.failedMessage || '未知错误');
-                } else {
-                  totalSuccess++;
-                }
+        if (submitResult.success) {
+          if (Array.isArray(submitResult.resultValue)) {
+            for (let vi = 0; vi < submitResult.resultValue.length; vi++) {
+              const item = submitResult.resultValue[vi];
+              if (item.state === false) {
+                totalFail++;
+                const failedSku = batch[vi];
+                const skuInfo = failedSku ? `SKU=${failedSku.sku || failedSku.isvSku || '?'}(${failedSku.skuName || '未知'})` : `index=${vi}`;
+                const msg = item.failedMessage || '未知错误';
+                failMessages.push(`${skuInfo}: ${msg}`);
+                console.warn(`[WMS验收] SKU失败: ${skuInfo}, 原因: ${msg}`);
+              } else {
+                totalSuccess++;
               }
-            } else {
-              totalSuccess += batch.length;
             }
           } else {
-            totalFail += batch.length;
-            failMessages.push(submitResult.resultMessage || '批次提交失败');
+            totalSuccess += batch.length;
           }
         } else {
           totalFail += batch.length;
-          failMessages.push(result.reason?.message || '批次请求异常');
+          failMessages.push(submitResult.resultMessage || '批次提交失败');
         }
+      } catch (err) {
+        totalFail += batch.length;
+        failMessages.push(err.message || '批次请求异常');
       }
     }
 
@@ -4846,9 +5088,9 @@ ipcMain.handle('wms-accept-order', async (event, { inboundNo, warehouseNo, locat
     if (totalFail === 0) {
       return { success: true, count: allItems.length };
     } else if (totalSuccess > 0) {
-      return { success: true, count: totalSuccess, failCount: totalFail, warning: failMessages.slice(0, 3).join('; ') };
+      return { success: true, count: totalSuccess, failCount: totalFail, warning: failMessages.join('; ') };
     } else {
-      return { success: false, error: failMessages.slice(0, 3).join('; ') };
+      return { success: false, error: failMessages.join('; ') };
     }
   } catch (err) {
     console.error('WMS 验收异常:', err.message);
@@ -5511,7 +5753,7 @@ ipcMain.handle('open-subscription', async () => {
   createSubscriptionWindow({
     jd_username: jdUsername,
     status: subInfo.status || 'expired',
-    tier: subInfo.tier || 'standard',
+    tier: subInfo.tier || 'basic',
     invite_code: subInfo.invite_code || '',
     is_first_payment: subInfo.is_first_payment || false,
     department_id: subInfo.department_id || '',
@@ -5571,9 +5813,4 @@ ipcMain.on('select-department', (event, dept) => {
     departmentSelectWindow.close();
     departmentSelectWindow = null;
   }
-});
-
-// 应用退出时清理
-app.on('before-quit', () => {
-  stopHeartbeat();
 });

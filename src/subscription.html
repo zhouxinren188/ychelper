@@ -520,13 +520,13 @@
           <span class="yes">✓</span>
         </div>
         <div class="tier-intro-row">
-          <span>账号管理</span>
+          <span>打单发货</span>
           <span class="no">—</span>
           <span class="yes">✓</span>
           <span class="yes">✓</span>
         </div>
         <div class="tier-intro-row">
-          <span>打单发货</span>
+          <span>异常订单处理</span>
           <span class="no">—</span>
           <span class="yes">✓</span>
           <span class="yes">✓</span>
@@ -535,7 +535,7 @@
           <span>同时在线设备</span>
           <span class="yes">1台</span>
           <span class="yes">2台</span>
-          <span class="yes">3台</span>
+          <span class="yes">5台</span>
         </div>
       </div>
     </div>
@@ -718,8 +718,9 @@
         $('#inviteSection').style.display = 'none';
       }
 
-      // 如果用户已有订阅版本，默认选中该版本
-      if (subInfo.tier) {
+      // 如果用户已有订阅版本（付费用户），默认选中该版本
+      // 试用用户不自动选中，避免默认跳到标准版导致用户误付
+      if (subInfo.tier && subInfo.status !== 'trial') {
         const targetTier = subInfo.tier;
         if (targetTier !== currentTier) {
           currentTier = targetTier;
@@ -778,6 +779,17 @@
 
         if (result.code_url) {
           currentOrderNo = result.order_no;
+
+          // 校验服务端返回的tier与用户选择是否一致
+          if (result.tier && result.tier !== currentTier) {
+            console.warn(`[支付] tier不一致: 用户选择=${currentTier}, 订单实际=${result.tier}`);
+            currentTier = result.tier;
+            document.querySelectorAll('.tier-card').forEach(c => {
+              c.classList.toggle('selected', c.dataset.tier === currentTier);
+            });
+            updatePeriodPrices();
+          }
+
           const pm = priceMatrix || {};
           const tierPrices = pm[currentTier] || {};
           const fallbackPrice = typeof tierPrices[currentPlan] === 'number' ? tierPrices[currentPlan] : 0;
