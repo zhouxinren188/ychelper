@@ -1191,7 +1191,7 @@ autoUpdater.on('update-downloaded', (info) => {
   autoUpdaterActive = false;
   // 通知渲染进程显示自定义更新弹窗
   const activeWindow = mainWindow || subscriptionWindow || loginWindow;
-  if (activeWindow) {
+  if (activeWindow && !activeWindow.isDestroyed()) {
     activeWindow.webContents.send('show-update-install', { version: info.version });
   } else {
     autoUpdater.quitAndInstall();
@@ -1237,8 +1237,13 @@ async function checkForFullUpdate() {
     }
 
     console.log('服务器端更新检测: 发现新版本', checkData.version);
-    const activeWindow = mainWindow || subscriptionWindow || loginWindow;
-    if (!activeWindow) return;
+
+    // 获取活动窗口（检查是否已销毁）
+    function getActiveWindow() {
+      const w = mainWindow || subscriptionWindow || loginWindow;
+      if (w && !w.isDestroyed()) return w;
+      return null;
+    }
 
     // 静默下载安装包（不弹原生对话框）
     const downloadUrl = checkData.downloadUrl;
@@ -1247,7 +1252,10 @@ async function checkForFullUpdate() {
     const savePath = path.join(tempDir, filename);
 
     // 通知渲染进程显示下载进度
-    activeWindow.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
+    const win1 = getActiveWindow();
+    if (win1) {
+      win1.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
+    }
 
     try {
       await new Promise((resolve, reject) => {
@@ -1278,7 +1286,8 @@ async function checkForFullUpdate() {
           res.on('data', (chunk) => {
             receivedBytes += chunk.length;
             const pct = totalBytes ? Math.round(receivedBytes / totalBytes * 100) : 0;
-            activeWindow.webContents.send('update-download-progress', { percent: pct });
+            const w = getActiveWindow();
+            if (w) w.webContents.send('update-download-progress', { percent: pct });
           });
 
           res.pipe(fileStream);
@@ -1290,14 +1299,21 @@ async function checkForFullUpdate() {
       });
 
       // 下载完成，通知渲染进程显示安装确认弹窗
-      activeWindow.webContents.send('show-update-install', { version: checkData.version });
-
-      // 记录安装包路径，供 confirm-update-install-by-path IPC 使用
-      global._pendingUpdateInstaller = savePath;
+      const win2 = getActiveWindow();
+      if (win2) {
+        win2.webContents.send('show-update-install', { version: checkData.version });
+        // 记录安装包路径，供 confirm-update-install-by-path IPC 使用
+        global._pendingUpdateInstaller = savePath;
+      } else {
+        // 窗口已关闭，直接运行安装包
+        shell.openPath(savePath);
+        app.quit();
+      }
 
     } catch (dlErr) {
       console.error('下载安装包失败:', dlErr.message);
-      activeWindow.webContents.send('show-update-download-failed', { url: downloadUrl });
+      const win3 = getActiveWindow();
+      if (win3) win3.webContents.send('show-update-download-failed', { url: downloadUrl });
     }
   } catch (err) {
     console.log('服务器端更新检测失败:', err.message);
