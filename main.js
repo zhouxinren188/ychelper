@@ -1964,7 +1964,8 @@ ipcMain.handle('generate-excel', async (event, { type, data }) => {
           departmentId: data.departmentId,
           length: data.length,
           width: data.width,
-          height: data.height
+          height: data.height,
+          weight: data.weight
         });
         break;
 

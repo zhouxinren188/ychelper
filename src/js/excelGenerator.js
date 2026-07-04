@@ -42,7 +42,7 @@ function generatePopGoodsImport(skus) {
  * 生成 GoodsLogisticsTemplate.xls
  * 维护物流属性：事业部编码 + SKU + 长宽高 + 毛重
  */
-function generateGoodsLogistics(skus, { departmentId, length, width, height }) {
+function generateGoodsLogistics(skus, { departmentId, length, width, height, weight }) {
   const header = [
     '事业部商品编码\n（若此列不为空，以此编码获取的商品为准）',
     '事业部编码\n（事业部商品编码为空时必填）',
@@ -64,7 +64,7 @@ function generateGoodsLogistics(skus, { departmentId, length, width, height }) {
       parseFloat(width) || 0,      // 第5列：宽
       parseFloat(height) || 0,     // 第6列：高
       '',                          // 第7列：净重，不填
-      0.5                          // 第8列：毛重，默认0.5
+      parseFloat(weight) || 0.5    // 第8列：毛重
     ]);
   });
 

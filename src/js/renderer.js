@@ -2,6 +2,7 @@
 let tasks = [];
 let taskIdCounter = 0;
 let isExecuting = false;
+let stopRequested = false;
 let shopOptions = []; // 店铺选项数据（当前事业部过滤后）
 let allShopOptions = []; // 全量店铺选项（不受事业部筛选影响）
 let importedFileName = ''; // 当前导入的文本文件名（无扩展名）
@@ -61,6 +62,7 @@ const logBox = $('#logBox');
   initAoModule();
   initWmsPrintOutbound();
   initContactModal();
+  loadLogisticsPrefs();
 })();
 
 // ========== 加载用户数据 ==========
@@ -165,12 +167,37 @@ function initEventListeners() {
   // 添加任务
   $('#addTaskBtn').addEventListener('click', addTask);
 
-  // 执行任务
-  $('#execTaskBtn').addEventListener('click', executeTasks);
+  // 执行任务 / 停止任务
+  $('#execTaskBtn').addEventListener('click', () => {
+    if (isExecuting) {
+      $('#stopTaskModal').style.display = 'flex';
+    } else {
+      executeTasks();
+    }
+  });
+
+  // 停止任务确认弹窗
+  $('#stopTaskYes').addEventListener('click', () => {
+    stopRequested = true;
+    $('#stopTaskModal').style.display = 'none';
+    addLog('warn', '正在停止任务，等待当前步骤完成...');
+  });
+  $('#stopTaskNo').addEventListener('click', () => {
+    $('#stopTaskModal').style.display = 'none';
+  });
+  $('#stopTaskCancelBtn').addEventListener('click', () => {
+    $('#stopTaskModal').style.display = 'none';
+  });
 
   // 打开输出目录
   $('#openDirBtn').addEventListener('click', () => {
     window.electronAPI.openOutputDir();
+  });
+
+  // 物流属性 & 步骤延时 - 自动记住
+  LOGI_KEYS.forEach(k => {
+    const el = $('#' + k);
+    if (el) el.addEventListener('change', saveLogisticsPrefs);
   });
 
   // 模式管理
@@ -292,6 +319,30 @@ function addTask() {
   importedFileName = '';
 }
 
+// ========== 物流属性持久化 ==========
+const LOGI_KEYS = ['logLength', 'logWidth', 'logHeight', 'logWeight', 'stepDelay'];
+
+function loadLogisticsPrefs() {
+  const saved = localStorage.getItem('logisticsPrefs');
+  if (!saved) return;
+  try {
+    const prefs = JSON.parse(saved);
+    LOGI_KEYS.forEach(k => {
+      const el = $('#' + k);
+      if (el && prefs[k] != null) el.value = prefs[k];
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function saveLogisticsPrefs() {
+  const prefs = {};
+  LOGI_KEYS.forEach(k => {
+    const el = $('#' + k);
+    if (el) prefs[k] = el.value;
+  });
+  localStorage.setItem('logisticsPrefs', JSON.stringify(prefs));
+}
+
 // ========== 获取当前配置 ==========
 function getCurrentConfig() {
   return {
@@ -309,6 +360,7 @@ function getCurrentConfig() {
     logLength: $('#logLength').value,
     logWidth: $('#logWidth').value,
     logHeight: $('#logHeight').value,
+    logWeight: $('#logWeight').value,
     stepDelay: parseFloat($('#stepDelay').value) || 1,
     purchaseQty: parseInt(purchaseQty.value) || 0,
     autoAccept: $('#autoAccept').checked
@@ -332,7 +384,9 @@ function applyConfig(config) {
   $('#logLength').value = config.logLength || $('#logLength').value || '210';
   $('#logWidth').value = config.logWidth || $('#logWidth').value || '150';
   $('#logHeight').value = config.logHeight || $('#logHeight').value || '100';
+  $('#logWeight').value = config.logWeight || $('#logWeight').value || '0.5';
   $('#stepDelay').value = config.stepDelay || $('#stepDelay').value || 10;
+  saveLogisticsPrefs();
 }
 
 // ========== 渲染任务列表 ==========
@@ -346,7 +400,8 @@ function renderTaskTable() {
       running: { text: '执行中', cls: 'status-running' },
       success: { text: '成功', cls: 'status-success' },
       error: { text: '失败', cls: 'status-error' },
-      partial: { text: '部分失败', cls: 'status-partial' }
+      partial: { text: '部分失败', cls: 'status-partial' },
+      stopped: { text: '已停止', cls: 'status-error' }
     };
     const st = statusMap[task.status] || statusMap.pending;
 
@@ -384,11 +439,7 @@ function renderTaskTable() {
         showToast('该任务正在执行，无法删除');
         return;
       }
-      if (confirm(`确认删除任务 ${idx + 1}？`)) {
-        tasks.splice(idx, 1);
-        renderTaskTable();
-        addLog('info', `已删除任务 ${idx + 1}`);
-      }
+      showTaskCtxMenu(e.clientX, e.clientY, idx);
     });
     tr.style.cursor = 'context-menu';
 
@@ -396,23 +447,110 @@ function renderTaskTable() {
   });
 }
 
+// ========== 右键菜单 & 删除确认 ==========
+let ctxTargetIdx = -1;
+let deleteAction = null; // 'row' | 'all'
+
+function showTaskCtxMenu(x, y, idx) {
+  ctxTargetIdx = idx;
+  const menu = $('#taskCtxMenu');
+  menu.style.display = 'block';
+  // 防止菜单超出窗口边界
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 4;
+  const maxY = window.innerHeight - rect.height - 4;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+}
+
+function hideTaskCtxMenu() {
+  $('#taskCtxMenu').style.display = 'none';
+}
+
+// 点击页面其他位置关闭右键菜单
+document.addEventListener('click', () => hideTaskCtxMenu());
+document.addEventListener('contextmenu', (e) => {
+  if (!e.target.closest('#taskTableBody')) {
+    hideTaskCtxMenu();
+  }
+});
+
+// 右键菜单 - 删除选中行
+$('#ctxDeleteRow').addEventListener('click', () => {
+  hideTaskCtxMenu();
+  const idx = ctxTargetIdx;
+  if (idx < 0 || idx >= tasks.length) return;
+  deleteAction = 'row';
+  $('#deleteTaskTitle').textContent = '删除任务';
+  $('#deleteTaskMsg').textContent = `确认删除任务 ${idx + 1}？`;
+  $('#deleteTaskModal').style.display = 'flex';
+});
+
+// 右键菜单 - 清空全部
+$('#ctxClearAll').addEventListener('click', () => {
+  hideTaskCtxMenu();
+  if (tasks.length === 0) {
+    showToast('没有任务可清空');
+    return;
+  }
+  deleteAction = 'all';
+  $('#deleteTaskTitle').textContent = '清空全部任务';
+  $('#deleteTaskMsg').textContent = `确认清空全部 ${tasks.length} 个任务？`;
+  $('#deleteTaskModal').style.display = 'flex';
+});
+
+// 删除确认弹窗 - 确认
+$('#deleteTaskYes').addEventListener('click', () => {
+  if (deleteAction === 'row') {
+    const idx = ctxTargetIdx;
+    tasks.splice(idx, 1);
+    renderTaskTable();
+    addLog('info', `已删除任务 ${idx + 1}`);
+  } else if (deleteAction === 'all') {
+    const count = tasks.length;
+    tasks.length = 0;
+    renderTaskTable();
+    addLog('info', `已清空全部 ${count} 个任务`);
+  }
+  deleteAction = null;
+  $('#deleteTaskModal').style.display = 'none';
+});
+
+// 删除确认弹窗 - 取消
+$('#deleteTaskNo').addEventListener('click', () => {
+  deleteAction = null;
+  $('#deleteTaskModal').style.display = 'none';
+});
+$('#deleteTaskCancelBtn').addEventListener('click', () => {
+  deleteAction = null;
+  $('#deleteTaskModal').style.display = 'none';
+});
+
 
 // ========== 执行任务 ==========
 async function executeTasks() {
-  const pendingTasks = tasks.filter(t => t.status === 'pending');
+  const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'stopped');
   if (pendingTasks.length === 0) {
     showToast('没有待执行的任务');
     return;
   }
+  // 将 stopped 状态的任务重置为 pending
+  pendingTasks.forEach(t => { if (t.status === 'stopped') t.status = 'pending'; });
   if (isExecuting) {
     showToast('任务正在执行中，请等待完成');
     return;
   }
 
   isExecuting = true;
+  stopRequested = false;
+  const execBtn = $('#execTaskBtn');
+  execBtn.textContent = '停止任务';
+  execBtn.classList.add('btn-stop');
   addLog('info', `开始执行 ${pendingTasks.length} 个任务...`);
 
   for (const task of pendingTasks) {
+    if (stopRequested) break;
+
     task.status = 'running';
     renderTaskTable();
     const skuLabel = task.skus.length <= 3 ? task.skus.join(',') : `${task.skus.slice(0, 3).join(',')}等${task.skus.length}个`;
@@ -421,20 +559,30 @@ async function executeTasks() {
     try {
       // 按照配置顺序执行各步骤
       const steps = getTaskSteps(task);
+      let stopped = false;
       for (const step of steps) {
+        if (stopRequested) { stopped = true; break; }
         addLog('info', `[${skuLabel}] ${step.name}...`);
 
         await executeStep(step, task);
 
         addLog('success', `[${skuLabel}] ${step.name} 完成`);
 
-        // 步骤延时
-        if (task.config.stepDelay > 0) {
-          await sleep(task.config.stepDelay * 1000);
+        // 步骤延时（可被停止中断）
+        if (task.config.stepDelay > 0 && !stopRequested) {
+          const delayMs = task.config.stepDelay * 1000;
+          let elapsed = 0;
+          while (elapsed < delayMs && !stopRequested) {
+            await sleep(Math.min(200, delayMs - elapsed));
+            elapsed += 200;
+          }
         }
       }
 
-      if (task.hasLabelFailure) {
+      if (stopped) {
+        task.status = 'stopped';
+        addLog('warn', `[${skuLabel}] 已停止`);
+      } else if (task.hasLabelFailure) {
         task.status = 'partial';
         addLog('warn', `[${skuLabel}] 完成（部分SKU打标失败）`);
       } else {
@@ -450,7 +598,15 @@ async function executeTasks() {
   }
 
   isExecuting = false;
-  addLog('info', '所有任务执行完毕');
+  stopRequested = false;
+  execBtn.textContent = '执行任务';
+  execBtn.classList.remove('btn-stop');
+
+  if (tasks.some(t => t.status === 'stopped')) {
+    addLog('warn', '任务已停止，未完成的任务可再次执行');
+  } else {
+    addLog('info', '所有任务执行完毕');
+  }
 }
 
 // ========== 获取任务步骤 ==========
@@ -875,7 +1031,8 @@ async function executeStep(step, task) {
             departmentId: userData?.departmentId || '',
             length: cfg.logLength,
             width: cfg.logWidth,
-            height: cfg.logHeight
+            height: cfg.logHeight,
+            weight: cfg.logWeight
           }
         });
         if (!result.success) throw new Error(result.error);
@@ -3654,6 +3811,14 @@ function initContactModal() {
   btn.addEventListener('click', () => {
     modal.style.display = '';
   });
+
+  // 广告卡片点击
+  const adCard = $('#adCard');
+  if (adCard) {
+    adCard.addEventListener('click', () => {
+      window.electronAPI.openExternalDownload('http://150.158.54.108:3001/download/latest');
+    });
+  }
 
   closeBtn.addEventListener('click', () => {
     modal.style.display = 'none';
