@@ -313,6 +313,55 @@
       color: #999;
       white-space: nowrap;
     }
+
+    /* 全量更新安装确认弹窗 */
+    .update-install-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    }
+    .update-install-modal.active {
+      display: flex;
+    }
+    .update-install-box {
+      background: #fff;
+      border-radius: 8px;
+      padding: 24px 32px;
+      text-align: center;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+    }
+    .update-install-text {
+      font-size: 14px;
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .update-install-btns {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    .update-install-btns button {
+      padding: 8px 24px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-install-yes {
+      background: #e67e22;
+      color: #fff;
+    }
+    .btn-install-yes:hover {
+      background: #d35400;
+    }
+    .btn-install-no {
+      background: #eee;
+      color: #555;
+    }
   </style>
 </head>
 <body>
@@ -376,6 +425,17 @@
       </div>
 
       <div class="login-version" id="loginVersion"></div>
+    </div>
+  </div>
+
+  <!-- 全量更新安装确认弹窗 -->
+  <div class="update-install-modal" id="updateInstallModal">
+    <div class="update-install-box">
+      <div class="update-install-text" id="updateInstallText">新版本已下载完成</div>
+      <div class="update-install-btns">
+        <button class="btn-install-no" id="updateInstallNo">稍后</button>
+        <button class="btn-install-yes" id="updateInstallYes">立即安装</button>
+      </div>
     </div>
   </div>
 
@@ -485,6 +545,76 @@
         overlay.classList.remove('active');
       }
     });
+
+    // 全量更新 - 下载开始
+    if (window.electronAPI.onShowUpdateDownloading) {
+      window.electronAPI.onShowUpdateDownloading((data) => {
+        const overlay = document.getElementById('updateOverlay');
+        const title = document.getElementById('updateTitle');
+        const bar = document.getElementById('updateBar');
+        const status = document.getElementById('updateStatus');
+        overlay.classList.add('active');
+        title.textContent = '正在下载更新...';
+        bar.style.width = '0%';
+        status.textContent = data.version ? 'v' + data.version : '';
+      });
+    }
+
+    // 全量更新 - 下载进度
+    if (window.electronAPI.onUpdateDownloadProgress) {
+      window.electronAPI.onUpdateDownloadProgress((data) => {
+        const bar = document.getElementById('updateBar');
+        const status = document.getElementById('updateStatus');
+        if (bar) bar.style.width = (data.percent || 0) + '%';
+        if (status) status.textContent = (data.percent || 0) + '%';
+      });
+    }
+
+    // 全量更新 - 下载完成，显示安装确认
+    if (window.electronAPI.onShowUpdateInstall) {
+      window.electronAPI.onShowUpdateInstall((data) => {
+        const overlay = document.getElementById('updateOverlay');
+        overlay.classList.remove('active');
+        const modal = document.getElementById('updateInstallModal');
+        const text = document.getElementById('updateInstallText');
+        if (text && data.version) text.textContent = '新版本 v' + data.version + ' 已下载完成，是否立即安装？';
+        if (modal) modal.classList.add('active');
+      });
+    }
+
+    // 全量更新 - 安装确认按钮
+    var btnYes = document.getElementById('updateInstallYes');
+    if (btnYes) {
+      btnYes.addEventListener('click', function() {
+        var modal = document.getElementById('updateInstallModal');
+        if (modal) modal.classList.remove('active');
+        if (window.electronAPI.confirmUpdateInstallByPath) {
+          window.electronAPI.confirmUpdateInstallByPath();
+        } else if (window.electronAPI.confirmUpdateInstall) {
+          window.electronAPI.confirmUpdateInstall();
+        }
+      });
+    }
+    var btnNo = document.getElementById('updateInstallNo');
+    if (btnNo) {
+      btnNo.addEventListener('click', function() {
+        var modal = document.getElementById('updateInstallModal');
+        if (modal) modal.classList.remove('active');
+      });
+    }
+
+    // 全量更新 - 下载失败
+    if (window.electronAPI.onShowUpdateDownloadFailed) {
+      window.electronAPI.onShowUpdateDownloadFailed((data) => {
+        var overlay = document.getElementById('updateOverlay');
+        if (overlay) overlay.classList.remove('active');
+        var status = document.getElementById('updateStatus');
+        if (status) status.textContent = '下载失败';
+        var title = document.getElementById('updateTitle');
+        if (title) title.textContent = '更新下载失败，请稍后重试';
+        if (overlay) overlay.classList.add('active');
+      });
+    }
   </script>
 </body>
 </html>

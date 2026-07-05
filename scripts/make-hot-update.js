@@ -20,8 +20,8 @@ const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'))
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
 let version = args[0] || pkg.version
 
-if (!/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error('版本号格式错误，应为 x.y.z，当前:', version)
+if (!/^\d+\.\d+\.\d+(\.\d+)?$/.test(version)) {
+  console.error('版本号格式错误，应为 x.y.z 或 x.y.z.w，当前:', version)
   process.exit(1)
 }
 
@@ -46,7 +46,15 @@ const zip = new AdmZip()
 zip.addLocalFolder(srcDir, 'src')
 
 // 添加 package.json（版本号检测需要）
-zip.addLocalFile(path.join(ROOT, 'package.json'))
+// 如果指定的版本号与 package.json 中的不同，用指定版本号覆盖
+if (version !== pkg.version) {
+  const modifiedPkg = { ...pkg, version }
+  const pkgBuffer = Buffer.from(JSON.stringify(modifiedPkg, null, 2), 'utf-8')
+  zip.addFile('package.json', pkgBuffer)
+  console.log(`  (package.json 版本号已覆盖: ${pkg.version} → ${version})`)
+} else {
+  zip.addLocalFile(path.join(ROOT, 'package.json'))
+}
 
 const zipFilename = `update-${version}.zip`
 const zipPath = path.join(DIST_DIR, zipFilename)
