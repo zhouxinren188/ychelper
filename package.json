@@ -36,9 +36,8 @@
     },
     "artifactName": "ychelper-setup-${version}.${ext}",
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "shortcutName": "云仓助手",
       "installerIcon": "src/icon.ico",
