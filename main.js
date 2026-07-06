@@ -311,6 +311,7 @@ let wmsHasSeenLoginPage = false;
 let wmsLoggedIn = false; // 仅内存状态，不持久化
 let wmsIsQuitting = false; // 标记应用正在退出
 let isCheckingSubscription = false; // 标记正在检查订阅（防止窗口全关后退出）
+let pendingUpdateAction = null; // 'autoUpdater' | 'localPath' | null — 标记待执行的更新安装方式
 let pendingCredentials = null; // 待自动填充的凭据（商家端）
 let pendingWmsCredentials = null; // 待自动填充的凭据（WMS端）
 
@@ -1092,7 +1093,8 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true
+      webviewTag: true,
+      backgroundThrottling: false
     }
   });
 
@@ -1121,6 +1123,8 @@ function createMainWindow() {
   mainWindow.on('close', (event) => {
     if (!isAppQuitting && !isCheckingSubscription) {
       event.preventDefault();
+      // 用户手动关闭窗口时，清除待执行的更新安装动作
+      pendingUpdateAction = null;
       // 通知渲染进程显示自定义退出确认弹窗
       mainWindow.webContents.send('show-close-confirm');
     }
@@ -1189,6 +1193,8 @@ autoUpdater.on('update-downloaded', (info) => {
   console.log('更新下载完成:', info.version);
   fullUpdateChecked = true;
   autoUpdaterActive = false;
+  // 清除 checkForFullUpdate 可能残留的安装包路径，确保走 autoUpdater 安装路径
+  global._pendingUpdateInstaller = null;
   // 通知渲染进程显示自定义更新弹窗
   const activeWindow = mainWindow || subscriptionWindow || loginWindow;
   if (activeWindow && !activeWindow.isDestroyed()) {
@@ -1210,11 +1216,8 @@ autoUpdater.on('error', (err) => {
 let fullUpdateChecked = false;
 let autoUpdaterActive = false;
 
-async function checkForFullUpdate() {
-  if (fullUpdateChecked) return;
-  if (autoUpdaterActive) return; // autoUpdater 正在下载，暂不干预
-  fullUpdateChecked = true;
-
+// 快速检查全量更新是否可用（仅 HTTP 查版本，不下载）
+async function checkFullUpdateAvailable() {
   try {
     const currentVersion = app.getVersion();
     const checkUrl = `${API_BASE_URL}/api/update/full-check?version=${currentVersion}`;
@@ -1231,93 +1234,108 @@ async function checkForFullUpdate() {
       req.end();
     });
 
-    if (!checkData.needUpdate || !checkData.downloadUrl) {
-      console.log('服务器端更新检测: 当前已是最新版本');
-      return;
+    if (checkData.needUpdate && checkData.downloadUrl) {
+      console.log('全量更新检测: 发现新版本', checkData.version);
+      return checkData;
     }
+    console.log('全量更新检测: 当前已是最新版本');
+  } catch (e) {
+    console.log('全量更新检测失败:', e.message);
+  }
+  return null;
+}
 
-    console.log('服务器端更新检测: 发现新版本', checkData.version);
+// 下载并安装全量更新包
+async function downloadAndInstallFullUpdate(checkData) {
+  fullUpdateChecked = true;
 
-    // 获取活动窗口（检查是否已销毁）
-    function getActiveWindow() {
-      const w = mainWindow || subscriptionWindow || loginWindow;
-      if (w && !w.isDestroyed()) return w;
-      return null;
-    }
+  function getActiveWindow() {
+    const w = mainWindow || subscriptionWindow || loginWindow;
+    if (w && !w.isDestroyed()) return w;
+    return null;
+  }
 
-    // 静默下载安装包（不弹原生对话框）
-    const downloadUrl = checkData.downloadUrl;
-    const tempDir = app.getPath('temp');
-    const filename = downloadUrl.split('/').pop() || `ychelper-setup-${checkData.version}.exe`;
-    const savePath = path.join(tempDir, filename);
+  const downloadUrl = checkData.downloadUrl;
+  const tempDir = app.getPath('temp');
+  const filename = downloadUrl.split('/').pop() || `ychelper-setup-${checkData.version}.exe`;
+  const savePath = path.join(tempDir, filename);
 
-    // 通知渲染进程显示下载进度
-    const win1 = getActiveWindow();
-    if (win1) {
-      win1.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
-    }
+  // 通知渲染进程显示下载进度
+  const win1 = getActiveWindow();
+  if (win1) {
+    win1.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
+  }
 
-    try {
-      await new Promise((resolve, reject) => {
-        const https = require('https');
-        const http = require('http');
-        const mod = downloadUrl.startsWith('https') ? https : http;
+  try {
+    await new Promise((resolve, reject) => {
+      const https = require('https');
+      const http = require('http');
+      const mod = downloadUrl.startsWith('https') ? https : http;
 
-        const req = mod.get(downloadUrl, (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            res.resume();
-            const redirectUrl = res.headers.location;
-            const redirectMod = redirectUrl.startsWith('https') ? https : http;
-            redirectMod.get(redirectUrl, downloadFile);
-            return;
-          }
-          downloadFile(res);
-        });
-
-        function downloadFile(res) {
-          if (res.statusCode !== 200) {
-            reject(new Error(`HTTP ${res.statusCode}`));
-            return;
-          }
-          const totalBytes = parseInt(res.headers['content-length'] || 0);
-          let receivedBytes = 0;
-          const fileStream = fs.createWriteStream(savePath);
-
-          res.on('data', (chunk) => {
-            receivedBytes += chunk.length;
-            const pct = totalBytes ? Math.round(receivedBytes / totalBytes * 100) : 0;
-            const w = getActiveWindow();
-            if (w) w.webContents.send('update-download-progress', { percent: pct });
-          });
-
-          res.pipe(fileStream);
-          fileStream.on('finish', () => { fileStream.close(); resolve(); });
-          fileStream.on('error', reject);
+      const req = mod.get(downloadUrl, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          const redirectUrl = res.headers.location;
+          const redirectMod = redirectUrl.startsWith('https') ? https : http;
+          redirectMod.get(redirectUrl, downloadFile);
+          return;
         }
-
-        req.on('error', reject);
+        downloadFile(res);
       });
 
-      // 下载完成，通知渲染进程显示安装确认弹窗
-      const win2 = getActiveWindow();
-      if (win2) {
-        win2.webContents.send('show-update-install', { version: checkData.version });
-        // 记录安装包路径，供 confirm-update-install-by-path IPC 使用
-        global._pendingUpdateInstaller = savePath;
-      } else {
-        // 窗口已关闭，直接运行安装包
-        shell.openPath(savePath);
-        app.quit();
+      function downloadFile(res) {
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        const totalBytes = parseInt(res.headers['content-length'] || 0);
+        let receivedBytes = 0;
+        const fileStream = fs.createWriteStream(savePath);
+
+        res.on('data', (chunk) => {
+          receivedBytes += chunk.length;
+          const pct = totalBytes ? Math.round(receivedBytes / totalBytes * 100) : 0;
+          const w = getActiveWindow();
+          if (w) w.webContents.send('update-download-progress', { percent: pct });
+        });
+
+        res.pipe(fileStream);
+        fileStream.on('finish', () => { fileStream.close(); resolve(); });
+        fileStream.on('error', reject);
       }
 
-    } catch (dlErr) {
-      console.error('下载安装包失败:', dlErr.message);
-      const win3 = getActiveWindow();
-      if (win3) win3.webContents.send('show-update-download-failed', { url: downloadUrl });
+      req.on('error', reject);
+    });
+
+    // 下载完成，通知渲染进程显示安装确认弹窗
+    const win2 = getActiveWindow();
+    if (win2) {
+      win2.webContents.send('show-update-install', { version: checkData.version });
+      global._pendingUpdateInstaller = savePath;
+    } else {
+      // 无活动窗口（如用户正在登录、窗口切换间隙），保存路径但不自动退出
+      // 下次启动会重新检测并提示安装
+      global._pendingUpdateInstaller = savePath;
+      console.log('全量更新: 下载完成但无活动窗口，保存路径等待下次提示');
     }
-  } catch (err) {
-    console.log('服务器端更新检测失败:', err.message);
+
+  } catch (dlErr) {
+    console.error('下载安装包失败:', dlErr.message);
+    fullUpdateChecked = false;
+    const win3 = getActiveWindow();
+    if (win3) win3.webContents.send('show-update-download-failed', { url: downloadUrl });
   }
+}
+
+// autoUpdater 兜底：检查 + 下载安装（供 autoUpdater error/timeout 事件调用）
+async function checkForFullUpdate() {
+  if (fullUpdateChecked) return;
+  if (autoUpdaterActive) return;
+
+  const checkData = await checkFullUpdateAvailable();
+  if (!checkData) return;
+
+  await downloadAndInstallFullUpdate(checkData);
 }
 
 // ========== 热更新（轻量级源文件更新） ==========
@@ -1326,6 +1344,20 @@ function sendUpdateProgress(stage, extra) {
   if (loginWindow && !loginWindow.isDestroyed()) {
     loginWindow.webContents.send('update-progress', { stage, ...extra });
   }
+}
+
+// 读取热更新版本号（ASAR 启用时 app.getVersion() 不会随热更新变化，需用独立文件跟踪）
+function getHotUpdateVersion() {
+  try {
+    const appDir = app.isPackaged
+      ? path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked')
+      : __dirname;
+    const versionFile = path.join(appDir, '.hot-update-version');
+    if (fs.existsSync(versionFile)) {
+      return fs.readFileSync(versionFile, 'utf-8').trim();
+    }
+  } catch (e) { /* ignore */ }
+  return null;
 }
 
 function isNewerVersion(remote, local) {
@@ -1341,8 +1373,19 @@ function isNewerVersion(remote, local) {
 }
 
 async function checkForHotUpdate() {
-  const currentVersion = app.getVersion();
-  console.log('热更新: 开始检查, 当前版本', currentVersion);
+  // ASAR 启用时 app.getVersion() 不随热更新变化，用独立文件跟踪热更新版本
+  const hotVer = getHotUpdateVersion();
+  // 全量更新后 app.getVersion() 会比热更新版本新，清除残留的热更新版本文件
+  if (hotVer && isNewerVersion(app.getVersion(), hotVer)) {
+    try {
+      const appDir = app.isPackaged
+        ? path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked')
+        : __dirname;
+      fs.unlinkSync(path.join(appDir, '.hot-update-version'));
+    } catch (e) { /* ignore */ }
+  }
+  const currentVersion = getHotUpdateVersion() || app.getVersion();
+  console.log('热更新: 开始检查, 当前版本', currentVersion, hotVer ? '(热更新)' : '(基础版本)');
 
   // 循环防护：如果上次更新后版本未变更，说明更新未生效，跳过
   const lastUpdate = storeGet('_hotUpdateAttempt', null);
@@ -1379,12 +1422,6 @@ async function checkForHotUpdate() {
     if (!checkData.needUpdate) {
       console.log('热更新: 已是最新版本');
       sendUpdateProgress('none');
-
-      // 即使没有热更新，也检查是否有全量更新（交给启动时的 checkForFullUpdate 处理，不在此弹窗）
-      if (checkData.fullUpdate && checkData.fullUpdate.downloadUrl) {
-        console.log('热更新检测: 发现全量更新', checkData.fullUpdate.version, '（交给启动检测处理）');
-      }
-
       return false;
     }
 
@@ -1456,7 +1493,7 @@ async function checkForHotUpdate() {
     zip.extractAllTo(stagingDir, true);
 
     // 安全检查：阻止热更新覆盖主进程字节码文件
-    const protectedFiles = ['main.js', 'main.jsc', 'preload.js', 'preload.jsc'];
+    const protectedFiles = ['main.js', 'main.jsc', 'preload.js', 'preload.jsc', 'package.json'];
     const zipEntries = zip.getEntries();
     for (const entry of zipEntries) {
       const entryName = path.basename(entry.entryName);
@@ -1490,17 +1527,21 @@ async function checkForHotUpdate() {
       }
     }
 
-    // 验证更新是否生效：读取复制后的 package.json 确认版本号
+    // 写入热更新版本号文件并验证（ASAR 启用时 app.getVersion() 不变，用此文件跟踪）
     try {
-      const copiedPkg = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf-8'));
-      console.log('热更新: 验证复制后版本号:', copiedPkg.version);
-      if (copiedPkg.version !== newVersion) {
-        console.error(`热更新: 版本验证失败！期望 ${newVersion}，实际 ${copiedPkg.version}`);
+      const versionFile = path.join(appDir, '.hot-update-version');
+      fs.writeFileSync(versionFile, newVersion, 'utf-8');
+      const written = fs.readFileSync(versionFile, 'utf-8').trim();
+      if (written !== newVersion) {
+        console.error(`热更新: 版本文件验证失败！期望 ${newVersion}，实际 ${written}`);
         sendUpdateProgress('error');
         return false;
       }
-    } catch (verifyErr) {
-      console.error('热更新: 版本验证读取失败:', verifyErr.message);
+      console.log('热更新: 版本文件验证通过:', newVersion);
+    } catch (e) {
+      console.error('热更新: 写入版本文件失败:', e.message);
+      sendUpdateProgress('error');
+      return false;
     }
 
     // 清理临时文件
@@ -1511,6 +1552,7 @@ async function checkForHotUpdate() {
     }
 
     console.log('热更新: 安装完成, 版本已更新到', newVersion);
+
     sendUpdateProgress('done');
 
     // 延迟重启应用
@@ -1670,12 +1712,23 @@ app.whenReady().then(async () => {
   }
   createLoginWindow();
 
-  // 等待登录页加载完成后，先检查热更新再显示窗口
+  // 等待登录页加载完成后，按优先级检查更新：全量更新优先 → 热更新
+  // 全量更新必须优先：热更新构建在特定 base 上，base 太旧会不兼容
   loginWindow.webContents.on('did-finish-load', async () => {
+    // 1. 先快速检查全量更新（仅 HTTP 查版本，不下载）
+    const fullUpdate = await checkFullUpdateAvailable();
+    if (fullUpdate) {
+      // 有全量更新，显示登录窗口并下载安装包（跳过热更新）
+      if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
+      downloadAndInstallFullUpdate(fullUpdate);
+      return;
+    }
+
+    // 2. 无全量更新，检查热更新
     try {
       const updated = await checkForHotUpdate();
       if (updated) {
-        // 有更新，显示窗口让用户看到进度条
+        // 有热更新，显示窗口让用户看到进度条，安装后自动重启
         if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
         return;
       }
@@ -1683,20 +1736,8 @@ app.whenReady().then(async () => {
       console.log('热更新检查异常:', e.message);
     }
 
-    // 无更新，显示登录窗口
+    // 3. 都没更新，显示登录窗口
     if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
-
-    // 延迟检查更新：autoUpdater + 服务器端检测双重保障
-    setTimeout(() => {
-      // 1. autoUpdater（GitHub 源）
-      autoUpdater.checkForUpdatesAndNotify().catch(err => {
-        console.log('GitHub更新检查失败:', err.message);
-      });
-      // 2. 3秒后如果 autoUpdater 未成功，用服务器端检测兜底
-      setTimeout(() => {
-        checkForFullUpdate();
-      }, 3000);
-    }, 5000);
   });
 });
 
@@ -1729,19 +1770,55 @@ ipcMain.on('window-close', (event) => {
 
 // 渲染进程确认退出
 ipcMain.on('confirm-close', () => {
-  app.quit();
+  if (pendingUpdateAction === 'autoUpdater') {
+    // 非静默安装，显示 NSIS 安装进度界面，安装后自动重启
+    autoUpdater.quitAndInstall(false, true);
+  } else if (pendingUpdateAction === 'localPath') {
+    shell.openPath(global._pendingUpdateInstaller);
+    app.quit();
+  } else {
+    app.quit();
+  }
 });
 
-// 渲染进程确认安装更新（autoUpdater）
+// 渲染进程确认安装更新（兼容旧版 preload 的 fallback）
 ipcMain.on('confirm-update-install', () => {
-  autoUpdater.quitAndInstall();
+  if (global._pendingUpdateInstaller) {
+    pendingUpdateAction = 'localPath';
+  } else {
+    pendingUpdateAction = 'autoUpdater';
+  }
+  // 只有主窗口有退出确认弹窗UI；登录窗口/订阅窗口直接安装
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('show-close-confirm');
+  } else {
+    if (pendingUpdateAction === 'localPath') {
+      shell.openPath(global._pendingUpdateInstaller);
+      app.quit();
+    } else {
+      autoUpdater.quitAndInstall(false, true);
+    }
+  }
 });
 
 // 渲染进程确认安装更新（服务器下载的安装包）
 ipcMain.on('confirm-update-install-by-path', () => {
   if (global._pendingUpdateInstaller) {
-    shell.openPath(global._pendingUpdateInstaller);
-    app.quit();
+    pendingUpdateAction = 'localPath';
+  } else {
+    // autoUpdater 下载的更新没有 _pendingUpdateInstaller，走 autoUpdater 路径
+    pendingUpdateAction = 'autoUpdater';
+  }
+  // 只有主窗口有退出确认弹窗UI；登录窗口/订阅窗口直接安装
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('show-close-confirm');
+  } else {
+    if (pendingUpdateAction === 'localPath') {
+      shell.openPath(global._pendingUpdateInstaller);
+      app.quit();
+    } else {
+      autoUpdater.quitAndInstall(false, true);
+    }
   }
 });
 
@@ -2465,7 +2542,8 @@ async function ensureShopPageWindow(options = {}) {
       partition: shopPartition,
       nodeIntegration: false,
       contextIsolation: false,
-      preload: path.join(__dirname, 'src', 'js', 'shop-preload.js')
+      preload: path.join(__dirname, 'src', 'js', 'shop-preload.js'),
+      backgroundThrottling: false
     }
   });
 

@@ -3742,6 +3742,7 @@ function initWmsPrintOutbound() {
     webview.setAttribute('src', WMS_OUTBOUND_URL);
     webview.style.cssText = 'width:100%; height:100%; border:none;';
     webview.setAttribute('allowpopups', '');
+    webview.setAttribute('webpreferences', 'backgroundThrottling=false');
     container.appendChild(webview);
 
     webview.addEventListener('did-finish-load', () => {
