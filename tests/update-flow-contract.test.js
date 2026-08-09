@@ -30,5 +30,8 @@ assert.match(login, /data\.etaSeconds/);
 assert.match(rules, /latest\.yml/);
 assert.match(rules, /\.blockmap/);
 assert.match(rules, /跨版本/);
+assert.match(rules, /十几个版本/);
+assert.match(rules, /multipart\/byteranges/);
+assert.match(rules, /--baselines=/);
 
-console.log('更新流程契约测试通过：启动顺序、差分下载、续传兜底、自动安装和更新内容展示均已覆盖');
+console.log('更新流程契约测试通过：启动顺序、差分下载、续传兜底、跨多版本、自动安装和更新内容展示均已覆盖');

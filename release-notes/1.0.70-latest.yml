@@ -1,0 +1,8 @@
+version: 1.0.70
+files:
+  - url: api/update/file/ychelper-setup-1.0.70.exe
+    sha512: yEXk2ZLS1LvEla0rslYxoFo1jILW4heVd8UQQHGFGE8imN2FQ3sdch2yzb4B+Q0stgmhNrKfSSHmRJR/E6bWYg==
+    size: 97817188
+path: api/update/file/ychelper-setup-1.0.70.exe
+sha512: yEXk2ZLS1LvEla0rslYxoFo1jILW4heVd8UQQHGFGE8imN2FQ3sdch2yzb4B+Q0stgmhNrKfSSHmRJR/E6bWYg==
+releaseDate: '2026-08-09T19:41:42.469Z'

@@ -24,13 +24,13 @@
 
 1. **已发布版本不可变**：版本号一旦上线，禁止重新构建、覆盖或替换同版本的安装包、blockmap、元数据和更新内容。任何修订都必须提升版本号，以免客户端缓存、SHA-512 和服务器文件互相冲突。
 
-2. **发布三件套缺一不可**：完整版本必须同时生成并发布 `latest.yml`、`ychelper-setup-X.X.X.exe`、`ychelper-setup-X.X.X.exe.blockmap`。发布前必须运行 `npm run verify:release-artifacts -- --baseline=<现网最老版本>`，校验版本号、文件名、大小、SHA-512、blockmap 结构和历史基线文件。任一项失败不得发布。
+2. **发布三件套缺一不可**：完整版本必须同时生成并发布 `latest.yml`、`ychelper-setup-X.X.X.exe`、`ychelper-setup-X.X.X.exe.blockmap`。发布前必须运行 `npm run verify:release-artifacts -- --baseline=<全部现网基线版本，逗号分隔>`，校验版本号、文件名、大小、SHA-512、blockmap 结构和历史基线文件。任一项失败不得发布。
 
 3. **发布顺序必须安全**：先上传并验证新版本 `.blockmap`，再上传完整安装包和完整更新元数据，最后才允许让 `latest.yml` 指向新版本。严禁在 blockmap 尚未可访问时提前暴露新 `latest.yml`，避免所有客户端差分失败后回退全量下载。
 
-4. **保留历史文件**：服务器必须长期保留历史版本的安装包和 `.blockmap`，不得在发布新版本时清空目录。至少保证当前仍在使用的最老版本及其后的全部发布文件可访问，用于跨版本升级、缓存恢复和回归验证。
+4. **保留历史文件**：服务器必须长期保留历史版本的安装包和 `.blockmap`，不得在发布新版本时清空目录。至少保证当前仍在使用的最老版本及其后的全部发布文件可访问，用于跨版本升级、缓存恢复和回归验证。历史 `.blockmap` 必须能够通过与 `latest.yml` 中安装包相同的更新端点访问，且端点必须正确支持 `HEAD`、单段 `Range` 和 `multipart/byteranges` 多段请求。
 
-5. **直接跨版本升级**：自动更新必须始终支持“用户当前任意受支持旧版本 → 服务器最新版本”直接升级，不得要求依次安装中间版本，也不得要求开发者手动发送安装包。差分更新不可用、跨度过大或缓存不完整时，客户端必须自动切换为最新版完整安装包，支持断点续传、大小和 SHA-512 校验，并自动安装重启。
+5. **直接跨版本升级**：自动更新必须始终支持“用户当前任意受支持旧版本 → 服务器最新版本”直接升级，即使用户连续错过十几个版本，也不得要求依次安装中间版本，更不得要求开发者手动发送安装包。`latest.yml` 永远只指向服务器最新版；升级逻辑不得写成“仅允许从上一版升级”。差分更新不可用、跨度过大或缓存不完整时，客户端必须自动切换为最新版完整安装包，支持断点续传、大小和 SHA-512 校验，并自动安装重启。
 
 6. **安装包必须自包含**：每个完整安装包都必须包含当时所需的全部代码、资源和依赖，不得依赖某个中间版本已经安装过。用户数据保存在稳定的 Electron `userData` 目录，升级不得改变 appId、清空用户资料、登录账号或 Cookie。
 
@@ -52,7 +52,7 @@
 
 3. 上线时必须写入 UTF-8 中文更新内容，且更新内容应涵盖从现网最老版本到本次最新版之间用户实际获得的累计重要变更，不能只写最后一个中间版本的变化。
 
-4. 上线后必须运行 `npm run verify:online-release -- --version=<最新版> --baseline=<现网最老版本>`，确认：`latest.yml` 指向正确版本；最新版和历史基线的 exe/blockmap 均为 HTTP 200；安装包 Range 请求返回 HTTP 206 和正确 `Content-Range`；老版本调用完整更新检测能直接获得最新版的 URL、大小、SHA-512 和更新内容。
+4. 上线后必须运行 `npm run verify:online-release -- --version=<最新版> --baselines=<全部仍在使用的旧版本，逗号分隔>`，不能只验证上一版本。必须确认：`latest.yml` 只指向当前最新版；最新版和每个现网历史基线的 exe/blockmap 均为 HTTP 200；安装包单段 Range 和多段 `multipart/byteranges` 请求均返回 HTTP 206 及正确的 `Content-Range`；每个老版本都能直接获得最新版的 URL、大小、SHA-512 和累计更新内容。对因旧客户端缺陷而禁用完整包兜底的版本，必须单独证明其 `electron-updater` 路径可直接访问最新版及自身历史 blockmap。
 
 5. 必须使用隔离测试数据完成一次“现网最老版本 → 最新版”的真实启动升级冒烟测试，确认自动检查、下载、校验、安装、重启以及账号/Cookie/业务配置保留正常。没有完成真实跨版本升级时，不得只凭接口返回宣称发布成功。
 
@@ -63,6 +63,6 @@
 - SSH: `ssh -o BatchMode=yes Administrator@150.158.54.108`
 - SCP: `scp -o BatchMode=yes <local> Administrator@150.158.54.108:"<remote>"`
 - 服务器项目路径: `C:\ychelper-server`
-- PM2 进程名: `ychelper`
+- Windows 服务名: `YchelperServer`（由 NSSM 管理；不要误操作同机其他 PM2 进程）
 - 管理后台密码：通过安全渠道获取，不得写入代码库或开发规范。
 - 上传热更新: `curl -s -X POST -H "x-admin-password: <admin-password>" -F "version=X.X.X" -F "changelog=..." -F "file=@update-X.X.X.zip" http://150.158.54.108:3000/api/update/upload`
