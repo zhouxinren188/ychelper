@@ -313,6 +313,59 @@
       color: #999;
       white-space: nowrap;
     }
+    .update-changelog {
+      display: none;
+      width: 100%;
+      max-width: 300px;
+      max-height: 88px;
+      overflow: auto;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #fff7ed;
+      color: #7c4a16;
+      font-size: 12px;
+      line-height: 1.65;
+      text-align: left;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    body.update-mode .form-area,
+    body.update-mode .login-version {
+      visibility: hidden;
+      pointer-events: none;
+    }
+    body.update-mode .update-overlay {
+      display: flex;
+      top: 36px;
+      right: 0;
+      bottom: 0;
+      left: 240px;
+      transform: none;
+      min-width: 0;
+      padding: 48px 42px;
+      border-radius: 0;
+      box-shadow: none;
+      flex-direction: column;
+      justify-content: center;
+      gap: 14px;
+    }
+    body.update-mode .update-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: #2f3542;
+    }
+    body.update-mode .update-bar-wrap {
+      width: 100%;
+      max-width: 300px;
+      height: 8px;
+    }
+    body.update-mode .update-status {
+      min-height: 18px;
+      font-size: 12px;
+    }
+    body.update-mode .update-changelog:not(:empty) {
+      display: block;
+    }
 
     /* 全量更新安装确认弹窗 */
     .update-install-modal {
@@ -372,6 +425,7 @@
       <div class="update-bar" id="updateBar"></div>
     </div>
     <div class="update-status" id="updateStatus"></div>
+    <div class="update-changelog" id="updateChangelog"></div>
   </div>
 
   <div class="login-container">
@@ -521,7 +575,33 @@
       window.electronAPI.openWebLogin({ username, password });
     });
 
-    // 热更新进度监听
+    function formatUpdateBytes(bytes) {
+      const value = Number(bytes) || 0;
+      if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+      if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
+      return value + ' B';
+    }
+
+    function formatUpdateEta(seconds) {
+      const value = Math.max(0, Math.ceil(Number(seconds) || 0));
+      if (!value) return '';
+      if (value < 60) return '约 ' + value + ' 秒';
+      return '约 ' + Math.ceil(value / 60) + ' 分钟';
+    }
+
+    function enterUpdateMode(changelog) {
+      document.body.classList.add('update-mode');
+      const content = document.getElementById('updateChangelog');
+      if (content && changelog) content.textContent = String(changelog).trim();
+    }
+
+    function leaveUpdateMode() {
+      document.body.classList.remove('update-mode');
+      const overlay = document.getElementById('updateOverlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+
+    // 启动检查、热更新及完整更新的统一进度监听
     window.electronAPI.onUpdateProgress((data) => {
       const overlay = document.getElementById('updateOverlay');
       const title = document.getElementById('updateTitle');
@@ -529,26 +609,29 @@
       const status = document.getElementById('updateStatus');
 
       if (data.stage === 'checking') {
+        enterUpdateMode('');
         overlay.classList.add('active');
         title.textContent = '正在检查更新...';
         bar.style.width = '0%';
-        status.textContent = '';
+        status.textContent = data.message || '正在连接更新服务器';
       } else if (data.stage === 'downloading') {
+        enterUpdateMode(data.changelog);
         overlay.classList.add('active');
         title.textContent = '正在下载更新...';
         bar.style.width = (data.percent || 0) + '%';
         status.textContent = data.version ? 'v' + data.version : '';
       } else if (data.stage === 'installing') {
+        enterUpdateMode(data.changelog);
         overlay.classList.add('active');
-        title.textContent = '正在安装更新...';
+        title.textContent = '更新下载完成，正在安装...';
         bar.style.width = '100%';
-        status.textContent = '请稍候';
+        status.textContent = '文件校验通过，软件将自动重启';
       } else if (data.stage === 'done') {
         title.textContent = '更新完成，正在重启...';
         bar.style.width = '100%';
         status.textContent = '';
       } else if (data.stage === 'none' || data.stage === 'error') {
-        overlay.classList.remove('active');
+        leaveUpdateMode();
       }
     });
 
@@ -559,10 +642,11 @@
         const title = document.getElementById('updateTitle');
         const bar = document.getElementById('updateBar');
         const status = document.getElementById('updateStatus');
+        enterUpdateMode(data.changelog);
         overlay.classList.add('active');
         title.textContent = '正在下载更新...';
         bar.style.width = '0%';
-        status.textContent = data.version ? 'v' + data.version : '';
+        status.textContent = data.version ? 'v' + data.version + ' · 准备下载' : '准备下载';
       });
     }
 
@@ -571,8 +655,14 @@
       window.electronAPI.onUpdateDownloadProgress((data) => {
         const bar = document.getElementById('updateBar');
         const status = document.getElementById('updateStatus');
-        if (bar) bar.style.width = (data.percent || 0) + '%';
-        if (status) status.textContent = (data.percent || 0) + '%';
+        const percent = Math.max(0, Math.min(100, Number(data.percent) || 0));
+        if (bar) bar.style.width = percent + '%';
+        if (status) {
+          const details = [Math.round(percent) + '%'];
+          if (data.bytesPerSecond) details.push(formatUpdateBytes(data.bytesPerSecond) + '/s');
+          if (data.etaSeconds) details.push(formatUpdateEta(data.etaSeconds) + '完成');
+          status.textContent = details.join(' · ');
+        }
       });
     }
 
@@ -613,12 +703,12 @@
     if (window.electronAPI.onShowUpdateDownloadFailed) {
       window.electronAPI.onShowUpdateDownloadFailed((data) => {
         var overlay = document.getElementById('updateOverlay');
-        if (overlay) overlay.classList.remove('active');
         var status = document.getElementById('updateStatus');
-        if (status) status.textContent = '下载失败';
+        if (status) status.textContent = data.message || '下载失败';
         var title = document.getElementById('updateTitle');
-        if (title) title.textContent = '更新下载失败，请稍后重试';
+        if (title) title.textContent = '更新暂时未完成';
         if (overlay) overlay.classList.add('active');
+        setTimeout(leaveUpdateMode, 2500);
       });
     }
   </script>

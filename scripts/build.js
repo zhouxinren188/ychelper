@@ -1,7 +1,7 @@
 /**
  * build.js — 生产构建包装脚本
  *
- * 流程：编译字节码 → electron-builder → 恢复原文件
+ * 流程：编译字节码 → electron-builder → 校验发布三件套 → 恢复原文件
  * 确保无论构建成功或失败，源文件都会被恢复
  */
 
@@ -22,19 +22,27 @@ async function main() {
 
   try {
     // 1. 编译字节码
-    console.log('[1/3] 编译字节码...')
+    console.log('[1/4] 编译字节码...')
     execSync('node scripts/compile-bytecode.js', { cwd: ROOT, stdio: 'inherit' })
 
     // 2. 运行 electron-builder
-    console.log('\n[2/3] 打包应用...')
+    console.log('\n[2/4] 打包应用...')
     execSync(buildCmd, { cwd: ROOT, stdio: 'inherit' })
+
+    // 3. 完整 NSIS 构建必须同步产生并校验 latest.yml、exe 和 blockmap。
+    if (isDir) {
+      console.log('\n[3/4] 目录构建不生成发布文件，跳过三件套校验')
+    } else {
+      console.log('\n[3/4] 校验发布三件套...')
+      execSync('node scripts/verify-release-artifacts.js', { cwd: ROOT, stdio: 'inherit' })
+    }
 
   } catch (err) {
     buildError = err
     console.error('\n构建失败:', err.message)
   } finally {
     // 3. 无论成功或失败，恢复源文件
-    console.log('\n[3/3] 恢复源文件...')
+    console.log('\n[4/4] 恢复源文件...')
     restoreBackups()
   }
 

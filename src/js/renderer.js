@@ -2319,6 +2319,11 @@ function initSubscriptionListeners() {
     window.electronAPI.onShowUpdateDownloading((data) => {
       const text = document.getElementById('updateDownloadText');
       if (text) text.textContent = `正在下载 v${data.version}...`;
+      const changelog = document.getElementById('updateDownloadChangelog');
+      if (changelog) {
+        changelog.textContent = data.changelog || '';
+        changelog.style.display = data.changelog ? 'block' : 'none';
+      }
       const modal = document.getElementById('updateDownloadModal');
       if (modal) modal.style.display = 'flex';
     });
@@ -2328,7 +2333,18 @@ function initSubscriptionListeners() {
       const bar = document.getElementById('updateDownloadBar');
       const pct = document.getElementById('updateDownloadPct');
       if (bar) bar.style.width = data.percent + '%';
-      if (pct) pct.textContent = data.percent + '%';
+      if (pct) {
+        const details = [Math.round(Number(data.percent) || 0) + '%'];
+        if (data.bytesPerSecond) {
+          const mbps = Number(data.bytesPerSecond) / 1024 / 1024;
+          details.push((mbps >= 0.1 ? mbps.toFixed(1) + ' MB/s' : Math.round(Number(data.bytesPerSecond) / 1024) + ' KB/s'));
+        }
+        if (data.etaSeconds) {
+          const seconds = Math.ceil(Number(data.etaSeconds) || 0);
+          details.push(seconds < 60 ? `约 ${seconds} 秒` : `约 ${Math.ceil(seconds / 60)} 分钟`);
+        }
+        pct.textContent = details.join(' · ');
+      }
     });
   }
 

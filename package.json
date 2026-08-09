@@ -1,15 +1,17 @@
 {
   "name": "cloud-warehouse-assistant",
-  "version": "1.0.69",
+  "version": "1.0.70",
   "description": "云仓助手 - 京东物流云仓自动化工具",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node test-date-query.js && node test-sku-expand.js && node tests/date-time-range-picker.test.js && node tests/shop-goods-query.test.js && node tests/shop-goods-selection.test.js && node tests/shop-export-file.test.js && node tests/shop-session-state.test.js && node tests/wms-page-state.test.js && node tests/wms-session-state.test.js && node tests/automation-access.test.js && node tests/ipc-contract.test.js",
+    "test": "node test-date-query.js && node test-sku-expand.js && node tests/date-time-range-picker.test.js && node tests/shop-goods-query.test.js && node tests/shop-goods-selection.test.js && node tests/shop-export-file.test.js && node tests/shop-session-state.test.js && node tests/wms-page-state.test.js && node tests/wms-session-state.test.js && node tests/automation-access.test.js && node tests/ipc-contract.test.js && node tests/update-flow-contract.test.js",
     "build": "node scripts/build.js",
     "build:dir": "node scripts/build.js --dir",
-    "make-hot-update": "node scripts/make-hot-update.js"
+    "make-hot-update": "node scripts/make-hot-update.js",
+    "verify:release-artifacts": "node scripts/verify-release-artifacts.js",
+    "verify:online-release": "node scripts/verify-online-release.js"
   },
   "author": "",
   "license": "UNLICENSED",
@@ -52,8 +54,8 @@
     }
   },
   "devDependencies": {
-    "electron": "^43.3.0",
-    "electron-builder": "^26.8.1",
+    "electron": "35.7.5",
+    "electron-builder": "26.8.1",
     "jsdom": "^29.1.1",
     "png-to-ico": "^3.0.1"
   },

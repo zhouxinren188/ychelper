@@ -1253,8 +1253,82 @@ function createMainWindow() {
 }
 
 // ========== 自动更新 ==========
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
+// 完整安装包由本流程显式触发下载，以便准确控制启动窗口、差分失败兜底和安装时机。
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+autoUpdater.disableDifferentialDownload = false;
+autoUpdater.disableWebInstaller = true;
+
+let autoUpdaterActive = false;
+let automaticUpdateFlow = null;
+let automaticInstallScheduled = false;
+let activeUpdateContext = 'startup';
+let activeUpdateMetadata = null;
+let periodicUpdateTimer = null;
+
+function getActiveUpdateWindow(context = activeUpdateContext) {
+  if (context === 'startup' && loginWindow && !loginWindow.isDestroyed()) return loginWindow;
+  const candidates = [mainWindow, subscriptionWindow, loginWindow];
+  return candidates.find(win => win && !win.isDestroyed()) || null;
+}
+
+function sendUpdateWindowEvent(channel, payload = {}, context = activeUpdateContext) {
+  const win = getActiveUpdateWindow(context);
+  if (win && !win.webContents.isDestroyed()) {
+    win.webContents.send(channel, payload);
+  }
+  return win;
+}
+
+function normalizeUpdateNotes(notes) {
+  if (!notes) return '';
+  if (typeof notes === 'string') return notes.trim();
+  if (Array.isArray(notes)) {
+    return notes.map(item => normalizeUpdateNotes(item && (item.note || item))).filter(Boolean).join('\n');
+  }
+  if (typeof notes === 'object' && notes.note) return normalizeUpdateNotes(notes.note);
+  return '';
+}
+
+function showAutomaticUpdate(metadata, context = activeUpdateContext) {
+  const payload = {
+    version: metadata.version,
+    changelog: normalizeUpdateNotes(metadata.changelog || metadata.releaseNotes)
+      || '本次更新包含稳定性与体验优化。'
+  };
+  const win = sendUpdateWindowEvent('show-update-downloading', payload, context);
+  if (context === 'startup' && win && !win.isVisible()) win.show();
+}
+
+function scheduleAutomaticInstall(action, installerPath = null) {
+  if (automaticInstallScheduled) return;
+  automaticInstallScheduled = true;
+  pendingUpdateAction = action;
+  if (installerPath) global._pendingUpdateInstaller = installerPath;
+
+  sendUpdateProgress('installing', {
+    version: activeUpdateMetadata && activeUpdateMetadata.version,
+    changelog: activeUpdateMetadata && activeUpdateMetadata.changelog
+  });
+
+  setTimeout(async () => {
+    try {
+      if (action === 'localPath') {
+        const openError = await shell.openPath(installerPath);
+        if (openError) throw new Error(openError);
+        app.quit();
+      } else {
+        autoUpdater.quitAndInstall(false, true);
+      }
+    } catch (err) {
+      automaticInstallScheduled = false;
+      console.error('自动安装更新失败:', err.message);
+      sendUpdateWindowEvent('show-update-download-failed', {
+        message: '更新安装启动失败，请重新启动软件后再试'
+      });
+    }
+  }, 1200);
+}
 
 autoUpdater.on('checking-for-update', () => {
   console.log('正在检查更新...');
@@ -1262,17 +1336,6 @@ autoUpdater.on('checking-for-update', () => {
 
 autoUpdater.on('update-available', (info) => {
   console.log('发现新版本:', info.version);
-  autoUpdaterActive = true;
-  // 用热更新的进度通道显示 autoUpdater 下载状态
-  sendUpdateProgress('downloading', { version: info.version, percent: 0 });
-  // 60秒后如果还没下载完成，回退到服务器端检测
-  setTimeout(() => {
-    if (autoUpdaterActive && !fullUpdateChecked) {
-      console.log('autoUpdater 下载超时，回退到服务器端检测');
-      autoUpdaterActive = false;
-      checkForFullUpdate();
-    }
-  }, 60000);
 });
 
 autoUpdater.on('update-not-available', () => {
@@ -1280,38 +1343,32 @@ autoUpdater.on('update-not-available', () => {
 });
 
 autoUpdater.on('download-progress', (progress) => {
-  console.log(`下载进度: ${Math.round(progress.percent)}%`);
-  // 用热更新的进度通道显示 autoUpdater 下载进度
-  sendUpdateProgress('downloading', { percent: Math.round(progress.percent) });
+  const payload = {
+    percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
+    bytesPerSecond: Number(progress.bytesPerSecond) || 0,
+    transferred: Number(progress.transferred) || 0,
+    total: Number(progress.total) || 0
+  };
+  payload.etaSeconds = payload.bytesPerSecond > 0 && payload.total > payload.transferred
+    ? Math.ceil((payload.total - payload.transferred) / payload.bytesPerSecond)
+    : 0;
+  console.log(`更新下载进度: ${payload.percent}%`);
+  sendUpdateWindowEvent('update-download-progress', payload);
 });
 
 autoUpdater.on('update-downloaded', (info) => {
   console.log('更新下载完成:', info.version);
-  fullUpdateChecked = true;
   autoUpdaterActive = false;
-  // 清除 checkForFullUpdate 可能残留的安装包路径，确保走 autoUpdater 安装路径
   global._pendingUpdateInstaller = null;
-  // 通知渲染进程显示自定义更新弹窗
-  const activeWindow = mainWindow || subscriptionWindow || loginWindow;
-  if (activeWindow && !activeWindow.isDestroyed()) {
-    activeWindow.webContents.send('show-update-install', { version: info.version });
-  } else {
-    autoUpdater.quitAndInstall();
-  }
+  scheduleAutomaticInstall('autoUpdater');
 });
 
 autoUpdater.on('error', (err) => {
-  console.log('自动更新错误:', err.message);
-  // autoUpdater 失败时，重置标志并使用服务器端检测作为备选
+  console.error('Electron 自动更新错误:', err.message);
   autoUpdaterActive = false;
-  fullUpdateChecked = false;
-  checkForFullUpdate();
 });
 
 // ========== 服务器端全量更新检测（不依赖GitHub） ==========
-let fullUpdateChecked = false;
-let autoUpdaterActive = false;
-
 // 快速检查全量更新是否可用（仅 HTTP 查版本，不下载）
 async function checkFullUpdateAvailable() {
   try {
@@ -1348,6 +1405,10 @@ async function checkFullUpdateAvailable() {
       if (!SHA512_BASE64_PATTERN.test(String(checkData.sha512 || ''))) {
         throw new Error('完整安装包缺少有效的 SHA-512 校验值');
       }
+      const expectedSize = Number(checkData.size);
+      if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || expectedSize > MAX_FULL_UPDATE_SIZE) {
+        throw new Error('服务器返回了无效的完整安装包大小');
+      }
       console.log('全量更新检测: 发现新版本', checkData.version);
       return checkData;
     }
@@ -1359,15 +1420,7 @@ async function checkFullUpdateAvailable() {
 }
 
 // 下载并安装全量更新包
-async function downloadAndInstallFullUpdate(checkData) {
-  fullUpdateChecked = true;
-
-  function getActiveWindow() {
-    const w = mainWindow || subscriptionWindow || loginWindow;
-    if (w && !w.isDestroyed()) return w;
-    return null;
-  }
-
+async function downloadAndInstallFullUpdate(checkData, context = activeUpdateContext) {
   const downloadUrl = getAllowedUpdateUrl(checkData.downloadUrl).toString();
   const tempDir = app.getPath('temp');
   if (!VERSION_PATTERN.test(String(checkData.version || ''))) {
@@ -1375,14 +1428,25 @@ async function downloadAndInstallFullUpdate(checkData) {
   }
   const filename = `ychelper-setup-${checkData.version}.exe`;
   const savePath = path.join(tempDir, filename);
+  const expectedSize = Number(checkData.size);
+  activeUpdateMetadata = checkData;
+  activeUpdateContext = context;
 
-  // 通知渲染进程显示下载进度
-  const win1 = getActiveWindow();
-  if (win1) {
-    win1.webContents.send('show-update-downloading', { version: checkData.version, changelog: checkData.changelog || '' });
-  }
+  showAutomaticUpdate(checkData, context);
 
   try {
+    if (fs.existsSync(savePath)) {
+      const existingSize = fs.statSync(savePath).size;
+      if (existingSize === expectedSize && verifyFileSHA512(savePath, checkData.sha512)) {
+        console.log('完整更新: 复用已校验的本地安装包');
+        scheduleAutomaticInstall('localPath', savePath);
+        return true;
+      }
+      if (existingSize > expectedSize || existingSize === expectedSize) {
+        fs.unlinkSync(savePath);
+      }
+    }
+
     await new Promise((resolve, reject) => {
       const https = require('https');
       const http = require('http');
@@ -1390,11 +1454,10 @@ async function downloadAndInstallFullUpdate(checkData) {
       const fail = (err) => {
         if (settled) return;
         settled = true;
-        try { if (fs.existsSync(savePath)) fs.unlinkSync(savePath); } catch (_) {}
         reject(err);
       };
 
-      function requestFile(currentUrl, redirectCount = 0) {
+      function requestFile(currentUrl, redirectCount = 0, allowResume = true) {
         let parsed;
         try {
           parsed = getAllowedUpdateUrl(currentUrl, downloadUrl);
@@ -1403,56 +1466,93 @@ async function downloadAndInstallFullUpdate(checkData) {
           return;
         }
         const mod = parsed.protocol === 'https:' ? https : http;
-        const req = mod.get(parsed, (res) => {
+        const resumeOffset = allowResume && fs.existsSync(savePath) ? fs.statSync(savePath).size : 0;
+        const headers = resumeOffset > 0 ? { Range: `bytes=${resumeOffset}-` } : {};
+        const req = mod.get(parsed, { headers }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             res.resume();
             if (redirectCount >= 3) return fail(new Error('更新下载重定向次数过多'));
-            requestFile(new URL(res.headers.location, parsed).toString(), redirectCount + 1);
+            requestFile(new URL(res.headers.location, parsed).toString(), redirectCount + 1, allowResume);
             return;
           }
-          downloadFile(res);
+          if (res.statusCode === 416 && resumeOffset > 0) {
+            res.resume();
+            try { fs.unlinkSync(savePath); } catch (_) {}
+            requestFile(downloadUrl, 0, false);
+            return;
+          }
+          downloadFile(res, resumeOffset);
         });
         req.setTimeout(30000, () => req.destroy(new Error('更新下载连接超时')));
         req.on('error', fail);
       }
 
-      function downloadFile(res) {
-        if (res.statusCode !== 200) {
+      function downloadFile(res, requestedOffset) {
+        if (![200, 206].includes(res.statusCode)) {
           res.resume();
           fail(new Error(`HTTP ${res.statusCode}`));
           return;
         }
-        const totalBytes = parseInt(res.headers['content-length'] || 0);
-        if (totalBytes > MAX_FULL_UPDATE_SIZE) {
+
+        let baseBytes = res.statusCode === 206 ? requestedOffset : 0;
+        if (res.statusCode === 206) {
+          const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(String(res.headers['content-range'] || ''));
+          if (!match || Number(match[1]) !== requestedOffset || Number(match[3]) !== expectedSize) {
+            res.destroy();
+            fail(new Error('服务器返回了无效的断点续传范围'));
+            return;
+          }
+        }
+
+        const responseBytes = Number.parseInt(res.headers['content-length'] || '0', 10);
+        if (responseBytes > MAX_FULL_UPDATE_SIZE || baseBytes + responseBytes > expectedSize) {
           res.destroy();
           fail(new Error('完整安装包超过大小限制'));
           return;
         }
-        let receivedBytes = 0;
-        const fileStream = fs.createWriteStream(savePath);
+        let receivedBytes = baseBytes;
+        const startedAt = Date.now();
+        const fileStream = fs.createWriteStream(savePath, { flags: baseBytes > 0 ? 'a' : 'w' });
+
+        res.on('aborted', () => {
+          fileStream.destroy();
+          fail(new Error('更新下载连接意外中断'));
+        });
+        res.on('error', (err) => {
+          fileStream.destroy();
+          fail(err);
+        });
 
         res.on('data', (chunk) => {
           receivedBytes += chunk.length;
-          if (receivedBytes > MAX_FULL_UPDATE_SIZE) {
+          if (receivedBytes > expectedSize || receivedBytes > MAX_FULL_UPDATE_SIZE) {
             res.destroy();
             fileStream.destroy();
             fail(new Error('完整安装包超过大小限制'));
             return;
           }
-          const pct = totalBytes ? Math.round(receivedBytes / totalBytes * 100) : 0;
-          const w = getActiveWindow();
-          if (w) w.webContents.send('update-download-progress', { percent: pct });
+          const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.1);
+          const bytesPerSecond = Math.round((receivedBytes - baseBytes) / elapsedSeconds);
+          const percent = Math.max(0, Math.min(100, Math.round(receivedBytes / expectedSize * 100)));
+          sendUpdateWindowEvent('update-download-progress', {
+            percent,
+            bytesPerSecond,
+            transferred: receivedBytes,
+            total: expectedSize,
+            etaSeconds: bytesPerSecond > 0 ? Math.ceil((expectedSize - receivedBytes) / bytesPerSecond) : 0
+          }, context);
         });
 
         res.pipe(fileStream);
         fileStream.on('finish', () => {
           fileStream.close(() => {
             if (settled) return;
-            const expectedSize = Number(checkData.size) || 0;
-            if (expectedSize > 0 && receivedBytes !== expectedSize) {
+            const finalSize = fs.existsSync(savePath) ? fs.statSync(savePath).size : 0;
+            if (finalSize !== expectedSize) {
               return fail(new Error('完整安装包大小与服务器记录不一致'));
             }
             if (!verifyFileSHA512(savePath, checkData.sha512)) {
+              try { fs.unlinkSync(savePath); } catch (_) {}
               return fail(new Error('完整安装包 SHA-512 校验失败'));
             }
             settled = true;
@@ -1465,43 +1565,95 @@ async function downloadAndInstallFullUpdate(checkData) {
       requestFile(downloadUrl);
     });
 
-    // 下载完成，通知渲染进程显示安装确认弹窗
-    const win2 = getActiveWindow();
-    if (win2) {
-      win2.webContents.send('show-update-install', { version: checkData.version });
-      global._pendingUpdateInstaller = savePath;
-    } else {
-      // 无活动窗口（如用户正在登录、窗口切换间隙），保存路径但不自动退出
-      // 下次启动会重新检测并提示安装
-      global._pendingUpdateInstaller = savePath;
-      console.log('全量更新: 下载完成但无活动窗口，保存路径等待下次提示');
-    }
+    global._pendingUpdateInstaller = savePath;
+    scheduleAutomaticInstall('localPath', savePath);
+    return true;
 
   } catch (dlErr) {
     console.error('下载安装包失败:', dlErr.message);
-    fullUpdateChecked = false;
-    const win3 = getActiveWindow();
-    if (win3) win3.webContents.send('show-update-download-failed', { url: downloadUrl });
+    sendUpdateWindowEvent('show-update-download-failed', {
+      url: downloadUrl,
+      message: '更新下载失败，已保留进度，下次启动将继续下载'
+    }, context);
+    return 'failed';
   }
 }
 
-// autoUpdater 兜底：检查 + 下载安装（供 autoUpdater error/timeout 事件调用）
-async function checkForFullUpdate() {
-  if (fullUpdateChecked) return;
-  if (autoUpdaterActive) return;
+// 自动更新单飞流程：优先差分下载，失败时立即切换到可续传的完整包。
+async function checkAndApplyAutomaticUpdate(context = 'startup') {
+  if (automaticUpdateFlow) return automaticUpdateFlow;
 
-  const checkData = await checkFullUpdateAvailable();
-  if (!checkData) return;
+  automaticUpdateFlow = (async () => {
+    activeUpdateContext = context;
+    if (!app.isPackaged) {
+      console.log('开发模式: 跳过安装包自动更新');
+      return false;
+    }
 
-  await downloadAndInstallFullUpdate(checkData);
+    const metadataPromise = checkFullUpdateAvailable();
+    let updateResult = null;
+
+    try {
+      updateResult = await autoUpdater.checkForUpdates();
+    } catch (err) {
+      console.error('差分更新检查失败，将尝试完整包检测:', err.message);
+    }
+
+    const fullMetadata = await metadataPromise;
+    const updateInfo = updateResult && updateResult.updateInfo;
+    const hasDifferentialUpdate = updateInfo
+      && VERSION_PATTERN.test(String(updateInfo.version || ''))
+      && isNewerVersion(updateInfo.version, app.getVersion());
+
+    if (hasDifferentialUpdate) {
+      activeUpdateMetadata = {
+        ...updateInfo,
+        changelog: fullMetadata && fullMetadata.version === updateInfo.version
+          ? fullMetadata.changelog
+          : updateInfo.releaseNotes
+      };
+      activeUpdateContext = context;
+      autoUpdaterActive = true;
+      showAutomaticUpdate(activeUpdateMetadata, context);
+      try {
+        await autoUpdater.downloadUpdate();
+        return true;
+      } catch (err) {
+        autoUpdaterActive = false;
+        console.error('差分更新下载失败，立即切换完整包续传:', err.message);
+      }
+    }
+
+    if (fullMetadata) {
+      return downloadAndInstallFullUpdate(fullMetadata, context);
+    }
+
+    if (hasDifferentialUpdate) return 'failed';
+    return false;
+  })();
+
+  try {
+    return await automaticUpdateFlow;
+  } finally {
+    automaticUpdateFlow = null;
+  }
+}
+
+function startPeriodicUpdateChecks() {
+  if (!app.isPackaged || periodicUpdateTimer) return;
+  periodicUpdateTimer = setInterval(() => {
+    if (automaticInstallScheduled || autoUpdaterActive) return;
+    checkAndApplyAutomaticUpdate('runtime').catch(err => {
+      console.error('运行中更新检查失败:', err.message);
+    });
+  }, 30 * 60 * 1000);
+  if (typeof periodicUpdateTimer.unref === 'function') periodicUpdateTimer.unref();
 }
 
 // ========== 热更新（轻量级源文件更新） ==========
 
 function sendUpdateProgress(stage, extra) {
-  if (loginWindow && !loginWindow.isDestroyed()) {
-    loginWindow.webContents.send('update-progress', { stage, ...extra });
-  }
+  sendUpdateWindowEvent('update-progress', { stage, ...(extra || {}) });
 }
 
 // 读取热更新版本号（ASAR 启用时 app.getVersion() 不会随热更新变化，需用独立文件跟踪）
@@ -1606,7 +1758,8 @@ async function checkForHotUpdate() {
     if (loginWindow && !loginWindow.isDestroyed() && !loginWindow.isVisible()) {
       loginWindow.show();
     }
-    sendUpdateProgress('downloading', { version: newVersion, percent: 0 });
+    const hotUpdateChangelog = normalizeUpdateNotes(checkData.changelog || checkData.releaseNotes);
+    sendUpdateProgress('downloading', { version: newVersion, percent: 0, changelog: hotUpdateChangelog });
 
     // 下载更新包
     const downloadUrl = `${API_BASE_URL}/api/update/download`;
@@ -1641,7 +1794,7 @@ async function checkForHotUpdate() {
           }
           if (totalSize > 0) {
             const percent = Math.round((receivedSize / totalSize) * 100);
-            sendUpdateProgress('downloading', { version: newVersion, percent });
+            sendUpdateProgress('downloading', { version: newVersion, percent, changelog: hotUpdateChangelog });
           }
         });
 
@@ -1667,7 +1820,7 @@ async function checkForHotUpdate() {
     });
 
     console.log('热更新: 下载完成, 开始安装...');
-    sendUpdateProgress('installing');
+    sendUpdateProgress('installing', { version: newVersion, changelog: hotUpdateChangelog });
 
     // 提前记录更新尝试（循环防护：即使复制失败也不会无限重试）
     storeSet('_hotUpdateAttempt', { targetVersion: newVersion, timestamp: Date.now() });
@@ -1748,7 +1901,7 @@ async function checkForHotUpdate() {
 
     console.log('热更新: 安装完成, 版本已更新到', newVersion);
 
-    sendUpdateProgress('done');
+    sendUpdateProgress('done', { version: newVersion, changelog: hotUpdateChangelog });
 
     // 延迟重启应用
     setTimeout(() => {
@@ -1921,37 +2074,45 @@ app.whenReady().then(async () => {
   }
   createLoginWindow();
 
-  // 等待登录页加载完成后，按优先级检查更新：全量更新优先 → 热更新
-  // 全量更新必须优先：热更新构建在特定 base 上，base 太旧会不兼容
-  loginWindow.webContents.on('did-finish-load', async () => {
-    // 1. 先快速检查全量更新（仅 HTTP 查版本，不下载）
-    const fullUpdate = await checkFullUpdateAvailable();
-    if (fullUpdate) {
-      // 有全量更新，显示登录窗口并下载安装包（跳过热更新）
-      if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
-      downloadAndInstallFullUpdate(fullUpdate);
+  // 登录页加载后先显示“正在检查更新”的启动状态；检查完成且无更新才展示账号表单。
+  // 完整安装包必须优先：热更新构建在特定 base 上，base 太旧会不兼容。
+  loginWindow.webContents.once('did-finish-load', async () => {
+    activeUpdateContext = 'startup';
+    sendUpdateProgress('checking', { message: '正在检查完整版本和更新文件...' });
+    if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
+
+    const fullUpdated = await checkAndApplyAutomaticUpdate('startup');
+    if (fullUpdated === true) return;
+    if (fullUpdated === 'failed') {
+      // 已确认存在完整新版时不再尝试热更新，避免不同基础版本互相覆盖。
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      sendUpdateProgress('none');
+      startPeriodicUpdateChecks();
       return;
     }
 
-    // 2. 无全量更新，检查热更新
-    try {
-      const updated = await checkForHotUpdate();
-      if (updated) {
-        // 有热更新，显示窗口让用户看到进度条，安装后自动重启
-        if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
-        return;
+    // 开发版只运行本机代码，不自动下载安装线上更新。
+    if (app.isPackaged) {
+      try {
+        const hotUpdated = await checkForHotUpdate();
+        if (hotUpdated) return;
+      } catch (e) {
+        console.log('热更新检查异常:', e.message);
       }
-    } catch (e) {
-      console.log('热更新检查异常:', e.message);
     }
 
-    // 3. 都没更新，显示登录窗口
-    if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
+    sendUpdateProgress('none');
+    if (loginWindow && !loginWindow.isDestroyed() && !loginWindow.isVisible()) loginWindow.show();
+    startPeriodicUpdateChecks();
   });
 });
 
 app.on('before-quit', () => {
   wmsIsQuitting = true;
+  if (periodicUpdateTimer) {
+    clearInterval(periodicUpdateTimer);
+    periodicUpdateTimer = null;
+  }
   stopHeartbeat();
   shopSffHttpsAgent.destroy();
   // 清理隐藏的JD页面窗口

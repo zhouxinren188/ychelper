@@ -20,6 +20,7 @@ const path = require('path')
 const fs = require('fs')
 
 const ROOT = path.resolve(__dirname, '..')
+const ELECTRON_MAJOR = Number(require('electron/package.json').version.split('.')[0])
 
 const COMPILE_TARGETS = [
   {
@@ -55,14 +56,21 @@ async function main() {
       console.log(`[compile-bytecode] 编译 ${target.loaderName} ...`)
 
       try {
-        await bytenode.compileFile({
+        const compileOptions = {
           filename: target.src,
-          // Electron 42+ 必须在真实 main/browser 进程中编译，否则 V8 快照校验不匹配会导致 SIGTRAP。
-          electronMain: true,
           compileAsModule: true,
           createLoader: 'commonjs',
           loaderFilename: target.loaderName
-        })
+        }
+        // Electron 42+ 必须使用真实 main/browser 进程；较早版本使用
+        // ELECTRON_RUN_AS_NODE 编译才能正常退出并生成匹配其 V8 版本的字节码。
+        if (ELECTRON_MAJOR >= 42) {
+          compileOptions.electronMain = true
+        } else {
+          compileOptions.electron = true
+        }
+        console.log(`[compile-bytecode] Electron ${ELECTRON_MAJOR}: ${ELECTRON_MAJOR >= 42 ? 'electronMain' : 'electron'} 模式`)
+        await bytenode.compileFile(compileOptions)
       } catch (err) {
         console.error(`[compile-bytecode] 编译失败: ${target.src}`)
         console.error(err)
