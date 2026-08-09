@@ -35,7 +35,15 @@
 
       <div class="nav-section">
         <div class="nav-section-title">自动化处理</div>
-        <div class="nav-item" data-page="shopManage">店铺管理</div>
+        <div class="nav-item nav-item-with-badge" data-page="shopManage">
+          <span>快速打标</span>
+          <span class="nav-hot-badge" aria-label="热门功能">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M9.6 1.4c.3 2-1 2.9-1.8 4.1-.7-1-.8-1.9-.5-3.1C4.8 4.1 3.5 6.2 3.8 8.7c.3 3 2.2 5 4.8 5 2.4 0 4.2-1.7 4.2-4.3 0-2.2-1.3-4.6-3.2-8Z" />
+            </svg>
+            HOT
+          </span>
+        </div>
       </div>
 
       <div class="sidebar-bottom">
@@ -67,7 +75,13 @@
       <!-- 店铺打标页面 -->
       <div class="page active" id="page-shopLabel">
         <div class="page-header">
-          <span class="page-icon">📋</span>
+          <span class="page-icon page-icon-label" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M8 5H6.5A2.5 2.5 0 0 0 4 7.5v12A2.5 2.5 0 0 0 6.5 22h11a2.5 2.5 0 0 0 2.5-2.5v-12A2.5 2.5 0 0 0 17.5 5H16" />
+              <rect x="8" y="2" width="8" height="5" rx="2" />
+              <path d="m8.5 14 2.2 2.2 4.8-5" />
+            </svg>
+          </span>
           <span class="page-title">店铺打标</span>
         </div>
 
@@ -250,7 +264,13 @@
       <!-- 收货页面 -->
       <div class="page" id="page-acceptance">
         <div class="page-header">
-          <span class="page-icon">📦</span>
+          <span class="page-icon page-icon-acceptance" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="m4 7 8-4 8 4v10l-8 4-8-4Z" />
+              <path d="m4 7 8 4 8-4M12 11v10" />
+              <path d="m8.2 15.2 1.7 1.7 3.4-3.5" />
+            </svg>
+          </span>
           <span class="page-title">验收商品</span>
         </div>
 
@@ -357,8 +377,15 @@
 
       <div class="page" id="page-shopManage">
         <div class="page-header">
-          <span class="page-icon">🏪</span>
-          <span class="page-title">店铺管理</span>
+          <span class="page-icon page-icon-shop" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 10v10h16V10" />
+              <path d="M3 9 5 4h14l2 5" />
+              <path d="M3 9a3 3 0 0 0 5 2 3 3 0 0 0 4 0 3 3 0 0 0 4 0 3 3 0 0 0 5-2" />
+              <path d="M9 20v-5h6v5" />
+            </svg>
+          </span>
+          <span class="page-title">快速打标</span>
           <span class="ao-header-stats">
             <span class="ao-stat-item">今日处理店铺：<b id="smTodayShops" style="color:#7b2d8e">0</b></span>
             <span class="ao-stat-item">今日提取SKU：<b id="smTodaySkus" style="color:#e67e22">0</b></span>
@@ -367,31 +394,73 @@
         <div class="ao-body">
           <!-- 筛选栏 -->
           <div class="ao-filter-bar">
-            <div class="ao-filter-grid">
-              <div class="ao-filter-item">
+            <div class="ao-filter-grid sm-filter-grid">
+              <div class="ao-filter-item sm-filter-shop">
                 <label>店铺选择</label>
                 <div class="sm-shop-inline">
-                  <select id="smShopSelect"><option value="">请先添加店铺</option></select>
-                  <span class="sm-shop-status-inline offline" id="smStatusTag">离线</span>
+                  <select id="smShopSelect" hidden aria-hidden="true"><option value="">请先添加店铺</option></select>
+                  <button type="button" class="sm-shop-select-trigger" id="smShopSelectTrigger"
+                          aria-haspopup="listbox" aria-expanded="false">
+                    <span class="sm-shop-select-text" id="smShopSelectText">请先添加店铺</span>
+                    <span class="sm-shop-status-inline offline" id="smStatusTag">未选择</span>
+                    <span class="sm-shop-select-arrow" aria-hidden="true"></span>
+                  </button>
+                  <div class="sm-shop-select-dropdown" id="smShopSelectDropdown" role="listbox" hidden>
+                    <div class="sm-shop-select-heading">全部店铺</div>
+                    <div class="sm-shop-select-list" id="smShopSelectList"></div>
+                  </div>
                 </div>
               </div>
-              <div class="ao-filter-item">
-                <label>&nbsp;</label>
+              <div class="ao-filter-item sm-filter-actions">
                 <div class="sm-btn-group">
                   <button class="btn btn-danger btn-sm" id="smManageBtn">管理店铺</button>
-                  <button class="btn btn-primary btn-sm" id="smLoginBtn">登录后台</button>
+                  <button class="btn btn-primary btn-sm" id="smLoginBtn">登录店铺</button>
                 </div>
               </div>
-              <div class="ao-filter-item"></div>
-              <div class="ao-filter-item">
-                <label>上架时间</label>
-                <div class="sm-range-inline">
-                  <input type="date" id="smDateFrom" />
-                  <span>至</span>
-                  <input type="date" id="smDateTo" />
+              <div class="ao-filter-item sm-filter-time">
+                <label>选择时间</label>
+                <div class="sm-date-range-picker" id="smDateRangePicker">
+                  <input type="hidden" id="smDateFrom" />
+                  <input type="hidden" id="smDateTo" />
+                  <button type="button" class="sm-date-range-trigger" id="smDateRangeTrigger"
+                          aria-haspopup="dialog" aria-expanded="false">
+                    <span id="smDateRangeText">请选择开始和结束时间</span>
+                  </button>
+                  <div class="sm-date-range-popover" id="smDateRangePopover" role="dialog"
+                       aria-label="选择日期和时间范围" hidden>
+                    <div class="sm-date-range-header">
+                      <button type="button" id="smDateRangePrev" aria-label="上一个月">‹</button>
+                      <strong id="smDateRangeMonth"></strong>
+                      <button type="button" id="smDateRangeNext" aria-label="下一个月">›</button>
+                    </div>
+                    <div class="sm-date-range-weekdays" aria-hidden="true">
+                      <span>日</span><span>一</span><span>二</span><span>三</span>
+                      <span>四</span><span>五</span><span>六</span>
+                    </div>
+                    <div class="sm-date-range-calendar" id="smDateRangeCalendar"></div>
+                    <div class="sm-date-range-times">
+                      <label>
+                        <span>开始</span>
+                        <b id="smDateRangeStartText">未选择</b>
+                        <input type="time" id="smDateRangeStartTime" step="60" value="00:00" />
+                      </label>
+                      <span class="sm-date-range-time-arrow" aria-hidden="true">→</span>
+                      <label>
+                        <span>结束</span>
+                        <b id="smDateRangeEndText">未选择</b>
+                        <input type="time" id="smDateRangeEndTime" step="60" value="23:59" />
+                      </label>
+                    </div>
+                    <div class="sm-date-range-actions">
+                      <button type="button" id="smDateRangeClear">清空</button>
+                      <span></span>
+                      <button type="button" id="smDateRangeCancel">取消</button>
+                      <button type="button" class="is-primary" id="smDateRangeConfirm">确定</button>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="ao-filter-item">
+              <div class="ao-filter-item sm-filter-price">
                 <label>售价范围</label>
                 <div class="sm-range-inline">
                   <input type="number" id="smPriceMin" placeholder="最低" min="0" step="0.01" />
@@ -399,15 +468,16 @@
                   <input type="number" id="smPriceMax" placeholder="最高" min="0" step="0.01" />
                 </div>
               </div>
-              <div class="ao-filter-item">
+              <div class="ao-filter-item sm-filter-status">
                 <label>商品状态</label>
                 <div class="sm-radio-group">
-                  <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="在售" checked />在售</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="全部商品" />全部商品</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="售卖中" checked />售卖中</label>
                   <label class="sm-radio"><input type="radio" name="smGoodsStatus" value="已下架" />已下架</label>
                 </div>
               </div>
-              <div class="ao-filter-item ao-filter-item-wide">
-                <label>商品数量</label>
+              <div class="ao-filter-item ao-filter-item-wide sm-filter-quantity">
+                <label>单品SKU</label>
                 <div class="sm-radio-group">
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="全部" checked />全部</label>
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="第1个" />SKU第1个</label>
@@ -421,16 +491,27 @@
           </div>
 
           <!-- 操作按钮组 -->
-          <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-shrink:0;">
-            <div class="ao-action-bar">
-              <button class="btn ao-btn" id="smQueryBtn" disabled>查询商品</button>
-              <button class="btn ao-btn" id="smExportBtn" disabled>导出 TXT</button>
-              <button class="btn ao-btn" id="smSendBtn" disabled>发送到打标</button>
-              <button class="btn ao-btn" id="smSendDownBtn" disabled>发送到下标</button>
+          <div class="sm-action-row">
+            <div class="sm-action-group" role="group" aria-label="商品操作">
+              <button class="btn sm-action-btn sm-action-btn-primary" id="smQueryBtn" disabled>查询商品</button>
+              <button class="btn sm-action-btn" id="smExportBtn" disabled>导出 TXT</button>
+              <button class="btn sm-action-btn" id="smSendBtn" disabled>发送到打标</button>
+              <button class="btn sm-action-btn" id="smSendDownBtn" disabled>发送到下标</button>
             </div>
-            <button class="btn" id="smOpenShopBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">🌐 打开店铺后台</button>
-            <button class="btn" id="smCaptureBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">&#128269; 开始抓包</button>
-            <span id="smCaptureStatus" style="font-size:11px;color:#999;display:none;"></span>
+          </div>
+
+          <div class="sm-query-progress" id="smQueryProgress" role="progressbar"
+               aria-label="商品查询进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+            <div class="sm-query-progress-head">
+              <span id="smQueryProgressLabel">正在准备查询…</span>
+              <span class="sm-query-progress-meta">
+                <span id="smQueryProgressCount"></span>
+                <span id="smQueryProgressEta">正在估算用时</span>
+              </span>
+            </div>
+            <div class="sm-query-progress-track">
+              <div class="sm-query-progress-fill" id="smQueryProgressFill"></div>
+            </div>
           </div>
 
           <!-- 商品列表表格 -->
@@ -471,7 +552,13 @@
       <!-- 异常订单处理页面 -->
       <div class="page" id="page-abnormalOrders">
         <div class="page-header">
-          <span class="page-icon">&#9888;</span>
+          <span class="page-icon page-icon-warning" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M10.2 4.2 2.8 17a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.8 4.2a2 2 0 0 0-3.6 0Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+          </span>
           <span class="page-title">异常订单处理</span>
           <span class="ao-header-stats">
             <span class="ao-stat-item">异常中心：<b id="aoBillExCount" style="color:#7b2d8e">0</b></span>
@@ -515,14 +602,10 @@
           </div>
 
           <!-- 操作按钮区（筛选与表格之间） -->
-          <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-shrink:0;">
-            <div class="ao-action-bar">
-              <button class="btn btn-primary ao-btn" id="aoQueryBtn">查询</button>
-              <button class="btn ao-btn ao-btn-reset" id="aoResetBtn">重置</button>
-              <button class="btn ao-btn ao-btn-batch" id="aoBatchBtn">批量处理</button>
-            </div>
-            <button class="btn" id="aoCaptureBtn" style="height:34px;padding:0 14px;font-size:12px;background:#f0f0f0;color:#666;border:1px solid #d9d9d9;border-radius:4px;cursor:pointer;">&#128269; 开始抓包</button>
-            <span id="aoCaptureStatus" style="font-size:11px;color:#999;display:none;"></span>
+          <div class="ao-action-bar">
+            <button class="btn btn-primary ao-btn" id="aoQueryBtn">查询</button>
+            <button class="btn ao-btn ao-btn-reset" id="aoResetBtn">重置</button>
+            <button class="btn ao-btn ao-btn-batch" id="aoBatchBtn">批量处理</button>
           </div>
 
           <!-- 表格区（全宽） -->
@@ -790,7 +873,7 @@
           </div>
         </div>
         <div class="modal-actions" style="justify-content:flex-start; gap:12px;">
-          <button class="btn btn-primary" id="smLoginShopBtn" style="min-width:80px;">登录</button>
+          <button class="btn btn-primary" id="smLoginShopBtn" style="min-width:100px;">登录并保存</button>
           <button class="btn btn-danger" id="smSaveShopBtn" style="min-width:80px;">保存</button>
         </div>
       </div>
@@ -820,22 +903,6 @@
         </div>
         <div class="modal-actions">
           <button class="btn btn-primary" id="smConfirmSendBtn">确认发送</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 抓包结果弹窗 -->
-  <div class="modal-overlay" id="captureResultModal" style="display:none">
-    <div class="modal" style="width:750px;max-height:600px;">
-      <div class="modal-header">
-        <span id="captureResultTitle">抓包结果</span>
-        <button class="modal-close" id="captureResultClose">&times;</button>
-      </div>
-      <div class="modal-body" style="padding:12px;">
-        <textarea id="captureResultText" readonly style="width:100%;height:420px;font-family:Consolas,'Courier New',monospace;font-size:11px;border:1px solid #e0e0e0;border-radius:4px;padding:10px;resize:none;background:#1e1e1e;color:#d4d4d4;line-height:1.5;outline:none;"></textarea>
-        <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;">
-          <button class="btn" id="captureResultCopy" style="background:#3498db;color:#fff;padding:6px 16px;">复制内容</button>
         </div>
       </div>
     </div>
@@ -876,6 +943,9 @@
     </div>
   </div>
 
+  <script src="js/subscriptionAccess.js"></script>
+  <script src="js/dateTimeRangePicker.js"></script>
+  <script src="js/shopGoodsSelection.js"></script>
   <script src="js/renderer.js"></script>
 </body>
 </html>

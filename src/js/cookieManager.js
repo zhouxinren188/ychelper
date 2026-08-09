@@ -3,12 +3,39 @@
  * 为商家端、仓库端、店铺账号提供独立的 cookie 文件存储与恢复功能
  */
 
-const { app, session } = require('electron');
+const { app, session, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 // Cookie 文件存储目录
 const COOKIE_DIR = path.join(app.getPath('userData'), 'cookies');
+const ENCRYPTED_COOKIE_PREFIX = 'YCH-COOKIE-ENC-V1:';
+
+function encodeCookieData(data) {
+  const json = JSON.stringify(data);
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn('Cookie 加密不可用，暂以明文保存');
+    return JSON.stringify(data, null, 2);
+  }
+  return ENCRYPTED_COOKIE_PREFIX + safeStorage.encryptString(json).toString('base64');
+}
+
+function decodeCookieData(raw, filePath) {
+  if (raw.startsWith(ENCRYPTED_COOKIE_PREFIX)) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('系统安全存储当前不可用，无法解密 Cookie');
+    }
+    const encrypted = Buffer.from(raw.slice(ENCRYPTED_COOKIE_PREFIX.length), 'base64');
+    return JSON.parse(safeStorage.decryptString(encrypted));
+  }
+
+  const data = JSON.parse(raw);
+  if (safeStorage.isEncryptionAvailable() && filePath) {
+    fs.writeFileSync(filePath, encodeCookieData(data), 'utf-8');
+    console.log(`Cookie 文件已迁移为加密格式: ${path.basename(filePath)}`);
+  }
+  return data;
+}
 
 // 各账号类型对应的 domain 列表
 const DOMAIN_MAP = {
@@ -16,6 +43,16 @@ const DOMAIN_MAP = {
   wms: ['.jdl.com', '.jd.com'],
   shop: ['.jd.com']
 };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validateAccountIdentity(type, id) {
+  if (!Object.prototype.hasOwnProperty.call(DOMAIN_MAP, type)) {
+    throw new Error('无效的账号类型');
+  }
+  if (!UUID_PATTERN.test(String(id || ''))) {
+    throw new Error('无效的账号 ID');
+  }
+}
 
 /**
  * 确保 cookie 存储目录存在
@@ -28,22 +65,71 @@ function ensureCookieDir() {
 }
 
 /**
+ * 启动时迁移所有历史明文 Cookie 文件，避免只有当前使用的账号被延迟迁移。
+ * 无法解析或命名不符合规范的文件保持原样，防止误覆盖用户数据。
+ */
+function migrateLegacyCookieFiles() {
+  ensureCookieDir();
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn('Cookie 加密不可用，跳过历史文件迁移');
+    return { migrated: 0, skipped: 0, failed: 0 };
+  }
+
+  const validFilename = /^(merchant|wms|shop)-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/i;
+  const result = { migrated: 0, skipped: 0, failed: 0 };
+
+  for (const filename of fs.readdirSync(COOKIE_DIR)) {
+    if (!validFilename.test(filename)) {
+      result.skipped++;
+      continue;
+    }
+
+    const filePath = path.join(COOKIE_DIR, filename);
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      if (raw.startsWith(ENCRYPTED_COOKIE_PREFIX)) {
+        result.skipped++;
+        continue;
+      }
+
+      const data = JSON.parse(raw);
+      const tempPath = `${filePath}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(tempPath, encodeCookieData(data), 'utf-8');
+        fs.renameSync(tempPath, filePath);
+      } finally {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      }
+      result.migrated++;
+    } catch (err) {
+      result.failed++;
+      console.error(`Cookie 历史文件迁移失败 [${filename}]:`, err.message);
+    }
+  }
+
+  console.log(`Cookie 历史文件迁移完成: 已迁移 ${result.migrated}, 已跳过 ${result.skipped}, 失败 ${result.failed}`);
+  return result;
+}
+
+/**
  * 获取 cookie 文件路径
  * @param {string} type - 账号类型: merchant / wms / shop
- * @param {string} id - 账号 UUID
+ * @param {string} id - 本地账号 UUID（不是服务端商家 ID）
  * @returns {string}
  */
 function getCookieFilePath(type, id) {
+  validateAccountIdentity(type, id);
   return path.join(COOKIE_DIR, `${type}-${id}.json`);
 }
 
 /**
  * 获取指定账号的 Electron session 分区名
  * @param {string} type - 账号类型
- * @param {string} id - 账号 UUID
+ * @param {string} id - 本地账号 UUID（不是服务端商家 ID）
  * @returns {string}
  */
 function getPartitionName(type, id) {
+  validateAccountIdentity(type, id);
   return `persist:${type}-${id}`;
 }
 
@@ -93,7 +179,7 @@ async function exportCookies(ses, type, id) {
     };
 
     const filePath = getCookieFilePath(type, id);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(filePath, encodeCookieData(data), 'utf-8');
     console.log(`Cookie 导出: ${type}-${id} 共 ${uniqueCookies.length} 条 cookie 已保存`);
     return true;
   } catch (err) {
@@ -118,7 +204,7 @@ async function importCookies(ses, type, id) {
     }
 
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(raw);
+    const data = decodeCookieData(raw, filePath);
 
     if (!data.cookies || !Array.isArray(data.cookies) || data.cookies.length === 0) {
       console.log(`Cookie 导入: ${type}-${id} 文件中无 cookie 数据`);
@@ -177,7 +263,7 @@ function validateCookieFile(type, id) {
     if (!fs.existsSync(filePath)) return false;
 
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(raw);
+    const data = decodeCookieData(raw, filePath);
 
     if (!data.cookies || !Array.isArray(data.cookies) || data.cookies.length === 0) {
       return false;
@@ -232,6 +318,7 @@ async function clearPartition(partitionName) {
 
 module.exports = {
   ensureCookieDir,
+  migrateLegacyCookieFiles,
   getCookieFilePath,
   getPartitionName,
   exportCookies,

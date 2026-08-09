@@ -470,7 +470,13 @@
         const opt = document.createElement('div');
         opt.className = 'account-option';
         const masked = item.password ? '****' : '';
-        opt.innerHTML = '<span class="account-name">' + item.username + '</span><span class="account-mask">' + masked + '</span>';
+        const name = document.createElement('span');
+        name.className = 'account-name';
+        name.textContent = item.username || '';
+        const mask = document.createElement('span');
+        mask.className = 'account-mask';
+        mask.textContent = masked;
+        opt.append(name, mask);
         opt.addEventListener('click', () => {
           usernameInput.value = item.username;
           passwordInput.value = item.password || '';

@@ -57,7 +57,8 @@ async function main() {
       try {
         await bytenode.compileFile({
           filename: target.src,
-          electron: true,
+          // Electron 42+ 必须在真实 main/browser 进程中编译，否则 V8 快照校验不匹配会导致 SIGTRAP。
+          electronMain: true,
           compileAsModule: true,
           createLoader: 'commonjs',
           loaderFilename: target.loaderName

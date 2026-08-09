@@ -18,6 +18,7 @@ const buildCmd = isDir ? 'electron-builder --win --dir' : 'electron-builder --wi
 
 async function main() {
   console.log('=== 云仓助手生产构建 ===\n')
+  let buildError = null
 
   try {
     // 1. 编译字节码
@@ -29,12 +30,15 @@ async function main() {
     execSync(buildCmd, { cwd: ROOT, stdio: 'inherit' })
 
   } catch (err) {
+    buildError = err
     console.error('\n构建失败:', err.message)
   } finally {
     // 3. 无论成功或失败，恢复源文件
     console.log('\n[3/3] 恢复源文件...')
     restoreBackups()
   }
+
+  if (buildError) throw buildError
 }
 
 function restoreBackups() {

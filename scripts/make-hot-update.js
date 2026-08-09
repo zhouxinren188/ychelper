@@ -45,17 +45,6 @@ const zip = new AdmZip()
 // 添加 src/ 目录（保持目录结构）
 zip.addLocalFolder(srcDir, 'src')
 
-// 添加 package.json（版本号检测需要）
-// 如果指定的版本号与 package.json 中的不同，用指定版本号覆盖
-if (version !== pkg.version) {
-  const modifiedPkg = { ...pkg, version }
-  const pkgBuffer = Buffer.from(JSON.stringify(modifiedPkg, null, 2), 'utf-8')
-  zip.addFile('package.json', pkgBuffer)
-  console.log(`  (package.json 版本号已覆盖: ${pkg.version} → ${version})`)
-} else {
-  zip.addLocalFile(path.join(ROOT, 'package.json'))
-}
-
 const zipFilename = `update-${version}.zip`
 const zipPath = path.join(DIST_DIR, zipFilename)
 zip.writeZip(zipPath)

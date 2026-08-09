@@ -1,11 +1,12 @@
 {
   "name": "cloud-warehouse-assistant",
-  "version": "1.0.68",
+  "version": "1.0.69",
   "description": "云仓助手 - 京东物流云仓自动化工具",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "node test-date-query.js && node test-sku-expand.js && node tests/date-time-range-picker.test.js && node tests/shop-goods-query.test.js && node tests/shop-goods-selection.test.js && node tests/shop-export-file.test.js && node tests/shop-session-state.test.js && node tests/wms-page-state.test.js && node tests/wms-session-state.test.js && node tests/automation-access.test.js && node tests/ipc-contract.test.js",
     "build": "node scripts/build.js",
     "build:dir": "node scripts/build.js --dir",
     "make-hot-update": "node scripts/make-hot-update.js"
@@ -26,6 +27,7 @@
     "files": [
       "main.js",
       "main.jsc",
+      "logger.js",
       "preload.js",
       "src/**/*",
       "!src/icon.png"
@@ -50,19 +52,19 @@
     }
   },
   "devDependencies": {
-    "electron": "^35.0.0",
+    "electron": "^43.3.0",
     "electron-builder": "^26.8.1",
-    "http-mitm-proxy": "^1.1.0",
+    "jsdom": "^29.1.1",
     "png-to-ico": "^3.0.1"
   },
   "dependencies": {
     "7zip-min": "^3.0.1",
-    "adm-zip": "^0.5.17",
-    "bytenode": "^1.5.7",
+    "adm-zip": "^0.6.0",
+    "bytenode": "^1.6.0",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.8.3",
     "puppeteer-core": "^24.42.0",
     "qrcode": "^1.5.4",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

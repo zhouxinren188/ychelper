@@ -98,25 +98,37 @@
   <div class="dept-list" id="deptList"></div>
 
   <script>
-    const { ipcRenderer } = require('electron');
-
-    ipcRenderer.on('dept-list', (event, deptPairs) => {
+    window.electronAPI.onDeptList((deptPairs) => {
       const container = document.getElementById('deptList');
-      container.innerHTML = '';
+      container.replaceChildren();
 
       deptPairs.forEach(dept => {
         const item = document.createElement('div');
         item.className = 'dept-item';
-        item.innerHTML = `
-          <div class="dept-icon">${(dept.deptName || '?')[0]}</div>
-          <div class="dept-info">
-            <div class="dept-name">${dept.deptName || '未命名事业部'}</div>
-            <div class="dept-no">${dept.deptNo || ''}</div>
-          </div>
-          <div class="dept-arrow">&#8250;</div>
-        `;
+
+        const icon = document.createElement('div');
+        icon.className = 'dept-icon';
+        icon.textContent = String(dept.deptName || '?').charAt(0) || '?';
+
+        const info = document.createElement('div');
+        info.className = 'dept-info';
+
+        const name = document.createElement('div');
+        name.className = 'dept-name';
+        name.textContent = dept.deptName || '未命名事业部';
+
+        const number = document.createElement('div');
+        number.className = 'dept-no';
+        number.textContent = dept.deptNo || '';
+
+        const arrow = document.createElement('div');
+        arrow.className = 'dept-arrow';
+        arrow.textContent = '›';
+
+        info.append(name, number);
+        item.append(icon, info, arrow);
         item.addEventListener('click', () => {
-          ipcRenderer.send('select-department', dept);
+          window.electronAPI.selectDepartment(dept);
         });
         container.appendChild(item);
       });

@@ -7,6 +7,7 @@ let shopOptions = []; // 店铺选项数据（当前事业部过滤后）
 let allShopOptions = []; // 全量店铺选项（不受事业部筛选影响）
 let importedFileName = ''; // 当前导入的文本文件名（无扩展名）
 let currentTier = 'basic'; // 当前订阅版本：basic, standard, premium
+let currentSubscriptionStatus = ''; // 当前订阅状态：trial, active, expired...
 let previousDeptValue = ''; // 事业部切换前的值，用于回退
 
 // ========== Toast 提示（替代 alert，非阻塞） ==========
@@ -134,10 +135,10 @@ async function loadUserData() {
 function initNavigation() {
   $$('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
+      const page = item.dataset.page;
       $$('.nav-item').forEach(n => n.classList.remove('active'));
       item.classList.add('active');
 
-      const page = item.dataset.page;
       $$('.page').forEach(p => p.classList.remove('active'));
       $(`#page-${page}`).classList.add('active');
     });
@@ -1495,6 +1496,8 @@ $('#shopSelectWrapper').addEventListener('click', (e) => {
 
 // ========== WMS 验收上架 ==========
 let wmsLoggedIn = false;
+let wmsWarehouseNo = '';
+let wmsRestoreStatus = '';
 let wmsOrders = [];
 let wmsIsProcessing = false;
 let wmsAutoMode = false;      // 自动验收是否开启
@@ -1636,8 +1639,10 @@ function initWmsEventListeners() {
       return;
     }
     // 保存凭据
+    let loginAccount = { username, password };
     if (window.electronAPI.saveWmsCredentials) {
-      await window.electronAPI.saveWmsCredentials({ username, password });
+      const savedAccount = await window.electronAPI.saveWmsCredentials({ username, password });
+      if (savedAccount?.id) loginAccount = { ...loginAccount, id: savedAccount.id };
       // 刷新下拉账号列表
       if (window.electronAPI.getWmsAccounts) {
         wmsAccountsList = await window.electronAPI.getWmsAccounts() || [];
@@ -1647,12 +1652,16 @@ function initWmsEventListeners() {
       }
     }
     addWmsLog('info', '正在打开 WMS 登录窗口...');
-    window.electronAPI.openWmsLogin({ username, password });
+    window.electronAPI.openWmsLogin(loginAccount);
   });
 
   // 查询按钮
   wmsQueryBtn.addEventListener('click', async () => {
     if (wmsIsProcessing) return;
+    if (!wmsLoggedIn && (wmsRestoreStatus === 'network_error' || wmsRestoreStatus === 'service_error')) {
+      await checkWmsInitialStatus();
+      return;
+    }
     await handleWmsQuery();
   });
 
@@ -1784,7 +1793,9 @@ function initWmsEventListeners() {
   if (window.electronAPI.onWmsLoginSuccess) {
     window.electronAPI.onWmsLoginSuccess((data) => {
       const warehouseName = data?.warehouseName || '';
-      updateWmsLoginStatus(true, warehouseName);
+      const warehouseNo = data?.warehouseNo || '';
+      wmsRestoreStatus = 'valid';
+      updateWmsLoginStatus(true, warehouseName, warehouseNo);
       const logMsg = warehouseName ? `WMS 系统登录成功，仓库: ${warehouseName}` : 'WMS 系统登录成功';
       addWmsLog('success', logMsg);
       // 登录成功后自动查询一次入库单
@@ -1830,8 +1841,9 @@ function initWmsEventListeners() {
 }
 
 // 更新 WMS 登录状态
-function updateWmsLoginStatus(loggedIn, warehouseName) {
+function updateWmsLoginStatus(loggedIn, warehouseName, warehouseNo) {
   wmsLoggedIn = loggedIn;
+  wmsWarehouseNo = loggedIn ? (warehouseNo || wmsWarehouseNo) : '';
 
   if (loggedIn) {
     wmsStatusDot.classList.add('online');
@@ -1843,6 +1855,7 @@ function updateWmsLoginStatus(loggedIn, warehouseName) {
     }
     wmsLoginBtn.textContent = '重新登录';
     wmsQueryBtn.disabled = false;
+    wmsQueryBtn.textContent = '查询待验收单据';
     wmsReceiveBtn.disabled = false;
     wmsAutoBtn.disabled = false;
   } else {
@@ -1944,12 +1957,7 @@ async function handleWmsQuery() {
   addWmsLog('info', '正在查询待验收单据...');
 
   try {
-    // 从商家端获取仓库编号（userData 中已有）
-    const userData = await window.electronAPI.getUserData();
-    const warehouses = userData?.warehouses || [];
-    const warehouseNo = warehouses.length > 0 ? warehouses[0].warehouseId : '';
-
-    const result = await window.electronAPI.wmsQueryOrders({ warehouseNo });
+    const result = await window.electronAPI.wmsQueryOrders({ warehouseNo: wmsWarehouseNo });
 
     if (result.success) {
       wmsOrders = result.orders;
@@ -1958,13 +1966,21 @@ async function handleWmsQuery() {
     } else {
       wmsOrders = [];
       renderWmsOrderTable();
-      addWmsLog('error', `查询失败: ${result.error}`);
+      if (result.failureType === 'auth') {
+        wmsRestoreStatus = 'auth_failed';
+        updateWmsLoginStatus(false);
+        addWmsLog('warn', '保存的登录状态已失效，正在重新登录');
+      } else if (result.failureType === 'network' || result.failureType === 'service') {
+        addWmsLog('error', `WMS 验证失败，请稍后重试：${result.error}`);
+      } else {
+        addWmsLog('error', `查询失败: ${result.error}`);
+      }
     }
   } catch (err) {
     addWmsLog('error', `查询异常: ${err.message}`);
   } finally {
     wmsIsProcessing = false;
-    wmsQueryBtn.disabled = false;
+    wmsQueryBtn.disabled = !wmsLoggedIn;
     wmsQueryBtn.textContent = '查询待验收单据';
   }
 }
@@ -1991,10 +2007,7 @@ async function runAutoAcceptance() {
   addWmsLog('info', '[自动验收] 正在扫描待验收单据...');
 
   try {
-    const userData = await window.electronAPI.getUserData();
-    const warehouses = userData?.warehouses || [];
-    const warehouseNo = warehouses.length > 0 ? warehouses[0].warehouseId : '';
-
+    const warehouseNo = wmsWarehouseNo;
     const queryResult = await window.electronAPI.wmsQueryOrders({ warehouseNo });
 
     if (!queryResult.success) {
@@ -2079,11 +2092,45 @@ async function runAutoAcceptance() {
 
 // 检查 WMS 初始登录状态
 async function checkWmsInitialStatus() {
-  if (window.electronAPI.getWmsLoginStatus) {
-    const status = await window.electronAPI.getWmsLoginStatus();
-    if (status) {
-      updateWmsLoginStatus(true);
+  if (!window.electronAPI.restoreWmsSession) return;
+
+  wmsRestoreStatus = 'restoring';
+  updateWmsLoginStatus(false);
+  wmsQueryBtn.textContent = '验证 WMS 中...';
+  addWmsLog('info', '正在恢复上次 WMS 登录状态...');
+  try {
+    const result = await window.electronAPI.restoreWmsSession();
+    wmsRestoreStatus = result?.status || '';
+    wmsQueryBtn.textContent = '查询待验收单据';
+    if (result?.status === 'valid') {
+      updateWmsLoginStatus(true, result.warehouseName || '', result.warehouseNo || '');
+      addWmsLog('success', 'Cookie 恢复成功');
+      wmsOrders = Array.isArray(result.orders) ? result.orders : [];
+      renderWmsOrderTable();
+      addWmsLog('success', `查询完成，共 ${wmsOrders.length} 条单据`);
+      return;
     }
+
+    wmsOrders = [];
+    renderWmsOrderTable();
+    updateWmsLoginStatus(false);
+    if (result?.status === 'auth_failed') {
+      addWmsLog('warn', '保存的登录状态已失效，正在重新登录');
+    } else if (result?.status === 'network_error' || result?.status === 'service_error') {
+      addWmsLog('error', 'WMS 验证失败，请稍后重试');
+      wmsQueryBtn.disabled = false;
+      wmsQueryBtn.textContent = '重试 WMS 验证';
+    } else if (result?.status === 'no_cookie') {
+      addWmsLog('info', '未找到保存的 WMS Cookie，请登录 WMS 系统');
+    } else if (result?.status === 'no_account') {
+      addWmsLog('info', '尚未保存 WMS 账号，请先登录');
+    }
+  } catch (err) {
+    wmsRestoreStatus = 'network_error';
+    updateWmsLoginStatus(false);
+    addWmsLog('error', `WMS 验证失败，请稍后重试：${err.message}`);
+    wmsQueryBtn.disabled = false;
+    wmsQueryBtn.textContent = '重试 WMS 验证';
   }
 }
 
@@ -2098,6 +2145,7 @@ async function loadSubscriptionInfo() {
     const info = await window.electronAPI.getSubscriptionInfo();
     if (!info) return;
     currentTier = info.tier || 'basic';
+    currentSubscriptionStatus = info.status || '';
     updateSubscriptionBadge(info);
 
     // 剩余不足7天时友情提醒
@@ -2151,17 +2199,23 @@ function getTierLabel(tier) {
 }
 
 function canUseFeature(feature) {
+  if (feature === 'shopManage') {
+    return !!window.subscriptionAccess?.canUseAutomation({
+      status: currentSubscriptionStatus,
+      tier: currentTier
+    });
+  }
   if (!currentTier || currentTier === 'standard' || currentTier === 'premium') return true;
-  const allowedFeatures = ['shopLabel', 'acceptance', 'shopManage'];
+  const allowedFeatures = ['shopLabel', 'acceptance'];
   return allowedFeatures.includes(feature);
 }
 
 function requireTier(feature) {
-  if (feature === 'shopManage' && !smFeatureEnabled) {
-    showToast('该功能开发中，暂不可用', 3000, 'error');
+  if (canUseFeature(feature)) return true;
+  if (feature === 'shopManage') {
+    showToast('自动化处理功能仅限有效试用用户和高级版使用', 4000, 'error');
     return false;
   }
-  if (canUseFeature(feature)) return true;
   showToast('当前为基础版，该功能需升级至标准版或高级版后使用', 4000, 'error');
   return false;
 }
@@ -2169,6 +2223,15 @@ function requireTier(feature) {
 // ========== 订阅事件监听 ==========
 
 function initSubscriptionListeners() {
+  if (window.electronAPI.onSubscriptionInfo) {
+    window.electronAPI.onSubscriptionInfo((info) => {
+      if (!info) return;
+      currentTier = info.tier || 'basic';
+      currentSubscriptionStatus = info.status || '';
+      updateSubscriptionBadge(info);
+    });
+  }
+
   // 被踢下线
   if (window.electronAPI.onSessionKicked) {
     window.electronAPI.onSessionKicked(() => {
@@ -2180,6 +2243,7 @@ function initSubscriptionListeners() {
   // 订阅过期
   if (window.electronAPI.onSubscriptionExpired) {
     window.electronAPI.onSubscriptionExpired(() => {
+      currentSubscriptionStatus = 'expired';
       const modal = document.getElementById('expiredModal');
       if (modal) modal.style.display = 'flex';
     });
@@ -2338,6 +2402,10 @@ function initSubscriptionListeners() {
 let smGoods = [];          // 当前查询到的商品列表
 let smFilteredGoods = [];  // 筛选后的商品列表
 let smLoggedIn = false;    // 店铺登录状态
+let smSelectedShopState = 'empty'; // empty | checking | online | offline | error
+let smQueryProgressHideTimer = null;
+let smQueryEstimateStartedAt = 0;
+let smDateRangePickerController = null;
 
 // DOM 引用
 const smShopSelect = $('#smShopSelect');
@@ -2345,40 +2413,157 @@ const smLogBox = $('#smLogBox');
 const smGoodsTableBody = $('#smGoodsTableBody');
 const smGoodsCount = $('#smGoodsCount');
 const smStatusDot = $('#smStatusTag');
+const smShopSelectTrigger = $('#smShopSelectTrigger');
+const smShopSelectText = $('#smShopSelectText');
+const smShopSelectDropdown = $('#smShopSelectDropdown');
+const smShopSelectList = $('#smShopSelectList');
+const smQueryProgress = $('#smQueryProgress');
+const smQueryProgressLabel = $('#smQueryProgressLabel');
+const smQueryProgressCount = $('#smQueryProgressCount');
+const smQueryProgressEta = $('#smQueryProgressEta');
+const smQueryProgressFill = $('#smQueryProgressFill');
+let smShopAccountStateMap = {};
+let smShopDropdownCheckVersion = 0;
 
-// 检查店铺管理功能开关，未开启则禁用所有操作
-let smFeatureEnabled = true;
+function getSmShopStateLabel(state) {
+  if (state === 'online') return '在线';
+  if (state === 'offline') return '离线';
+  if (state === 'checking') return '检测中';
+  return '检测失败';
+}
 
-async function checkSmFeatureFlag() {
-  smFeatureEnabled = true; // 永久解锁店铺管理功能
+function syncSmShopSelectTrigger() {
+  if (!smShopSelectText || !smShopSelect) return;
+  const selectedOption = smShopSelect.options[smShopSelect.selectedIndex];
+  smShopSelectText.textContent = selectedOption?.value
+    ? selectedOption.textContent
+    : (smShopSelect.options.length > 1 ? '请选择店铺' : '请先添加店铺');
+}
+
+function closeSmShopSelectDropdown() {
+  smShopDropdownCheckVersion++;
+  if (smShopSelectDropdown) smShopSelectDropdown.hidden = true;
+  if (smShopSelectTrigger) smShopSelectTrigger.setAttribute('aria-expanded', 'false');
+  const wrapper = smShopSelectTrigger?.closest('.sm-shop-inline');
+  if (wrapper) wrapper.classList.remove('is-open');
+}
+
+function renderSmShopSelectDropdown(accounts, stateMap = smShopAccountStateMap) {
+  if (!smShopSelectList) return;
+  smShopSelectList.innerHTML = '';
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'sm-shop-select-empty';
+    empty.textContent = '暂无店铺，请先添加';
+    smShopSelectList.appendChild(empty);
+    return;
+  }
+
+  for (const account of accounts) {
+    const state = stateMap[account.id] || 'checking';
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'sm-shop-select-option';
+    option.setAttribute('role', 'option');
+    option.dataset.accountId = account.id;
+    if (String(smShopSelect.value) === String(account.id)) {
+      option.classList.add('is-selected');
+      option.setAttribute('aria-selected', 'true');
+    }
+
+    const name = document.createElement('span');
+    name.className = 'sm-shop-select-option-name';
+    name.textContent = account.name || account.username;
+    name.title = account.name || account.username;
+    const badge = document.createElement('span');
+    badge.className = `sm-shop-option-status ${state}`;
+    badge.textContent = getSmShopStateLabel(state);
+    option.append(name, badge);
+    option.addEventListener('click', () => {
+      smShopSelect.value = account.id;
+      syncSmShopSelectTrigger();
+      closeSmShopSelectDropdown();
+      smShopSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    smShopSelectList.appendChild(option);
+  }
+}
+
+async function openSmShopSelectDropdown() {
+  if (!smShopSelectDropdown || !smShopSelectTrigger) return;
+  const checkVersion = ++smShopDropdownCheckVersion;
+  smShopSelectDropdown.hidden = false;
+  smShopSelectTrigger.setAttribute('aria-expanded', 'true');
+  const wrapper = smShopSelectTrigger.closest('.sm-shop-inline');
+  if (wrapper) wrapper.classList.add('is-open');
+
+  const accounts = await window.electronAPI.getShopAccounts();
+  if (checkVersion !== smShopDropdownCheckVersion || smShopSelectDropdown.hidden) return;
+  renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
+  if (!accounts || accounts.length === 0) return;
+
+  try {
+    const statusResult = await window.electronAPI.checkShopAccountsStatus();
+    if (checkVersion !== smShopDropdownCheckVersion || smShopSelectDropdown.hidden) return;
+    const checkedStateMap = statusResult?.stateMap || {};
+    smShopAccountStateMap = Object.fromEntries(
+      accounts.map(account => [account.id, checkedStateMap[account.id] || 'error'])
+    );
+    renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
+  } catch (error) {
+    if (checkVersion !== smShopDropdownCheckVersion || smShopSelectDropdown.hidden) return;
+    smShopAccountStateMap = Object.fromEntries(accounts.map(account => [account.id, 'error']));
+    renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
+  }
 }
 
 // 初始化店铺管理模块
 async function initSmModule() {
-  // 检查功能开关
-  await checkSmFeatureFlag();
-
-  // 上架日期默认不限（留空）
+  // 恢复上次运行时使用的筛选条件；首次使用时仍保持“不限”。
   const dateFrom = $('#smDateFrom');
   const dateTo = $('#smDateTo');
-  if (dateFrom) dateFrom.value = '';
-  if (dateTo) dateTo.value = '';
-  // 售价范围默认不限（留空）
+  const normalizeSavedDateTime = value => {
+    const parsed = window.dateTimeRangePicker?.parseDateTimeValue(value);
+    return parsed ? `${parsed.date}T${parsed.time}` : '';
+  };
+  const restoreSavedDateTime = (input, storageKey) => {
+    if (!input) return;
+    const savedValue = localStorage.getItem(storageKey) || '';
+    const normalizedValue = normalizeSavedDateTime(savedValue);
+    input.value = normalizedValue;
+    if (savedValue !== normalizedValue) localStorage.setItem(storageKey, normalizedValue);
+  };
+  restoreSavedDateTime(dateFrom, 'sm_dateFrom');
+  restoreSavedDateTime(dateTo, 'sm_dateTo');
+  if (window.dateTimeRangePicker?.createDateTimeRangePicker) {
+    if (smDateRangePickerController) smDateRangePickerController.destroy();
+    smDateRangePickerController = window.dateTimeRangePicker.createDateTimeRangePicker({
+      onError: message => showToast(message)
+    });
+  }
   const priceMin = $('#smPriceMin');
   const priceMax = $('#smPriceMax');
-  if (priceMin) priceMin.value = '';
-  if (priceMax) priceMax.value = '';
+  if (priceMin) priceMin.value = localStorage.getItem('sm_priceMin') || '';
+  if (priceMax) priceMax.value = localStorage.getItem('sm_priceMax') || '';
 
   await loadShopAccounts();
   await loadSmStats();
   initSmEventListeners();
   checkSmLoginStatus();
 
-  // 恢复上次的商品状态和商品数量选择
+  // 恢复上次的商品状态和“每个 SPU 取哪些 SKU”选择。
   const savedStatus = localStorage.getItem('sm_goodsStatus');
   if (savedStatus) {
-    const radio = document.querySelector(`input[name="smGoodsStatus"][value="${savedStatus}"]`);
+    const normalizedStatus = savedStatus === '在售'
+      ? '售卖中'
+      : savedStatus === '下架'
+        ? '已下架'
+        : savedStatus;
+    const radio = document.querySelector(`input[name="smGoodsStatus"][value="${normalizedStatus}"]`);
     if (radio) radio.checked = true;
+    if (radio && normalizedStatus !== savedStatus) {
+      localStorage.setItem('sm_goodsStatus', normalizedStatus);
+    }
   }
   const savedQty = localStorage.getItem('sm_goodsQty');
   if (savedQty) {
@@ -2394,8 +2579,11 @@ async function initSmModule() {
 
 // ========== 店铺账号管理 ==========
 
-async function loadShopAccounts() {
+async function loadShopAccounts(preferredAccountId) {
   if (!window.electronAPI.getShopAccounts) return;
+  const selectedBeforeReload = preferredAccountId == null
+    ? String(smShopSelect.value || '')
+    : String(preferredAccountId || '');
   const accounts = await window.electronAPI.getShopAccounts();
   smShopSelect.innerHTML = '<option value="">请先添加店铺</option>';
   if (accounts && accounts.length > 0) {
@@ -2406,35 +2594,88 @@ async function loadShopAccounts() {
       opt.textContent = a.name || a.username;
       smShopSelect.appendChild(opt);
     });
+    if (selectedBeforeReload && accounts.some(account => String(account.id) === selectedBeforeReload)) {
+      smShopSelect.value = selectedBeforeReload;
+    }
   }
+  if (!smShopSelect.value) {
+    updateSmLoginStatus(false, '', 'empty');
+  }
+  syncSmShopSelectTrigger();
+  renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
 }
 
 function initSmEventListeners() {
+  if (window.electronAPI.onShopQueryProgress) {
+    window.electronAPI.onShopQueryProgress(updateSmQueryProgress);
+  }
+
   // 管理按钮
   const manageBtn = $('#smManageBtn');
   if (manageBtn) manageBtn.addEventListener('click', openSmShopModal);
+
+  if (smShopSelectTrigger) {
+    smShopSelectTrigger.addEventListener('click', () => {
+      if (smShopSelectDropdown?.hidden) {
+        openSmShopSelectDropdown();
+      } else {
+        closeSmShopSelectDropdown();
+      }
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+      const wrapper = smShopSelectTrigger.closest('.sm-shop-inline');
+      if (wrapper && !wrapper.contains(event.target)) closeSmShopSelectDropdown();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && smShopSelectDropdown && !smShopSelectDropdown.hidden) {
+        closeSmShopSelectDropdown();
+        smShopSelectTrigger.focus();
+      }
+    });
+  }
 
   // 店铺下拉切换时同步状态
   if (smShopSelect) {
     smShopSelect.addEventListener('change', async () => {
       const selectedId = smShopSelect.value;
+      syncSmShopSelectTrigger();
       if (!selectedId) {
-        updateSmLoginStatus(false, '');
+        updateSmLoginStatus(false, '', 'empty');
         return;
       }
-      // 先用 cookie 有效性快速判断状态
-      const statusResult = await window.electronAPI.checkShopAccountsStatus();
-      const isOnline = statusResult && statusResult.statusMap && statusResult.statusMap[selectedId];
-      const accounts = await window.electronAPI.getShopAccounts();
-      const account = accounts.find(a => a.id === selectedId);
-      if (isOnline) {
-        updateSmLoginStatus(true, account?.name || account?.username || '');
-      } else {
-        updateSmLoginStatus(false, '');
+      if (!requireTier('shopManage')) {
+        smShopSelect.value = '';
+        syncSmShopSelectTrigger();
+        updateSmLoginStatus(false, '', 'empty');
+        return;
       }
-      // 切换活跃账号
-      if (account) {
-        await window.electronAPI.switchShopAccount(account);
+      const accounts = await window.electronAPI.getShopAccounts();
+      const account = accounts.find(a => String(a.id) === String(selectedId));
+      if (!account) {
+        updateSmLoginStatus(false, '', 'empty');
+        return;
+      }
+
+      updateSmLoginStatus(false, '', 'checking');
+      addSmLog('info', `正在验证店铺登录状态：${account.name || account.username}...`);
+      const result = await window.electronAPI.switchShopAccount(account);
+      if (smShopSelect.value !== selectedId) return;
+
+      if (result && result.loggedIn) {
+        smShopAccountStateMap[selectedId] = 'online';
+        updateSmLoginStatus(true, result.shopName || account.name || account.username || '', 'online');
+        addSmLog('success', `店铺登录状态有效：${result.shopName || account.name || account.username}`);
+      } else {
+        const nextState = result && result.validationError ? 'error' : 'offline';
+        smShopAccountStateMap[selectedId] = nextState;
+        updateSmLoginStatus(false, '', nextState);
+        if (result && result.validationError) {
+          addSmLog('error', result.error || '店铺登录状态验证失败，请稍后重试');
+        } else {
+          addSmLog('info', '保存的店铺登录状态已失效，请重新登录');
+        }
       }
     });
   }
@@ -2459,76 +2700,6 @@ function initSmEventListeners() {
   const sendDownBtn = $('#smSendDownBtn');
   if (sendDownBtn) sendDownBtn.addEventListener('click', () => handleSmSend('下标'));
 
-  // 打开店铺后台按钮
-  const openShopBtn = $('#smOpenShopBtn');
-  if (openShopBtn) openShopBtn.addEventListener('click', async () => {
-    if (!requireTier('shopManage')) return;
-    openShopBtn.disabled = true;
-    openShopBtn.textContent = '打开中...';
-    const res = await window.electronAPI.openShopPage();
-    openShopBtn.disabled = false;
-    openShopBtn.textContent = '🌐 打开店铺后台';
-    if (!res.success) showToast(res.error || '打开失败');
-  });
-
-  // 店铺抓包按钮
-  let smCapturing = false;
-  const smCaptureBtn = $('#smCaptureBtn');
-  const smCaptureStatus = $('#smCaptureStatus');
-  if (smCaptureBtn) {
-    smCaptureBtn.addEventListener('click', async () => {
-      if (!smCapturing) {
-        const res = await window.electronAPI.startShopCapture();
-        if (res.success) {
-          smCapturing = true;
-          smCaptureBtn.textContent = '\u23F9 停止抓包';
-          smCaptureBtn.style.background = '#e74c3c';
-          smCaptureBtn.style.color = '#fff';
-          smCaptureBtn.style.borderColor = '#e74c3c';
-          smCaptureStatus.style.display = 'inline';
-          smCaptureStatus.textContent = '抓包中... 在店铺后台操作后点击停止';
-          smCaptureStatus.style.color = '#e74c3c';
-        } else {
-          showToast(res.error || '启动抓包失败');
-        }
-      } else {
-        smCaptureBtn.textContent = '停止中...';
-        smCaptureBtn.disabled = true;
-        const res = await window.electronAPI.stopShopCapture();
-        smCapturing = false;
-        smCaptureBtn.disabled = false;
-        smCaptureBtn.textContent = '\uD83D\uDD0D 开始抓包';
-        smCaptureBtn.style.background = '#f0f0f0';
-        smCaptureBtn.style.color = '#666';
-        smCaptureBtn.style.borderColor = '#d9d9d9';
-        smCaptureStatus.style.display = 'none';
-
-        if (res.success && res.count > 0) {
-          let text = '===== 店铺抓包结果：共 ' + res.count + ' 个请求 =====\n\n';
-          res.requests.forEach((r, i) => {
-            text += '────── 请求 ' + (i + 1) + ' ──────\n';
-            text += '时间: ' + (r.timestamp || '') + '\n';
-            text += 'URL:  ' + r.url + '\n';
-            text += '方法: ' + r.method + '\n';
-            if (r.postData) text += '参数: ' + r.postData + '\n';
-            if (r.responseBody) {
-              try {
-                const json = JSON.parse(r.responseBody);
-                text += '响应: ' + JSON.stringify(json, null, 2).substring(0, 5000) + '\n';
-              } catch(e) {
-                text += '响应: ' + r.responseBody.substring(0, 5000) + '\n';
-              }
-            }
-            text += '\n';
-          });
-          showCaptureResult(text);
-        } else {
-          showToast('未捕获到请求，请确保在店铺后台进行了操作');
-        }
-      }
-    });
-  }
-
   // 全选复选框
   const selectAll = $('#smSelectAll');
   if (selectAll && smGoodsTableBody) {
@@ -2549,7 +2720,20 @@ function initSmEventListeners() {
     radio.addEventListener('change', () => { localStorage.setItem('sm_goodsStatus', radio.value); });
   });
 
-  // 商品数量选项切换时重新过滤并保存
+  // 上架时间和售价范围随输入持久化，下次启动直接恢复。
+  [
+    ['smDateFrom', 'sm_dateFrom'],
+    ['smDateTo', 'sm_dateTo'],
+    ['smPriceMin', 'sm_priceMin'],
+    ['smPriceMax', 'sm_priceMax']
+  ].forEach(([elementId, storageKey]) => {
+    const input = $(`#${elementId}`);
+    if (!input) return;
+    input.addEventListener('input', () => localStorage.setItem(storageKey, input.value || ''));
+    input.addEventListener('change', () => localStorage.setItem(storageKey, input.value || ''));
+  });
+
+  // 每个 SPU 的 SKU 取值方式切换时重新过滤并保存。
   document.querySelectorAll('input[name="smGoodsQty"]').forEach(radio => {
     radio.addEventListener('change', () => {
       localStorage.setItem('sm_goodsQty', radio.value);
@@ -2558,6 +2742,9 @@ function initSmEventListeners() {
   });
   const qtyNInput = $('#smQtyN');
   if (qtyNInput) {
+    qtyNInput.addEventListener('input', () => {
+      localStorage.setItem('sm_goodsQtyN', qtyNInput.value);
+    });
     qtyNInput.addEventListener('change', () => {
       localStorage.setItem('sm_goodsQtyN', qtyNInput.value);
       const nRadio = document.querySelector('input[name="smGoodsQty"][value="N个"]');
@@ -2604,18 +2791,20 @@ function initSmEventListeners() {
   // 监听店铺登录成功事件
   if (window.electronAPI.onShopLoginSuccess) {
     window.electronAPI.onShopLoginSuccess(async (data) => {
-      updateSmLoginStatus(true, data?.shopName || '');
-      addSmLog('success', `店铺后台登录成功${data?.shopName ? '：' + data.shopName : ''}`);
-      // 如果店铺名称为空，用获取到的名称自动回填
+      // 登录成功后将后台识别到的真实店铺名称覆盖到账号记录；账号、密码在
+      // 打开登录窗口前已经保存，因此顶部“登录店铺”与“添加店铺”共用同一数据源。
       if (data?.shopName && data?.accountId) {
         const accounts = await window.electronAPI.getShopAccounts();
         const account = accounts.find(a => a.id === data.accountId);
-        if (account && !account.name) {
+        if (account && account.name !== data.shopName) {
           await window.electronAPI.saveShopAccount({ ...account, name: data.shopName });
-          await loadShopAccounts();
           addSmLog('info', `已自动获取店铺名称：${data.shopName}`);
         }
       }
+      await loadShopAccounts(data?.accountId || undefined);
+      if (data?.accountId) smShopAccountStateMap[data.accountId] = 'online';
+      updateSmLoginStatus(true, data?.shopName || '', 'online');
+      addSmLog('success', `店铺后台登录成功${data?.shopName ? '：' + data.shopName : ''}`);
       // 如果编辑弹窗正在显示，关闭后打开店铺列表
       const editModal = $('#smEditShopModal');
       if (editModal && editModal.style.display !== 'none') {
@@ -2627,15 +2816,18 @@ function initSmEventListeners() {
 }
 
 // ===== 店铺管理弹窗 =====
+let smShopStatusCheckVersion = 0;
+
 async function openSmShopModal() {
+  const checkVersion = ++smShopStatusCheckVersion;
   const modal = $('#smShopModal');
   modal.style.display = 'flex';
 
   const accounts = await window.electronAPI.getShopAccounts();
-  const statusResult = await window.electronAPI.checkShopAccountsStatus();
-  const statusMap = statusResult ? statusResult.statusMap || {} : {};
+  if (checkVersion !== smShopStatusCheckVersion) return;
   const list = $('#smShopList');
   const empty = $('#smShopEmpty');
+  const statusRows = new Map();
 
   if (!accounts || accounts.length === 0) {
     list.style.display = 'none';
@@ -2646,7 +2838,6 @@ async function openSmShopModal() {
     list.innerHTML = '';
 
     accounts.forEach(account => {
-      const isOnline = !!statusMap[account.id];
       const item = document.createElement('div');
       item.className = 'sm-shop-item';
       item.innerHTML = `
@@ -2654,34 +2845,77 @@ async function openSmShopModal() {
           <span class="sm-shop-item-name">${escapeHtml(account.name || account.username)}</span>
           <span class="sm-shop-item-user">${escapeHtml(account.username)}</span>
         </div>
-        <span class="sm-shop-status ${isOnline ? 'online' : 'offline'}">${isOnline ? '在线' : '离线'}</span>
+        <span class="sm-shop-status checking">检测中</span>
         <div class="sm-shop-item-actions">
-          <button class="btn btn-sm ${isOnline ? 'btn-success-outline' : 'btn-primary'}" data-action="login">${isOnline ? '重新登录' : '登录'}</button>
+          <button class="btn btn-sm btn-primary" data-action="login" disabled>检测中</button>
           <button class="btn btn-primary btn-sm" data-action="edit">编辑</button>
           <button class="btn btn-danger" data-action="delete">删除</button>
         </div>
       `;
-      item.querySelector('[data-action="login"]').addEventListener('click', async () => {
+      const statusEl = item.querySelector('.sm-shop-status');
+      const loginButton = item.querySelector('[data-action="login"]');
+      statusRows.set(account.id, { account, statusEl, loginButton });
+
+      loginButton.addEventListener('click', async () => {
+        if (!requireTier('shopManage')) return;
+        const actionState = loginButton.dataset.state || 'checking';
+        if (actionState === 'checking') return;
         closeSmShopModal();
-        await window.electronAPI.switchShopAccount(account);
-        window.electronAPI.openShopLogin({ id: account.id, username: account.username, password: account.password });
+        smShopSelect.value = account.id;
+        syncSmShopSelectTrigger();
+        await openShopAccountAction(account, actionState === 'online');
       });
       item.querySelector('[data-action="edit"]').addEventListener('click', () => {
         closeSmShopModal();
         openSmEditShop(account);
       });
       item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+        if (!requireTier('shopManage')) return;
         await window.electronAPI.deleteShopAccount(account.id);
+        delete smShopAccountStateMap[account.id];
         await loadShopAccounts();
         openSmShopModal();
         addSmLog('info', `已删除店铺：${account.name || account.username}`);
       });
       list.appendChild(item);
     });
+
+    let statusResult;
+    try {
+      statusResult = await window.electronAPI.checkShopAccountsStatus();
+    } catch (error) {
+      console.error('[SM] 店铺状态批量检测失败:', error);
+      statusResult = { stateMap: {} };
+    }
+    if (checkVersion !== smShopStatusCheckVersion) return;
+
+    const stateMap = statusResult ? statusResult.stateMap || {} : {};
+    smShopAccountStateMap = { ...smShopAccountStateMap, ...stateMap };
+    renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
+    statusRows.forEach(({ statusEl, loginButton }, accountId) => {
+      const state = stateMap[accountId] || 'error';
+      const label = state === 'online' ? '在线' : state === 'offline' ? '离线' : '检测失败';
+      statusEl.className = `sm-shop-status ${state}`;
+      statusEl.textContent = label;
+      loginButton.className = `btn btn-sm ${state === 'online' ? 'btn-success-outline' : 'btn-primary'}`;
+      loginButton.dataset.state = state;
+      loginButton.disabled = false;
+      loginButton.textContent = state === 'online' ? '进入后台' : '重新登录';
+    });
+
+    const selectedId = smShopSelect ? smShopSelect.value : '';
+    const selectedRow = selectedId ? statusRows.get(selectedId) : null;
+    const selectedState = selectedId ? stateMap[selectedId] : '';
+    if (selectedRow && selectedState === 'online') {
+      updateSmLoginStatus(true, selectedRow.account.name || selectedRow.account.username || '', 'online');
+    } else if (selectedRow) {
+      updateSmLoginStatus(false, '', selectedState === 'error' ? 'error' : 'offline');
+    }
   }
 }
 
 function closeSmShopModal() {
+  smShopStatusCheckVersion++;
   $('#smShopModal').style.display = 'none';
 }
 
@@ -2738,11 +2972,14 @@ async function handleSmEditShopLogin() {
     showToast(result.error || '保存失败');
     return;
   }
+  if (result.merged) {
+    addSmLog('info', `登录账号“${username}”已存在，将更新原店铺并在登录成功后覆盖 Cookie`);
+  }
   await loadShopAccounts();
 
-  // 找到保存后的账号ID（新增时result.list里最后一个就是）
+  // 使用主进程返回的确定账号，避免名称相近时取错记录。
   const accounts = result.list || await window.electronAPI.getShopAccounts();
-  const account = accounts.find(a => a.username === username) || accounts[accounts.length - 1];
+  const account = result.account || accounts.find(a => a.username === username) || accounts[accounts.length - 1];
 
   addSmLog('info', `正在打开店铺后台登录窗口：${account.name || account.username}...`);
   await window.electronAPI.openShopLogin({
@@ -2770,7 +3007,12 @@ async function saveSmShop() {
   if (result.success) {
     await loadShopAccounts();
     closeSmEditShop();
-    addSmLog('success', `店铺"${name || username}"已保存`);
+    addSmLog(
+      'success',
+      result.merged
+        ? `店铺"${name || username}"已存在，已更新原记录`
+        : `店铺"${name || username}"已保存`
+    );
   } else {
     showToast(result.error || '保存失败');
   }
@@ -2778,11 +3020,38 @@ async function saveSmShop() {
 
 // ========== 店铺登录 ==========
 
+async function openShopAccountAction(account, preferBackend) {
+  updateSmLoginStatus(false, '', 'checking');
+  const switchResult = await window.electronAPI.switchShopAccount(account);
+
+  if (preferBackend && switchResult && switchResult.loggedIn) {
+    updateSmLoginStatus(true, switchResult.shopName || account.name || account.username || '', 'online');
+    const openResult = await window.electronAPI.openShopBackend(account.id);
+    if (openResult && openResult.success) {
+      addSmLog('success', `已进入店铺后台：${account.name || account.username}`);
+      return;
+    }
+    addSmLog('info', openResult?.error || '店铺登录状态已失效，正在重新登录');
+  }
+
+  updateSmLoginStatus(false, '', 'offline');
+  addSmLog('info', `正在重新登录店铺：${account.name || account.username}...`);
+  await window.electronAPI.openShopLogin({
+    id: account.id,
+    username: account.username,
+    password: account.password,
+    name: account.name,
+    autoSend: account.autoSend
+  });
+}
+
 async function handleSmLogin() {
   if (!requireTier('shopManage')) return;
   const selectedId = smShopSelect.value;
   if (!selectedId) {
-    showToast('请先选择一个店铺');
+    // 与店铺管理中的“添加店铺”共用同一流程：先录入账号密码，登录成功后
+    // 自动保存实际店铺名称，并出现在店铺选择和账号管理列表中。
+    openSmEditShop(null);
     return;
   }
 
@@ -2793,27 +3062,50 @@ async function handleSmLogin() {
     return;
   }
 
-  addSmLog('info', `正在打开店铺后台登录窗口：${account.name || account.username}...`);
-  await window.electronAPI.openShopLogin({
-    id: account.id,
-    username: account.username,
-    password: account.password,
-    name: account.name,
-    autoSend: account.autoSend
-  });
+  await openShopAccountAction(account, smSelectedShopState === 'online');
 }
 
-function updateSmLoginStatus(loggedIn, shopName) {
+function updateSmLoginStatus(loggedIn, shopName, state) {
   smLoggedIn = loggedIn;
+  smSelectedShopState = state || (loggedIn ? 'online' : (smShopSelect.value ? 'offline' : 'empty'));
+  const loginBtn = $('#smLoginBtn');
+
+  if (loginBtn) {
+    if (smSelectedShopState === 'empty') {
+      loginBtn.textContent = '登录店铺';
+      loginBtn.disabled = false;
+    } else if (smSelectedShopState === 'checking') {
+      loginBtn.textContent = '检测中...';
+      loginBtn.disabled = true;
+    } else if (smSelectedShopState === 'online') {
+      loginBtn.textContent = '进入后台';
+      loginBtn.disabled = false;
+    } else {
+      loginBtn.textContent = '重新登录';
+      loginBtn.disabled = false;
+    }
+  }
+
+  const visualState = loggedIn
+    ? 'online'
+    : ['offline', 'checking', 'error'].includes(smSelectedShopState)
+      ? smSelectedShopState
+      : 'offline';
+  if (smShopSelect.value && smSelectedShopState !== 'empty') {
+    smShopAccountStateMap[smShopSelect.value] = visualState;
+  }
+  syncSmShopSelectTrigger();
 
   if (loggedIn) {
-    smStatusDot.className = 'sm-shop-status-inline online';
-    smStatusDot.textContent = '在线';
+    smStatusDot.className = `sm-shop-status-inline ${visualState}`;
+    smStatusDot.textContent = getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
     if (queryBtn) queryBtn.disabled = false;
   } else {
-    smStatusDot.className = 'sm-shop-status-inline offline';
-    smStatusDot.textContent = '离线';
+    smStatusDot.className = `sm-shop-status-inline ${visualState}`;
+    smStatusDot.textContent = smSelectedShopState === 'empty'
+      ? '未选择'
+      : getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
     if (queryBtn) queryBtn.disabled = true;
   }
@@ -2822,14 +3114,124 @@ function updateSmLoginStatus(loggedIn, shopName) {
 async function checkSmLoginStatus() {
   if (window.electronAPI.getShopLoginStatus) {
     const status = await window.electronAPI.getShopLoginStatus();
+    if (status && status.activeAccountId) {
+      const optionExists = Array.from(smShopSelect.options)
+        .some(option => option.value === String(status.activeAccountId));
+      if (optionExists) smShopSelect.value = String(status.activeAccountId);
+    }
+    syncSmShopSelectTrigger();
     if (status && status.loggedIn) {
-      updateSmLoginStatus(true, status.shopName);
+      updateSmLoginStatus(true, status.shopName, 'online');
       addSmLog('info', '已恢复店铺登录状态' + (status.shopName ? '：' + status.shopName : ''));
+    } else {
+      updateSmLoginStatus(false, '', smShopSelect.value ? 'offline' : 'empty');
     }
   }
 }
 
 // ========== 商品查询 ==========
+
+function startSmQueryProgress() {
+  if (!smQueryProgress) return;
+  if (smQueryProgressHideTimer) clearTimeout(smQueryProgressHideTimer);
+  smQueryProgressHideTimer = null;
+  smQueryEstimateStartedAt = 0;
+  smQueryProgress.hidden = false;
+  smQueryProgress.className = 'sm-query-progress is-indeterminate';
+  smQueryProgress.removeAttribute('aria-valuenow');
+  smQueryProgress.setAttribute('aria-valuetext', '正在准备查询');
+  smQueryProgressLabel.textContent = '正在准备查询…';
+  smQueryProgressCount.textContent = '';
+  if (smQueryProgressEta) smQueryProgressEta.textContent = '正在估算用时';
+  smQueryProgressFill.style.width = '';
+}
+
+function formatSmRemainingTime(remainingMs) {
+  const remainingSeconds = Math.max(1, Math.ceil(Number(remainingMs || 0) / 1000));
+  if (remainingSeconds < 60) return '预计不到 1 分钟完成';
+  const remainingMinutes = Math.ceil(remainingSeconds / 60);
+  if (remainingMinutes < 60) return `预计 ${remainingMinutes} 分钟完成`;
+  const hours = Math.floor(remainingMinutes / 60);
+  const minutes = remainingMinutes % 60;
+  return minutes > 0
+    ? `预计 ${hours} 小时 ${minutes} 分钟完成`
+    : `预计 ${hours} 小时完成`;
+}
+
+function updateSmQueryProgress(progress = {}) {
+  if (!smQueryProgress) return;
+  const stage = String(progress.stage || 'preparing');
+  smQueryProgress.hidden = false;
+
+  if (stage === 'preparing') {
+    smQueryProgress.className = 'sm-query-progress is-indeterminate';
+    smQueryProgress.removeAttribute('aria-valuenow');
+    smQueryProgress.setAttribute('aria-valuetext', String(progress.message || '正在准备查询'));
+    smQueryProgressLabel.textContent = progress.message || '正在准备查询…';
+    smQueryProgressCount.textContent = '';
+    if (smQueryProgressEta) smQueryProgressEta.textContent = '正在估算用时';
+    smQueryProgressFill.style.width = '';
+    return;
+  }
+
+  const completed = Math.max(0, Number(progress.completed) || 0);
+  const total = Math.max(0, Number(progress.total) || 0);
+  const percent = total > 0 ? Math.min(100, (completed / total) * 100) : 0;
+  smQueryProgress.className = `sm-query-progress${stage === 'complete' ? ' is-complete' : stage === 'error' ? ' is-error' : ''}`;
+  smQueryProgress.setAttribute('aria-valuenow', String(Math.round(percent)));
+  smQueryProgressFill.style.width = `${stage === 'complete' ? 100 : percent}%`;
+
+  if (stage === 'complete') {
+    smQueryProgressLabel.textContent = '查询完成';
+    smQueryProgressCount.textContent = total > 0 ? `${total} / ${total} · 100%` : '100%';
+    if (smQueryProgressEta) smQueryProgressEta.textContent = '已完成';
+    smQueryProgress.setAttribute('aria-valuetext', '查询完成');
+    return;
+  }
+  if (stage === 'error') {
+    smQueryProgressLabel.textContent = progress.message ? `查询失败：${progress.message}` : '查询失败';
+    smQueryProgressCount.textContent = total > 0 ? `${completed} / ${total}` : '';
+    if (smQueryProgressEta) smQueryProgressEta.textContent = '';
+    smQueryProgress.setAttribute('aria-valuetext', '查询失败');
+    return;
+  }
+
+  if (!smQueryEstimateStartedAt) smQueryEstimateStartedAt = Date.now();
+  let etaText = '正在估算用时';
+  const elapsedMs = Date.now() - smQueryEstimateStartedAt;
+  if (total > completed && completed >= 3 && elapsedMs >= 1500) {
+    const averageMsPerProduct = elapsedMs / completed;
+    etaText = formatSmRemainingTime(averageMsPerProduct * (total - completed));
+  } else if (total > 0 && completed >= total) {
+    etaText = '即将完成';
+  }
+
+  const pageNum = Math.max(1, Number(progress.pageNum) || 1);
+  const totalPages = Math.max(pageNum, Number(progress.totalPages) || pageNum);
+  const pageCompleted = Math.max(0, Number(progress.pageCompleted) || 0);
+  const pageTotal = Math.max(0, Number(progress.pageTotal) || 0);
+  smQueryProgressLabel.textContent = `正在查询第 ${pageNum}/${totalPages} 页 SKU` +
+    (pageTotal > 0 ? `（本页 ${pageCompleted}/${pageTotal}）` : '');
+  smQueryProgressCount.textContent = `${completed} / ${total} · ${Math.floor(percent)}%`;
+  if (smQueryProgressEta) smQueryProgressEta.textContent = etaText;
+  smQueryProgress.setAttribute('aria-valuetext', `已完成${completed}个，共${total}个商品，${etaText}`);
+}
+
+function finishSmQueryProgress(success, message = '') {
+  if (!smQueryProgress) return;
+  if (success) {
+    if (!smQueryProgress.classList.contains('is-complete')) {
+      updateSmQueryProgress({ stage: 'complete', completed: 1, total: 1 });
+    }
+  } else if (!smQueryProgress.classList.contains('is-error')) {
+    updateSmQueryProgress({ stage: 'error', message });
+  }
+  if (smQueryProgressHideTimer) clearTimeout(smQueryProgressHideTimer);
+  smQueryProgressHideTimer = setTimeout(() => {
+    smQueryProgress.hidden = true;
+    smQueryProgressHideTimer = null;
+  }, success ? 1800 : 3500);
+}
 
 async function handleSmQuery() {
   if (!requireTier('shopManage')) return;
@@ -2839,23 +3241,38 @@ async function handleSmQuery() {
     return;
   }
 
+  const dateFrom = $('#smDateFrom').value || '';
+  const dateTo = $('#smDateTo').value || '';
+  if (Boolean(dateFrom) !== Boolean(dateTo)) {
+    showToast('请同时选择上架开始时间和结束时间');
+    return;
+  }
+  if (dateFrom && dateTo && new Date(dateFrom).getTime() > new Date(dateTo).getTime()) {
+    showToast('上架开始时间不能晚于结束时间');
+    return;
+  }
+
+  const params = {
+    dateFrom,
+    dateTo,
+    priceMin: $('#smPriceMin').value || '',
+    priceMax: $('#smPriceMax').value || '',
+    goodsStatus: (document.querySelector('input[name="smGoodsStatus"]:checked') || {}).value || '售卖中'
+  };
+
   const queryBtn = $('#smQueryBtn');
   queryBtn.disabled = true;
   queryBtn.textContent = '查询中...';
+  startSmQueryProgress();
   addSmLog('info', '正在查询店铺商品...');
+  let querySucceeded = false;
+  let queryError = '';
 
   try {
-    const params = {
-      dateFrom: $('#smDateFrom').value || '',
-      dateTo: $('#smDateTo').value || '',
-      priceMin: $('#smPriceMin').value || '',
-      priceMax: $('#smPriceMax').value || '',
-      goodsStatus: (document.querySelector('input[name="smGoodsStatus"]:checked') || {}).value || '在售'
-    };
-
     const result = await window.electronAPI.shopQueryGoods(params);
 
     if (result.success) {
+      querySucceeded = true;
       smGoods = result.goods || [];
       applySmQtyFilter();
       addSmLog('success', `查询完成，共 ${smGoods.length} 条SKU记录`);
@@ -2867,18 +3284,24 @@ async function handleSmQuery() {
       }
 
       if (result.message) {
-        addSmLog('warn', result.message);
+        addSmLog('info', result.message);
       }
     } else {
+      queryError = result.error || '未知错误';
       smGoods = [];
       smFilteredGoods = [];
       renderSmGoodsTable();
+      if (result.needLogin) updateSmLoginStatus(false, '');
+      console.error('[SM] 店铺商品查询失败:', result.error || '未知错误');
       addSmLog('error', `查询失败: ${result.error}`);
     }
   } catch (err) {
+    queryError = err.message || '未知错误';
+    console.error('[SM] 店铺商品查询异常:', err);
     addSmLog('error', `查询异常: ${err.message}`);
   } finally {
-    queryBtn.disabled = false;
+    finishSmQueryProgress(querySucceeded, queryError);
+    queryBtn.disabled = !smLoggedIn;
     queryBtn.textContent = '查询商品';
   }
 }
@@ -3002,44 +3425,20 @@ function applySmQtyFilter() {
 
   const qtyRadio = document.querySelector('input[name="smGoodsQty"]:checked');
   const qtyVal = qtyRadio ? qtyRadio.value : '全部';
-
-  switch (qtyVal) {
-    case '第1个':
-      smFilteredGoods = [smGoods[0]];
-      break;
-    case '最后1个':
-      smFilteredGoods = [smGoods[smGoods.length - 1]];
-      break;
-    case '最低价': {
-      const withPrice = smGoods.filter(g => g.price != null);
-      if (withPrice.length > 0) {
-        const min = withPrice.reduce((a, b) => parseFloat(a.price) <= parseFloat(b.price) ? a : b);
-        smFilteredGoods = [min];
-      } else {
-        smFilteredGoods = [];
-      }
-      break;
-    }
-    case '最高价': {
-      const withPrice = smGoods.filter(g => g.price != null);
-      if (withPrice.length > 0) {
-        const max = withPrice.reduce((a, b) => parseFloat(a.price) >= parseFloat(b.price) ? a : b);
-        smFilteredGoods = [max];
-      } else {
-        smFilteredGoods = [];
-      }
-      break;
-    }
-    case 'N个': {
-      const n = parseInt($('#smQtyN').value) || 10;
-      const shuffled = smGoods.slice().sort(() => Math.random() - 0.5);
-      smFilteredGoods = shuffled.slice(0, n);
-      break;
-    }
-    default:
-      smFilteredGoods = smGoods.slice();
-      break;
+  const qtyCount = parseInt($('#smQtyN').value) || 10;
+  if (!window.shopGoodsSelection || typeof window.shopGoodsSelection.selectGoodsPerProduct !== 'function') {
+    console.error('[SM] 每个SPU取SKU筛选模块未加载，保留全部SKU');
+    smFilteredGoods = smGoods.slice();
+  } else {
+    smFilteredGoods = window.shopGoodsSelection.selectGoodsPerProduct(smGoods, qtyVal, qtyCount);
   }
+
+  const spuCount = new Set(smGoods.map(item => String(item.productCode || ''))).size;
+  const modeLabel = qtyVal === 'N个' ? `每个SPU随机${qtyCount}个` : `每个SPU ${qtyVal}`;
+  console.log(
+    `[SM] 每个SPU取SKU: mode=${modeLabel}, ` +
+    `SPU=${spuCount}, 输入SKU=${smGoods.length}, 输出SKU=${smFilteredGoods.length}`
+  );
 
   renderSmGoodsTable();
 }
@@ -3061,6 +3460,7 @@ function getSelectedSmSkus() {
 // ========== 导出 TXT ==========
 
 async function handleSmExport() {
+  if (!requireTier('shopManage')) return;
   const skus = getSelectedSmSkus();
   if (skus.length === 0) {
     showToast('请先勾选要导出的商品');
@@ -3069,10 +3469,15 @@ async function handleSmExport() {
 
   addSmLog('info', `正在导出 ${skus.length} 个SKU...`);
   const shopName = smShopSelect.options[smShopSelect.selectedIndex]?.text || '';
-  const result = await window.electronAPI.exportSkuTxt({ skus, shopName });
+  const result = await window.electronAPI.exportSkuTxt({
+    skus,
+    shopName,
+    dateFrom: $('#smDateFrom').value || '',
+    dateTo: $('#smDateTo').value || ''
+  });
 
   if (result.success) {
-    addSmLog('success', `已导出到: ${result.fileName} (${skus.length}个SKU)`);
+    addSmLog('success', `已导出到桌面：${result.fileName} (${skus.length}个SKU)`);
     showToast(`已导出 ${skus.length} 个SKU`);
   } else {
     addSmLog('error', `导出失败: ${result.error}`);
@@ -3147,6 +3552,7 @@ function closeSmSendModal() {
 }
 
 async function confirmSmSend() {
+  if (!requireTier('shopManage')) return;
   const skus = getSelectedSmSkus();
   if (skus.length === 0) {
     showToast('没有可发送的SKU');
@@ -3362,68 +3768,6 @@ function initAoEventListeners() {
     const selectedOrders = checkedIdxs.map(i => aoOrders[i]).filter(Boolean);
     await handleAoProcess(selectedOrders, $('#aoBatchBtn'));
   });
-
-  // 网络抓包按钮
-  let aoCapturing = false;
-  const captureBtn = $('#aoCaptureBtn');
-  const captureStatus = $('#aoCaptureStatus');
-  if (captureBtn) {
-    captureBtn.addEventListener('click', async () => {
-      if (!requireTier('abnormalOrders')) return;
-      if (!aoCapturing) {
-        // 开始抓包
-        const res = await window.electronAPI.startNetworkCapture();
-        if (res.success) {
-          aoCapturing = true;
-          captureBtn.textContent = '\u23F9 停止抓包';
-          captureBtn.style.background = '#e74c3c';
-          captureBtn.style.color = '#fff';
-          captureBtn.style.borderColor = '#e74c3c';
-          captureStatus.style.display = 'inline';
-          captureStatus.textContent = '抓包中... 请在弹出的JD后台窗口操作，完成后点击停止';
-          captureStatus.style.color = '#e74c3c';
-        } else {
-          showToast(res.error || '启动抓包失败');
-        }
-      } else {
-        // 停止抓包
-        captureBtn.textContent = '停止中...';
-        captureBtn.disabled = true;
-        const res = await window.electronAPI.stopNetworkCapture();
-        aoCapturing = false;
-        captureBtn.disabled = false;
-        captureBtn.textContent = '\uD83D\uDD0D 开始抓包';
-        captureBtn.style.background = '#f0f0f0';
-        captureBtn.style.color = '#666';
-        captureBtn.style.borderColor = '#d9d9d9';
-        captureStatus.style.display = 'none';
-
-        if (res.success && res.count > 0) {
-          // 格式化结果显示在弹窗
-          let text = '===== 抓包结果：共 ' + res.count + ' 个API请求 =====\n\n';
-          res.requests.forEach((r, i) => {
-            text += '────── 请求 ' + (i + 1) + ' ──────\n';
-            text += '时间: ' + (r.timestamp || '') + '\n';
-            text += 'URL:  ' + r.url + '\n';
-            text += '方法: ' + r.method + '\n';
-            if (r.postData) text += '参数: ' + r.postData + '\n';
-            if (r.responseBody) {
-              try {
-                const json = JSON.parse(r.responseBody);
-                text += '响应: ' + JSON.stringify(json, null, 2).substring(0, 5000) + '\n';
-              } catch(e) {
-                text += '响应: ' + r.responseBody.substring(0, 5000) + '\n';
-              }
-            }
-            text += '\n';
-          });
-          showCaptureResult(text);
-        } else {
-          showToast('未捕获到API请求，请确保在JD后台页面进行了操作');
-        }
-      }
-    });
-  }
 
   // 分页按钮
   $('#aoPageFirst').addEventListener('click', () => { aoCurrentPage = 1; handleAoQuery(); });
@@ -3663,39 +4007,6 @@ function addAoLog(type, message) {
   console.log(`[AO ${type}]`, message);
 }
 
-// ========== 抓包结果弹窗 ==========
-
-function showCaptureResult(text) {
-  const modal = $('#captureResultModal');
-  const textarea = $('#captureResultText');
-  const title = $('#captureResultTitle');
-  if (!modal || !textarea) return;
-  title.textContent = '抓包结果';
-  textarea.value = text;
-  modal.style.display = 'flex';
-}
-
-(function initCaptureResultModal() {
-  const modal = $('#captureResultModal');
-  const closeBtn = $('#captureResultClose');
-  const copyBtn = $('#captureResultCopy');
-  if (!modal) return;
-
-  if (closeBtn) closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
-
-  if (copyBtn) {
-    copyBtn.addEventListener('click', () => {
-      const textarea = $('#captureResultText');
-      if (textarea && textarea.value) {
-        textarea.select();
-        document.execCommand('copy');
-        showToast('已复制到剪贴板');
-      }
-    });
-  }
-})();
-
 // ========== 打印出库模块 ==========
 function initWmsPrintOutbound() {
   const openBtn = $('#wmsPrintOpenBtn');
@@ -3724,16 +4035,20 @@ function initWmsPrintOutbound() {
     if (webview) return;
 
     const result = await window.electronAPI.checkWmsSession();
-    if (!result || !result.loggedIn || !result.partition) {
-      statusEl.textContent = '未登录 WMS';
-      statusEl.style.color = '#999';
+    if (!result || (!result.loggedIn && !result.hasCookies) || !result.partition) {
+      const temporarilyUnavailable = result?.restoreStatus === 'network_error' || result?.restoreStatus === 'service_error';
+      statusEl.textContent = temporarilyUnavailable ? 'WMS 验证失败' : '未登录 WMS';
+      statusEl.style.color = temporarilyUnavailable ? '#e67e22' : '#999';
       loginBtn.style.display = '';
+      placeholder.textContent = temporarilyUnavailable
+        ? 'WMS 验证失败，请稍后点击刷新重试'
+        : '请先登录 WMS 后再加载出库处理页面';
       placeholder.style.display = 'flex';
       return;
     }
 
-    statusEl.textContent = '已登录 WMS';
-    statusEl.style.color = '#27ae60';
+    statusEl.textContent = result.loggedIn ? '已登录 WMS' : '正在加载 WMS';
+    statusEl.style.color = result.loggedIn ? '#27ae60' : '#e67e22';
     loginBtn.style.display = 'none';
     placeholder.style.display = 'none';
 
@@ -3744,10 +4059,40 @@ function initWmsPrintOutbound() {
     webview.setAttribute('allowpopups', '');
     webview.setAttribute('webpreferences', 'backgroundThrottling=false');
     container.appendChild(webview);
+    const createdWebview = webview;
+
+    const updatePrintAuthState = (url) => {
+      const currentUrl = String(url || '');
+      const isLoginPage = /passport\.jd\.com|unionwms\.jdl\.com\/(?:login|logon)(?:[/?#]|$)|sso\.jdl\./i.test(currentUrl);
+      if (isLoginPage) {
+        statusEl.textContent = '未登录 WMS';
+        statusEl.style.color = '#999';
+        loginBtn.style.display = '';
+        placeholder.textContent = 'WMS 登录状态已失效，请重新登录';
+        placeholder.style.display = 'flex';
+        if (webview) {
+          const expiredWebview = webview;
+          webview = null;
+          webviewLoaded = false;
+          setTimeout(() => expiredWebview.remove(), 0);
+        }
+        return;
+      }
+      if (/unionwms\.jdl\.com\/(?:default|gray)(?:[/?#]|$)/i.test(currentUrl)) {
+        statusEl.textContent = '已登录 WMS';
+        statusEl.style.color = '#27ae60';
+        loginBtn.style.display = 'none';
+        placeholder.style.display = 'none';
+      }
+    };
 
     webview.addEventListener('did-finish-load', () => {
+      if (webview !== createdWebview) return;
       webviewLoaded = true;
+      updatePrintAuthState(createdWebview.getURL());
     });
+    webview.addEventListener('did-navigate', (event) => updatePrintAuthState(event.url));
+    webview.addEventListener('did-navigate-in-page', (event) => updatePrintAuthState(event.url));
   }
 
   // 切换到打印出库页面时加载 webview
