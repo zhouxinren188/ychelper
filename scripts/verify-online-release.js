@@ -54,12 +54,26 @@ async function main() {
     if (!data.needUpdate || data.version !== version || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog) {
       throw new Error(`v${baseline} 跨版本检测元数据不完整或未指向 v${version}`);
     }
+    if (!data.changelog.includes('自动更新') || /�|Ã|â€|åº—/.test(data.changelog)) {
+      throw new Error('完整更新说明不是有效的 UTF-8 中文内容');
+    }
+
+    const loginCheck = await expectResponse(`${BASE_URL}/api/update/login-check?version=${encodeURIComponent(baseline)}`, { cache: 'no-store' }, 200, '登录页更新检测');
+    const loginData = await loginCheck.json();
+    if (!loginData.needUpdate || loginData.version !== version || loginData.downloadUrl !== data.downloadUrl
+      || loginData.sha512 !== data.sha512 || Number(loginData.size) !== Number(data.size)
+      || loginData.changelog !== data.changelog) {
+      throw new Error('登录页更新检测与完整更新检测元数据不一致');
+    }
   }
 
   console.log(`[线上发布校验通过] v${version}`);
   console.log('  ✓ latest.yml、exe、blockmap 均可访问');
   console.log('  ✓ 安装包支持 HTTP Range 断点续传');
-  if (baseline) console.log(`  ✓ v${baseline} 可直接检测并升级到 v${version}`);
+  if (baseline) {
+    console.log(`  ✓ v${baseline} 可直接检测并升级到 v${version}`);
+    console.log('  ✓ full-check / login-check 的版本、大小、SHA-512 和 UTF-8 更新内容一致');
+  }
 }
 
 main().catch(err => {
