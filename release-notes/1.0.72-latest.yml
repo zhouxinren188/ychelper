@@ -1,0 +1,8 @@
+version: 1.0.72
+files:
+  - url: api/update/file/ychelper-setup-1.0.72.exe
+    sha512: NxOZhr4P3yny0ojQjYQlJl7fXm6RFeuUQGSrmW9A4us41vNWXYAsHB5t35jCEkP0cpny7Qg8Ja1GKlS3phieiw==
+    size: 97825805
+path: api/update/file/ychelper-setup-1.0.72.exe
+sha512: NxOZhr4P3yny0ojQjYQlJl7fXm6RFeuUQGSrmW9A4us41vNWXYAsHB5t35jCEkP0cpny7Qg8Ja1GKlS3phieiw==
+releaseDate: '2026-08-10T13:31:12.717Z'
