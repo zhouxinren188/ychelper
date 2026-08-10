@@ -125,6 +125,17 @@ function callApi(method, urlPath, body) {
     };
 
     const req = net.request({ url: fullUrl, method });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      callback(value);
+    };
+    const timeoutId = setTimeout(() => {
+      try { req.abort(); } catch (_) {}
+      finish(reject, new Error('授权服务器请求超时'));
+    }, 15000);
     if (body) {
       req.setHeader('Content-Type', 'application/json');
     }
@@ -138,14 +149,14 @@ function callApi(method, urlPath, body) {
       response.on('data', chunk => data += chunk);
       response.on('end', () => {
         try {
-          resolve(JSON.parse(data));
+          finish(resolve, JSON.parse(data));
         } catch (e) {
-          reject(new Error('解析服务器响应失败'));
+          finish(reject, new Error(`解析服务器响应失败 (HTTP ${response.statusCode || 0})`));
         }
       });
     });
 
-    req.on('error', reject);
+    req.on('error', error => finish(reject, error));
 
     if (body) {
       req.write(JSON.stringify(body));
@@ -308,6 +319,8 @@ async function selectDepartment(deptPairs) {
 // 简易本地存储（JSON 文件）
 const storePath = path.join(app.getPath('userData'), 'config.json');
 const ENCRYPTED_STORE_PREFIX = 'YCH-ENC-V1:';
+let storeReadBlocked = false;
+let storeReadBlockedReason = '';
 
 function loadStore() {
   let raw = '';
@@ -316,20 +329,32 @@ function loadStore() {
       raw = fs.readFileSync(storePath, 'utf-8');
       if (raw.startsWith(ENCRYPTED_STORE_PREFIX)) {
         if (!safeStorage.isEncryptionAvailable()) {
+          storeReadBlocked = true;
+          storeReadBlockedReason = '系统安全存储当前不可用';
           console.error('[存储] 系统安全存储当前不可用，暂不读取加密配置');
           return {};
         }
         try {
           const encrypted = Buffer.from(raw.slice(ENCRYPTED_STORE_PREFIX.length), 'base64');
-          return JSON.parse(safeStorage.decryptString(encrypted));
+          const data = JSON.parse(safeStorage.decryptString(encrypted));
+          storeReadBlocked = false;
+          storeReadBlockedReason = '';
+          return data;
         } catch (decryptError) {
           // 加密文件可能属于另一 Windows 用户或系统安全存储暂时异常，保留原文件以便恢复。
+          storeReadBlocked = true;
+          storeReadBlockedReason = `无法解密本地配置: ${decryptError.message}`;
           console.error('[存储] 无法解密本地配置，已保留原文件:', decryptError.message);
           return {};
         }
       }
-      return JSON.parse(raw);
+      const data = JSON.parse(raw);
+      storeReadBlocked = false;
+      storeReadBlockedReason = '';
+      return data;
     }
+    storeReadBlocked = false;
+    storeReadBlockedReason = '';
   } catch (e) {
     // 配置文件损坏时备份而非返回空对象覆盖
     console.error('[存储] config.json 解析失败，备份损坏文件:', e.message);
@@ -345,17 +370,29 @@ function loadStore() {
 }
 
 function saveStore(data) {
+  let tempPath = '';
   try {
-    const json = JSON.stringify(data, null, 2);
-    if (safeStorage.isEncryptionAvailable()) {
-      const encrypted = safeStorage.encryptString(json).toString('base64');
-      fs.writeFileSync(storePath, ENCRYPTED_STORE_PREFIX + encrypted, 'utf-8');
-    } else {
-      console.warn('[存储] 系统安全存储不可用，本地配置暂以明文保存');
-      fs.writeFileSync(storePath, json, 'utf-8');
+    if (storeReadBlocked) {
+      console.error(`[存储] 已阻止写入，避免覆盖无法读取的原配置: ${storeReadBlockedReason || '未知原因'}`);
+      return false;
     }
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.error('[存储] 系统安全存储不可用，已拒绝以明文保存账号和配置');
+      return false;
+    }
+    const json = JSON.stringify(data, null, 2);
+    const encrypted = safeStorage.encryptString(json).toString('base64');
+    tempPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, ENCRYPTED_STORE_PREFIX + encrypted, 'utf-8');
+    fs.renameSync(tempPath, storePath);
+    return true;
   } catch (e) {
     console.error('[存储] 写入 config.json 失败:', e.message);
+    return false;
+  } finally {
+    if (tempPath && fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
   }
 }
 
@@ -366,8 +403,16 @@ function storeGet(key, defaultVal) {
 
 function storeSet(key, value) {
   const data = loadStore();
+  if (storeReadBlocked) return false;
   data[key] = value;
-  saveStore(data);
+  return saveStore(data);
+}
+
+function storeUpdate(update) {
+  const data = loadStore();
+  if (storeReadBlocked) return false;
+  update(data);
+  return saveStore(data);
 }
 
 let currentUsername = ''; // 当前登录的用户名，用于按账号存储数据
@@ -375,9 +420,13 @@ let currentUsername = ''; // 当前登录的用户名，用于按账号存储数
 // 按用户名保存数据到独立档案
 function saveUserProfile(username, profileData) {
   if (!username) return;
-  const profiles = storeGet('userProfiles', {});
-  profiles[username] = { ...(profiles[username] || {}), ...profileData, lastLogin: Date.now() };
-  storeSet('userProfiles', profiles);
+  storeUpdate(data => {
+    const profiles = data.userProfiles && typeof data.userProfiles === 'object'
+      ? data.userProfiles
+      : {};
+    profiles[username] = { ...(profiles[username] || {}), ...profileData, lastLogin: Date.now() };
+    data.userProfiles = profiles;
+  });
 }
 
 // 加载指定用户名的缓存档案到根键
@@ -385,14 +434,22 @@ function loadUserProfile(username) {
   if (!username) return false;
   const profiles = storeGet('userProfiles', {});
   const profile = profiles[username];
-  if (profile) {
-    if (profile.userData) storeSet('userData', profile.userData);
-    if (profile.csrfToken) storeSet('csrfToken', profile.csrfToken);
-    if (profile.sellerId) storeSet('sellerId', profile.sellerId);
-    if (profile.cookies) storeSet('cookies', profile.cookies);
+  if (profile && typeof profile === 'object') {
+    storeUpdate(data => {
+      data.userData = profile.userData || null;
+      data.csrfToken = profile.csrfToken || '';
+      data.sellerId = profile.sellerId || '';
+      data.cookies = profile.cookies || '';
+    });
     console.log(`已加载用户 [${username}] 的缓存数据`);
     return true;
   }
+  storeUpdate(data => {
+    data.userData = null;
+    data.csrfToken = '';
+    data.sellerId = '';
+    data.cookies = '';
+  });
   console.log(`用户 [${username}] 无缓存数据，将从API获取`);
   return false;
 }
@@ -406,10 +463,12 @@ let activeMerchantAccountId = ''; // 当前活跃的商家端账号ID
 let wmsLoginWindow = null;
 let wmsLoggedIn = false; // 仅内存状态，不持久化
 let wmsIsQuitting = false; // 标记应用正在退出
+let appIsQuitting = false;
 let isCheckingSubscription = false; // 标记正在检查订阅（防止窗口全关后退出）
 let pendingUpdateAction = null; // 'autoUpdater' | 'localPath' | null — 标记待执行的更新安装方式
 let pendingCredentials = null; // 待自动填充的凭据（商家端）
 let pendingWmsCredentials = null; // 待自动填充的凭据（WMS端）
+let merchantIdentityValidationAttempts = 0;
 
 // 获取当前商家端的 session 分区名
 function getMerchantPartition() {
@@ -428,7 +487,14 @@ function getMerchantSession() {
   return session.defaultSession;
 }
 
-function createLoginWindow() {
+function createLoginWindow({ showWhenReady = true } = {}) {
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    if (showWhenReady) {
+      loginWindow.show();
+      loginWindow.focus();
+    }
+    return loginWindow;
+  }
   loginWindow = new BrowserWindow({
     width: 620,
     height: 400,
@@ -439,11 +505,17 @@ function createLoginWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: true
     }
   });
 
   loginWindow.loadFile(path.join(__dirname, 'src', 'login.html'));
+  if (showWhenReady) {
+    loginWindow.once('ready-to-show', () => {
+      if (loginWindow && !loginWindow.isDestroyed()) loginWindow.show();
+    });
+  }
 
   loginWindow.on('closed', () => {
     loginWindow = null;
@@ -454,16 +526,28 @@ function createLoginWindow() {
 }
 
 async function createWebLoginWindow() {
+  if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+    webLoginWindow.show();
+    webLoginWindow.focus();
+    return { success: false, alreadyOpen: true };
+  }
+
   // 设置当前登录用户名
-  currentUsername = (pendingCredentials && pendingCredentials.username) || '';
-  const lastLoginUser = storeGet('lastLoginUser', '');
+  currentUsername = String((pendingCredentials && pendingCredentials.username) || '').trim();
+  const normalizedUsername = currentUsername.toLocaleLowerCase();
+  const rememberPassword = pendingCredentials?.rememberPassword !== false;
+  merchantIdentityValidationAttempts = 0;
+  loadUserProfile(currentUsername);
 
   // 确定商家端账号ID（从 credentialList 匹配或创建新ID）
   if (currentUsername) {
     const merchantAccounts = storeGet('merchantAccounts', []);
-    const existing = merchantAccounts.find(a => a.username === currentUsername);
+    const existing = merchantAccounts.find(a => String(a.username || '').trim().toLocaleLowerCase() === normalizedUsername);
     if (existing) {
       activeMerchantAccountId = existing.id;
+      existing.username = currentUsername;
+      existing.password = rememberPassword ? String(pendingCredentials?.password || '') : '';
+      storeSet('merchantAccounts', merchantAccounts);
     } else {
       // 新账号，先创建 merchantAccount 条目
       const newId = crypto.randomUUID();
@@ -471,12 +555,11 @@ async function createWebLoginWindow() {
       merchantAccounts.push({
         id: newId,
         username: currentUsername,
-        password: (pendingCredentials && pendingCredentials.password) || '',
+        password: rememberPassword ? String(pendingCredentials?.password || '') : '',
         lastLogin: Date.now()
       });
       storeSet('merchantAccounts', merchantAccounts);
     }
-    storeSet('lastMerchantAccountId', activeMerchantAccountId);
   }
 
   const merchantPartition = getMerchantPartition();
@@ -497,17 +580,12 @@ async function createWebLoginWindow() {
     } catch (e) {}
   } else {
     console.log(`商家端: 无有效 cookie 文件, accountId=[${activeMerchantAccountId}], validate=${activeMerchantAccountId ? cookieManager.validateCookieFile('merchant', activeMerchantAccountId) : 'N/A'}`);
-    if (currentUsername && currentUsername !== lastLoginUser) {
-      // 切换到新账号但无有效 cookie 文件，清除 session
-      console.log(`账号切换: [${lastLoginUser}] → [${currentUsername}]，无有效 cookie 文件，清除 session`);
+    if (currentUsername) {
+      // 独立账号分区没有有效 Cookie 时，确保从全新登录状态开始。
+      console.log(`商家端账号 [${currentUsername}] 无有效 Cookie，清除该账号分区会话`);
       const ses = getMerchantSession();
       await ses.clearStorageData({ storages: ['cookies'] });
     }
-  }
-
-  // 记录本次登录的用户名
-  if (currentUsername) {
-    storeSet('lastLoginUser', currentUsername);
   }
 
   // 使用商家端分区创建窗口（如有分区则使用独立分区，否则 defaultSession）
@@ -588,6 +666,7 @@ async function createWebLoginWindow() {
       app.quit();
     }
   });
+  return { success: true };
 }
 
 async function checkLoginStatus(url) {
@@ -624,6 +703,37 @@ async function checkLoginStatus(url) {
     };
 
     const apiData = await fetchUserDataFromApi();
+
+    const identityVerified = !!(
+      apiData
+      && !apiData.error
+      && (
+        (apiData.deptData && !apiData.deptData.error)
+        || (apiData.shopData && !apiData.shopData.error)
+      )
+    );
+    if (!identityVerified) {
+      merchantIdentityValidationAttempts += 1;
+      const attempt = merchantIdentityValidationAttempts;
+      console.warn(`商家端身份验证未通过（第 ${attempt}/3 次），保持登录窗口可见`);
+      isLoggingIn = false;
+      if (attempt < 3 && webLoginWindow && !webLoginWindow.isDestroyed()) {
+        setTimeout(() => {
+          if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+            checkLoginStatus(webLoginWindow.webContents.getURL());
+          }
+        }, 1500);
+      } else if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+        dialog.showMessageBox(webLoginWindow, {
+          type: 'warning',
+          title: '登录状态验证失败',
+          message: '尚未能确认商家端登录状态，请确认页面已正常进入商家后台后重试。',
+          buttons: ['确定']
+        }).catch(() => {});
+      }
+      return;
+    }
+    merchantIdentityValidationAttempts = 0;
 
     if (apiData && !apiData.error) {
       console.log('动态获取的 sellerId:', apiData.sellerId || '(空)');
@@ -788,15 +898,11 @@ async function checkLoginStatus(url) {
         console.log(`获取到 ${userData.warehouses.length} 个仓库`);
       }
 
-      // 保存 csrfToken
-      if (apiData.csrfToken) {
-        storeSet('csrfToken', apiData.csrfToken);
-      }
-
-      // 保存动态获取的 sellerId
-      if (apiData.sellerId) {
-        storeSet('sellerId', apiData.sellerId);
-      }
+      // 当前账号缺失的字段必须显式清空，禁止沿用上一个账号的数据。
+      storeUpdate(data => {
+        data.csrfToken = apiData.csrfToken || '';
+        data.sellerId = apiData.sellerId || '';
+      });
 
       console.log('用户数据获取完成:', JSON.stringify({
         department: userData.departmentName,
@@ -812,6 +918,12 @@ async function checkLoginStatus(url) {
     }
 
     storeSet('userData', userData);
+    if (currentUsername) {
+      storeSet('lastLoginUser', currentUsername);
+    }
+    if (activeMerchantAccountId) {
+      storeSet('lastMerchantAccountId', activeMerchantAccountId);
+    }
 
     // 保存到按用户名隔离的档案（包含 session cookie）
     if (currentUsername) {
@@ -828,16 +940,7 @@ async function checkLoginStatus(url) {
     if (activeMerchantAccountId) {
       const ses = getMerchantSession();
       const exported = await cookieManager.exportCookies(ses, 'merchant', activeMerchantAccountId);
-      // 诊断日志：列出 cookie 文件内容摘要
-      try {
-        const cookieFilePath = cookieManager.getCookieFilePath('merchant', activeMerchantAccountId);
-        const raw = fs.readFileSync(cookieFilePath, 'utf-8');
-        const data = JSON.parse(raw);
-        const names = data.cookies.map(c => c.name).join(', ');
-        const sessionCount = data.cookies.filter(c => !c.expirationDate).length;
-        console.log(`商家端 cookie 导出完成: 总计 ${data.cookies.length} 条, 其中 session cookie ${sessionCount} 条`);
-        console.log(`商家端 cookie 名称: ${names}`);
-      } catch (e) {}
+      if (!exported) console.warn('商家端 Cookie 导出为空或保存失败');
 
       // 更新 merchantAccounts 中的 lastLogin
       const merchantAccounts = storeGet('merchantAccounts', []);
@@ -848,6 +951,7 @@ async function checkLoginStatus(url) {
         storeSet('merchantAccounts', merchantAccounts);
       }
     }
+    pendingCredentials = null;
 
     // ====== 订阅检查 ======
     isCheckingSubscription = true; // 防止关窗后 app.quit
@@ -864,7 +968,7 @@ async function checkLoginStatus(url) {
       loginWindow = null;
     }
 
-    const jdUsername = storeGet('credentials', {}).username || '';
+    const jdUsername = currentUsername || storeGet('credentials', {}).username || '';
     const merchantName = userData.merchantName || '';
 
     // 事业部选择：多事业部时弹出选择窗口，单事业部自动跳过
@@ -1213,11 +1317,8 @@ function createMainWindow() {
     }
   });
 
-  let isAppQuitting = false;
-  app.on('before-quit', () => { isAppQuitting = true; });
-
   mainWindow.on('close', (event) => {
-    if (!isAppQuitting && !isCheckingSubscription) {
+    if (!appIsQuitting && !isCheckingSubscription) {
       event.preventDefault();
       // 用户手动关闭窗口时，清除待执行的更新安装动作
       pendingUpdateAction = null;
@@ -1241,6 +1342,14 @@ function createMainWindow() {
     if (shopPageWindow && !shopPageWindow.isDestroyed()) {
       shopPageWindow.destroy();
       shopPageWindow = null;
+    }
+    if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
+      shopLoginWindow.destroy();
+      shopLoginWindow = null;
+    }
+    if (wmsPrintWindow && !wmsPrintWindow.isDestroyed()) {
+      wmsPrintWindow.destroy();
+      wmsPrintWindow = null;
     }
     if (webLoginWindow && !webLoginWindow.isDestroyed()) {
       webLoginWindow.destroy();
@@ -1968,9 +2077,9 @@ app.whenReady().then(async () => {
   cookieManager.ensureCookieDir();
   cookieManager.migrateLegacyCookieFiles();
 
-  // ====== 旧版数据迁移 ======
-  const migrated = storeGet('_cookieMigrated', false);
-  if (!migrated) {
+  // ====== 版本化数据迁移（所有迁移保持幂等并按序执行） ======
+  let dataSchemaVersion = Number(storeGet('dataSchemaVersion', 0)) || 0;
+  if (dataSchemaVersion < 1 && !storeGet('_cookieMigrated', false)) {
     console.log('Cookie 系统: 开始旧版数据迁移...');
 
     // 迁移商家端：credentialList → merchantAccounts
@@ -2060,6 +2169,52 @@ app.whenReady().then(async () => {
     storeSet('_cookieMigrated', true);
     console.log('Cookie 系统: 旧版数据迁移完成');
   }
+  if (dataSchemaVersion < 1) {
+    storeSet('dataSchemaVersion', 1);
+    dataSchemaVersion = 1;
+  }
+
+  if (dataSchemaVersion < 2) {
+    const migratedAccounts = storeUpdate(data => {
+      const normalizeCredential = credential => ({
+        username: String(credential?.username || '').trim(),
+        password: String(credential?.password || ''),
+        rememberPassword: credential?.rememberPassword !== false
+      });
+
+      if (data.credentials?.username) data.credentials = normalizeCredential(data.credentials);
+      data.credentialList = (Array.isArray(data.credentialList) ? data.credentialList : [])
+        .filter(item => item?.username)
+        .map(normalizeCredential);
+
+      const wmsAccounts = Array.isArray(data.wmsAccounts) ? data.wmsAccounts : [];
+      if (data.wmsCredentials?.username) {
+        const normalizedWmsUsername = String(data.wmsCredentials.username).trim().toLocaleLowerCase();
+        const matchedWms = wmsAccounts.find(account => String(account?.username || '').trim().toLocaleLowerCase() === normalizedWmsUsername);
+        data.wmsCredentials = {
+          id: matchedWms?.id || data.wmsCredentials.id || '',
+          username: String(data.wmsCredentials.username).trim(),
+          password: String(data.wmsCredentials.password || '')
+        };
+      }
+
+      const merchantIds = new Set((Array.isArray(data.merchantAccounts) ? data.merchantAccounts : []).map(account => account.id));
+      const wmsIds = new Set(wmsAccounts.map(account => account.id));
+      const shopAccounts = Array.isArray(data.shopAccounts) ? data.shopAccounts : [];
+      const shopIds = new Set(shopAccounts.map(account => account.id));
+      if (data.lastMerchantAccountId && !merchantIds.has(data.lastMerchantAccountId)) data.lastMerchantAccountId = '';
+      if (data.lastWmsAccountId && !wmsIds.has(data.lastWmsAccountId)) data.lastWmsAccountId = '';
+      if (data.lastShopAccountId && !shopIds.has(data.lastShopAccountId)) data.lastShopAccountId = '';
+      const activeShop = shopAccounts.find(account => account.id === data.lastShopAccountId);
+      if (activeShop) data.lastShopName = activeShop.name || activeShop.username || '';
+
+      data.dataSchemaVersion = 2;
+    });
+    if (migratedAccounts) {
+      dataSchemaVersion = 2;
+      console.log('[存储] 账号数据结构已迁移至 v2');
+    }
+  }
 
   // 恢复上次活跃的账号ID
   activeMerchantAccountId = storeGet('lastMerchantAccountId', '');
@@ -2072,7 +2227,7 @@ app.whenReady().then(async () => {
     delete store.wmsLoggedIn;
     saveStore(store);
   }
-  createLoginWindow();
+  createLoginWindow({ showWhenReady: false });
 
   // 登录页加载后先显示“正在检查更新”的启动状态；检查完成且无更新才展示账号表单。
   // 完整安装包必须优先：热更新构建在特定 base 上，base 太旧会不兼容。
@@ -2108,6 +2263,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  appIsQuitting = true;
   wmsIsQuitting = true;
   if (periodicUpdateTimer) {
     clearInterval(periodicUpdateTimer);
@@ -2210,8 +2366,20 @@ ipcMain.on('open-external-download', (event, url) => {
 // ========== IPC: 登录 ==========
 
 ipcMain.handle('open-web-login', async (event, cred) => {
-  pendingCredentials = cred || null;
-  await createWebLoginWindow();
+  const username = String(cred?.username || '').trim();
+  const password = String(cred?.password || '');
+  if (!username || !password) {
+    return { success: false, error: '请输入京东账号和密码' };
+  }
+  if (username.length > 256 || password.length > 1024) {
+    return { success: false, error: '账号或密码长度超出限制' };
+  }
+  pendingCredentials = {
+    username,
+    password,
+    rememberPassword: cred?.rememberPassword !== false
+  };
+  return createWebLoginWindow();
 });
 
 ipcMain.handle('get-credentials', async () => {
@@ -2223,13 +2391,40 @@ ipcMain.handle('get-credential-list', async () => {
 });
 
 ipcMain.handle('save-credentials', async (event, cred) => {
-  storeSet('credentials', cred);
-  // 维护多账号列表，最近登录排最前，最多10个
-  let list = storeGet('credentialList', []);
-  list = list.filter(item => item.username !== cred.username);
-  list.unshift(cred);
-  if (list.length > 10) list = list.slice(0, 10);
-  storeSet('credentialList', list);
+  const username = String(cred?.username || '').trim();
+  const password = String(cred?.password || '');
+  const rememberPassword = cred?.rememberPassword !== false;
+  if (!username || !password) {
+    return { success: false, error: '请输入京东账号和密码' };
+  }
+  if (username.length > 256 || password.length > 1024) {
+    return { success: false, error: '账号或密码长度超出限制' };
+  }
+
+  const normalizedUsername = username.toLocaleLowerCase();
+  const savedCredential = {
+    username,
+    password: rememberPassword ? password : '',
+    rememberPassword
+  };
+  const saved = storeUpdate(data => {
+    data.credentials = savedCredential;
+    let list = Array.isArray(data.credentialList) ? data.credentialList : [];
+    list = list.filter(item => String(item?.username || '').trim().toLocaleLowerCase() !== normalizedUsername);
+    list.unshift(savedCredential);
+    data.credentialList = list.slice(0, 10);
+
+    const merchantAccounts = Array.isArray(data.merchantAccounts) ? data.merchantAccounts : [];
+    const existing = merchantAccounts.find(item => String(item?.username || '').trim().toLocaleLowerCase() === normalizedUsername);
+    if (existing) {
+      existing.username = username;
+      existing.password = rememberPassword ? password : '';
+    }
+    data.merchantAccounts = merchantAccounts;
+  });
+  return saved
+    ? { success: true, credential: savedCredential }
+    : { success: false, error: storeReadBlockedReason || '本地安全存储当前不可用，账号未保存' };
 });
 
 // 商家端多账号管理
@@ -2239,26 +2434,64 @@ ipcMain.handle('get-merchant-accounts', async () => {
 
 ipcMain.handle('save-merchant-account', async (event, account) => {
   let list = storeGet('merchantAccounts', []);
+  const username = String(account?.username || '').trim();
+  const password = String(account?.password || '');
+  if (!username || username.length > 256 || password.length > 1024) {
+    return { success: false, error: '商家端账号信息无效' };
+  }
+  const normalizedUsername = username.toLocaleLowerCase();
+  const duplicate = list.find(item => item.id !== account?.id
+    && String(item?.username || '').trim().toLocaleLowerCase() === normalizedUsername);
+  if (duplicate) {
+    return { success: false, duplicate: true, error: `登录账号“${username}”已存在` };
+  }
   if (account.id) {
     const idx = list.findIndex(a => a.id === account.id);
     if (idx >= 0) {
-      list[idx] = { ...list[idx], username: account.username, password: account.password, departmentName: account.departmentName || list[idx].departmentName };
+      list[idx] = { ...list[idx], username, password, departmentName: account.departmentName || list[idx].departmentName };
+    } else {
+      return { success: false, error: '要编辑的商家端账号不存在' };
     }
   } else {
     if (list.length >= 20) {
       return { success: false, error: '最多保存20个商家端账号' };
     }
-    account.id = crypto.randomUUID();
-    list.push(account);
+    list.push({ ...account, id: crypto.randomUUID(), username, password });
   }
-  storeSet('merchantAccounts', list);
+  if (!storeSet('merchantAccounts', list)) {
+    return { success: false, error: storeReadBlockedReason || '商家端账号保存失败' };
+  }
   return { success: true, list };
 });
 
 ipcMain.handle('delete-merchant-account', async (event, id) => {
   let list = storeGet('merchantAccounts', []);
+  const deletedAccount = list.find(a => a.id === id);
+  if (!deletedAccount) return { success: false, error: '商家端账号不存在', list };
   list = list.filter(a => a.id !== id);
-  storeSet('merchantAccounts', list);
+  const normalizedUsername = String(deletedAccount.username || '').trim().toLocaleLowerCase();
+  const deleted = storeUpdate(data => {
+    data.merchantAccounts = list;
+    data.credentialList = (Array.isArray(data.credentialList) ? data.credentialList : [])
+      .filter(item => String(item?.username || '').trim().toLocaleLowerCase() !== normalizedUsername);
+    if (String(data.credentials?.username || '').trim().toLocaleLowerCase() === normalizedUsername) {
+      data.credentials = data.credentialList[0] || null;
+    }
+    if (data.userProfiles && typeof data.userProfiles === 'object') {
+      delete data.userProfiles[deletedAccount.username];
+    }
+    if (data.lastMerchantAccountId === id) data.lastMerchantAccountId = '';
+    if (data.lastLoginUser === deletedAccount.username) data.lastLoginUser = '';
+    if (activeMerchantAccountId === id) {
+      data.userData = null;
+      data.csrfToken = '';
+      data.sellerId = '';
+      data.cookies = '';
+    }
+  });
+  if (!deleted) {
+    return { success: false, error: storeReadBlockedReason || '商家端账号删除失败', list: storeGet('merchantAccounts', []) };
+  }
 
   // 删除 cookie 文件和 session 分区
   cookieManager.deleteCookieFile('merchant', id);
@@ -2276,21 +2509,26 @@ ipcMain.handle('switch-merchant-account', async (event, account) => {
     return { success: false, error: '无效的商家端账号' };
   }
 
-  activeMerchantAccountId = account.id;
-  storeSet('lastMerchantAccountId', account.id);
+  const storedAccount = storeGet('merchantAccounts', []).find(item => item.id === account.id);
+  if (!storedAccount) {
+    return { success: false, error: '商家端账号不存在' };
+  }
+
+  activeMerchantAccountId = storedAccount.id;
+  storeSet('lastMerchantAccountId', storedAccount.id);
 
   // 尝试从 cookie 文件恢复
-  if (cookieManager.validateCookieFile('merchant', account.id)) {
+  if (cookieManager.validateCookieFile('merchant', storedAccount.id)) {
     const ses = getMerchantSession();
-    const imported = await cookieManager.importCookies(ses, 'merchant', account.id);
+    const imported = await cookieManager.importCookies(ses, 'merchant', storedAccount.id);
     if (imported) {
       // 加载该用户的 profile 数据
-      if (account.username) {
-        loadUserProfile(account.username);
-        currentUsername = account.username;
-        storeSet('lastLoginUser', account.username);
+      if (storedAccount.username) {
+        loadUserProfile(storedAccount.username);
+        currentUsername = storedAccount.username;
+        storeSet('lastLoginUser', storedAccount.username);
       }
-      return { success: true, loggedIn: true };
+      return { success: true, loggedIn: false, needLogin: true, cookieImported: true };
     }
   }
 
@@ -2307,6 +2545,41 @@ ipcMain.handle('get-cookies', async () => {
 
 ipcMain.handle('get-csrf-token', async () => {
   return storeGet('csrfToken', '');
+});
+
+ipcMain.handle('return-to-merchant-login', async () => {
+  if (shopQueryInProgress) {
+    return { success: false, error: '当前有任务正在执行，请完成后再切换账号' };
+  }
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.show();
+    loginWindow.focus();
+    return { success: true };
+  }
+
+  stopHeartbeat();
+  currentSessionToken = null;
+  isLoggingIn = false;
+  pendingCredentials = null;
+  merchantIdentityValidationAttempts = 0;
+
+  createLoginWindow({ showWhenReady: true });
+
+  if (subscriptionWindow && !subscriptionWindow.isDestroyed()) {
+    subscriptionWindow.destroy();
+    subscriptionWindow = null;
+  }
+  if (departmentSelectWindow && !departmentSelectWindow.isDestroyed()) {
+    departmentSelectWindow.destroy();
+    departmentSelectWindow = null;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const switchingWindow = mainWindow;
+    switchingWindow.once('closed', () => { wmsIsQuitting = false; });
+    switchingWindow.destroy();
+  }
+
+  return { success: true };
 });
 
 // ========== IPC: 快捷模式 ==========
@@ -2517,8 +2790,12 @@ ipcMain.handle('save-shop-account', async (event, account) => {
 
   const accountId = String(account.id || '');
   const username = String(account.username || '').trim();
+  const password = String(account.password || '');
   if (!username) {
     return { success: false, error: '请输入登录账号' };
+  }
+  if (username.length > 256 || password.length > 1024) {
+    return { success: false, error: '账号或密码长度超出限制' };
   }
 
   const duplicate = findDuplicateShopAccount(list, { id: accountId, username });
@@ -2534,7 +2811,7 @@ ipcMain.handle('save-shop-account', async (event, account) => {
     id: accountId || (duplicate ? duplicate.id : crypto.randomUUID()),
     name: String(account.name || '').trim(),
     username,
-    password: String(account.password || ''),
+    password,
     autoSend: !!account.autoSend
   };
 
@@ -2554,15 +2831,26 @@ ipcMain.handle('save-shop-account', async (event, account) => {
     }
     list.push(savedAccount);
   }
-  storeSet('shopAccounts', list);
+  if (!storeSet('shopAccounts', list)) {
+    return { success: false, error: storeReadBlockedReason || '店铺账号保存失败' };
+  }
   return { success: true, account: savedAccount, merged: !accountId && !!duplicate, list };
 });
 
 ipcMain.handle('delete-shop-account', async (event, id) => {
   assertAutomationAccess();
   let list = storeGet('shopAccounts', []);
+  const deletedAccount = list.find(a => a.id === id);
+  if (!deletedAccount) return { success: false, error: '店铺账号不存在', list };
   list = list.filter(a => a.id !== id);
-  storeSet('shopAccounts', list);
+  const deleted = storeUpdate(data => {
+    data.shopAccounts = list;
+    if (data.lastShopAccountId === id) data.lastShopAccountId = '';
+    if (data.lastShopName === deletedAccount.name) data.lastShopName = '';
+  });
+  if (!deleted) {
+    return { success: false, error: storeReadBlockedReason || '店铺账号删除失败', list: storeGet('shopAccounts', []) };
+  }
 
   // 删除该账号的 cookie 文件和 session 分区
   cookieManager.deleteCookieFile('shop', id);
@@ -2705,7 +2993,9 @@ async function validateShopSession() {
 
   if (probe.state === 'authenticated') {
     shopLoggedIn = true;
-    shopLoginName = shopLoginName || storeGet('lastShopName', '');
+    const activeAccount = storeGet('shopAccounts', [])
+      .find(account => account.id === validatingAccountId);
+    shopLoginName = shopLoginName || activeAccount?.name || activeAccount?.username || '';
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('shop-login-success', {
         shopName: shopLoginName,
@@ -3088,6 +3378,20 @@ async function createShopLoginWindow() {
         if (activeShopAccountId) {
           const ses = session.fromPartition(getShopPartition());
           await cookieManager.exportCookies(ses, 'shop', activeShopAccountId);
+          storeUpdate(data => {
+            data.lastShopAccountId = activeShopAccountId;
+            data.lastShopName = shopLoginName;
+            const accounts = Array.isArray(data.shopAccounts) ? data.shopAccounts : [];
+            const index = accounts.findIndex(account => account.id === activeShopAccountId);
+            if (index >= 0) {
+              accounts[index] = {
+                ...accounts[index],
+                name: shopLoginName || accounts[index].name || '',
+                lastLogin: Date.now()
+              };
+            }
+            data.shopAccounts = accounts;
+          });
         }
 
         // 保留刚完成登录的正常页面上下文，后续商品查询继续复用同一会话。
@@ -3116,6 +3420,7 @@ async function createShopLoginWindow() {
             accountId: pendingShopCredentials ? pendingShopCredentials.id || '' : ''
           });
         }
+        pendingShopCredentials = null;
       });
     }
   });
@@ -3129,8 +3434,17 @@ async function createShopLoginWindow() {
 
 ipcMain.handle('open-shop-login', async (event, cred) => {
   assertAutomationAccess();
-  pendingShopCredentials = cred || null;
+  const accountId = String(cred?.id || '');
+  const storedAccount = storeGet('shopAccounts', []).find(account => account.id === accountId);
+  if (!storedAccount) {
+    return { success: false, error: '店铺账号不存在' };
+  }
+  if (!storedAccount.username || !storedAccount.password) {
+    return { success: false, error: '店铺账号或密码为空，请先编辑账号' };
+  }
+  pendingShopCredentials = { ...storedAccount };
   await createShopLoginWindow();
+  return { success: true };
 });
 
 ipcMain.handle('get-shop-login-status', async () => {
@@ -3211,6 +3525,10 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   if (!account || !account.id) {
     return { success: false, error: '无效的店铺账号' };
   }
+  const storedAccount = storeGet('shopAccounts', []).find(item => item.id === account.id);
+  if (!storedAccount) {
+    return { success: false, error: '店铺账号不存在' };
+  }
 
   // 先销毁旧的 shop 窗口
   if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
@@ -3224,27 +3542,27 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   shopSffContextHeaders = null;
 
   // 切换活跃账号
-  activeShopAccountId = account.id;
+  activeShopAccountId = storedAccount.id;
   shopLoggedIn = false;
-  shopLoginName = account.name || account.username || '';
-  storeSet('lastShopAccountId', account.id);
+  shopLoginName = storedAccount.name || storedAccount.username || '';
+  storeSet('lastShopAccountId', storedAccount.id);
 
   // 检查 cookie 文件是否有效
-  if (cookieManager.validateCookieFile('shop', account.id)) {
+  if (cookieManager.validateCookieFile('shop', storedAccount.id)) {
     const shopPartition = getShopPartition();
     const ses = session.fromPartition(shopPartition);
 
     // 从文件导入 cookie
-    const imported = await cookieManager.importCookies(ses, 'shop', account.id);
+    const imported = await cookieManager.importCookies(ses, 'shop', storedAccount.id);
     if (imported) {
       // 验证 session 有效性
       const result = await validateShopSession();
       if (result.loggedIn) {
-        console.log(`[店铺状态] 账号[${account.id}]服务器验证成功`);
+        console.log(`[店铺状态] 账号[${storedAccount.id}]服务器验证成功`);
         return { success: true, loggedIn: true, shopName: result.shopName };
       }
       if (result.validationError) {
-        console.warn(`[店铺状态] 账号[${account.id}]暂时无法验证，保留 Cookie 文件`);
+        console.warn(`[店铺状态] 账号[${storedAccount.id}]暂时无法验证，保留 Cookie 文件`);
         return {
           success: false,
           loggedIn: false,
@@ -3255,7 +3573,7 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
     }
   }
 
-  console.log(`[店铺状态] 账号[${account.id}]保存的登录状态已失效，需要重新登录`);
+  console.log(`[店铺状态] 账号[${storedAccount.id}]保存的登录状态已失效，需要重新登录`);
   return { success: true, loggedIn: false, needLogin: true };
 });
 
@@ -5345,6 +5663,23 @@ async function restoreLastWmsSession({ force = false } = {}) {
       return { status: 'no_cookie', loggedIn: false, orders: [] };
     }
 
+    if (!activeWmsWarehouseName || !activeWmsWarehouseNo) {
+      wmsLoggedIn = false;
+      pendingWmsCredentials = {
+        id: account.id,
+        username: account.username || '',
+        password: account.password || ''
+      };
+      console.warn('WMS 恢复: 缺少完整仓库名称或编号，打开 WMS 页面重新识别');
+      setTimeout(() => createWmsLoginWindow(), 50);
+      return {
+        status: 'warehouse_missing',
+        loggedIn: false,
+        loginOpened: true,
+        orders: []
+      };
+    }
+
     const queryResult = await queryWmsOrders(activeWmsWarehouseNo, { allowUnverified: true });
     if (queryResult.success) {
       wmsLoggedIn = true;
@@ -5547,6 +5882,7 @@ async function finalizeWmsWorkspaceLogin(targetWindow, wmsPartition, accountId) 
       warehouseNo: activeWmsWarehouseNo
     });
   }
+  pendingWmsCredentials = null;
   targetWindow.hide();
   console.log('WMS: 已自动确认进入仓库并隐藏登录窗口');
   return true;
@@ -5573,10 +5909,8 @@ async function createWmsLoginWindow() {
   }
   const wmsPartition = getWmsPartition();
 
-  // WMS 免登录策略：
-  // - WMS 有"顶号"机制（同一时间只允许一个 session），cookie 文件恢复不可靠
-  // - 同一 app 会话内二次进入：分区 live cookie 有效，可免登录
-  // - 重启后：不从文件恢复（大概率被顶号失效），走自动填充快速登录
+  // WMS 免登录策略：启动恢复流程会先导入文件 Cookie 并调用待验收查询验证；
+  // 这里复用已经验证/导入的分区。分区为空时才进入 passport 自动填充登录。
   if (activeWmsAccountId) {
     const ses = session.fromPartition(wmsPartition);
     const existingCookies = await ses.cookies.get({});
@@ -5749,9 +6083,21 @@ async function createWmsLoginWindow() {
 // IPC: 打开 WMS 登录窗口
 
 ipcMain.handle('open-wms-login', async (event, cred) => {
-  pendingWmsCredentials = cred || null;
+  const accounts = storeGet('wmsAccounts', []);
+  const accountId = String(cred?.id || '');
+  const normalizedUsername = String(cred?.username || '').trim().toLocaleLowerCase();
+  const storedAccount = accounts.find(account => account.id === accountId)
+    || accounts.find(account => String(account?.username || '').trim().toLocaleLowerCase() === normalizedUsername);
+  if (!storedAccount) {
+    return { success: false, error: 'WMS 账号不存在，请先保存账号' };
+  }
+  if (!storedAccount.username || !storedAccount.password) {
+    return { success: false, error: 'WMS 账号或密码为空，请重新填写' };
+  }
+  pendingWmsCredentials = { ...storedAccount };
   // 延迟创建窗口，避免阻塞渲染进程
   setTimeout(() => createWmsLoginWindow(), 50);
+  return { success: true };
 });
 
 // 打印出库：在新窗口中打开 WMS 出库处理页面（复用 WMS 分区实现免登录）
@@ -5821,14 +6167,24 @@ ipcMain.handle('get-wms-credentials', async () => {
 });
 
 ipcMain.handle('save-wms-credentials', async (event, cred) => {
-  storeSet('wmsCredentials', cred);
+  const username = String(cred?.username || '').trim();
+  const password = String(cred?.password || '');
+  if (!username || !password) {
+    return { success: false, error: '请输入 WMS 账号和密码' };
+  }
+  if (username.length > 256 || password.length > 1024) {
+    return { success: false, error: '账号或密码长度超出限制' };
+  }
+
   // 同步维护 wmsAccounts 列表，最近登录排最前，最多10个
   let accounts = storeGet('wmsAccounts', []);
-  const existIdx = accounts.findIndex(a => a.username === cred.username);
+  const normalizedUsername = username.toLocaleLowerCase();
+  const existIdx = accounts.findIndex(a => String(a?.username || '').trim().toLocaleLowerCase() === normalizedUsername);
   let savedAccount;
   if (existIdx >= 0) {
     // 已存在：更新密码，移到最前
-    accounts[existIdx].password = cred.password;
+    accounts[existIdx].username = username;
+    accounts[existIdx].password = password;
     accounts[existIdx].lastLogin = Date.now();
     const updated = accounts.splice(existIdx, 1)[0];
     accounts.unshift(updated);
@@ -5837,15 +6193,22 @@ ipcMain.handle('save-wms-credentials', async (event, cred) => {
     // 新账号：创建新条目
     savedAccount = {
       id: require('crypto').randomUUID(),
-      username: cred.username,
-      password: cred.password,
+      username,
+      password,
       lastLogin: Date.now()
     };
     accounts.unshift(savedAccount);
   }
   if (accounts.length > 10) accounts = accounts.slice(0, 10);
-  storeSet('wmsAccounts', accounts);
-  return savedAccount;
+  const saved = storeUpdate(data => {
+    data.wmsAccounts = accounts;
+    data.wmsCredentials = {
+      id: savedAccount.id,
+      username: savedAccount.username,
+      password: savedAccount.password
+    };
+  });
+  return saved ? savedAccount : { success: false, error: storeReadBlockedReason || 'WMS 账号保存失败' };
 });
 
 // WMS 多账号管理
@@ -5855,13 +6218,24 @@ ipcMain.handle('get-wms-accounts', async () => {
 
 ipcMain.handle('save-wms-account', async (event, account) => {
   let list = storeGet('wmsAccounts', []);
+  const username = String(account?.username || '').trim();
+  const password = String(account?.password || '');
+  if (!username || username.length > 256 || password.length > 1024) {
+    return { success: false, error: '仓库端账号信息无效' };
+  }
+  const normalizedUsername = username.toLocaleLowerCase();
+  const duplicate = list.find(item => item.id !== account?.id
+    && String(item?.username || '').trim().toLocaleLowerCase() === normalizedUsername);
+  if (duplicate) {
+    return { success: false, duplicate: true, error: `登录账号“${username}”已存在` };
+  }
   if (account.id) {
     const idx = list.findIndex(a => a.id === account.id);
     if (idx >= 0) {
       list[idx] = {
         ...list[idx],
-        username: account.username,
-        password: account.password,
+        username,
+        password,
         warehouseName: account.warehouseName || list[idx].warehouseName,
         warehouseNo: account.warehouseNo || list[idx].warehouseNo
       };
@@ -5870,17 +6244,31 @@ ipcMain.handle('save-wms-account', async (event, account) => {
     if (list.length >= 20) {
       return { success: false, error: '最多保存20个仓库端账号' };
     }
-    account.id = crypto.randomUUID();
-    list.push(account);
+    list.push({ ...account, id: crypto.randomUUID(), username, password });
   }
-  storeSet('wmsAccounts', list);
+  if (!storeSet('wmsAccounts', list)) {
+    return { success: false, error: storeReadBlockedReason || '仓库端账号保存失败' };
+  }
   return { success: true, list };
 });
 
 ipcMain.handle('delete-wms-account', async (event, id) => {
   let list = storeGet('wmsAccounts', []);
+  const deletedAccount = list.find(a => a.id === id);
+  if (!deletedAccount) return { success: false, error: '仓库端账号不存在', list };
   list = list.filter(a => a.id !== id);
-  storeSet('wmsAccounts', list);
+  const deleted = storeUpdate(data => {
+    data.wmsAccounts = list;
+    if (data.lastWmsAccountId === id) data.lastWmsAccountId = '';
+    if (data.wmsCredentials?.id === id
+        || String(data.wmsCredentials?.username || '').trim().toLocaleLowerCase()
+          === String(deletedAccount.username || '').trim().toLocaleLowerCase()) {
+      data.wmsCredentials = null;
+    }
+  });
+  if (!deleted) {
+    return { success: false, error: storeReadBlockedReason || '仓库端账号删除失败', list: storeGet('wmsAccounts', []) };
+  }
 
   // 删除 cookie 文件和 session 分区
   cookieManager.deleteCookieFile('wms', id);
@@ -5890,6 +6278,8 @@ ipcMain.handle('delete-wms-account', async (event, id) => {
     activeWmsAccountId = '';
     wmsLoggedIn = false;
     wmsLastRestoreResult = null;
+    activeWmsWarehouseName = '';
+    activeWmsWarehouseNo = '';
   }
 
   return { success: true, list };
@@ -5898,6 +6288,10 @@ ipcMain.handle('delete-wms-account', async (event, id) => {
 ipcMain.handle('switch-wms-account', async (event, account) => {
   if (!account || !account.id) {
     return { success: false, error: '无效的仓库端账号' };
+  }
+  const storedAccount = storeGet('wmsAccounts', []).find(item => item.id === account.id);
+  if (!storedAccount) {
+    return { success: false, error: '仓库端账号不存在' };
   }
 
   // 销毁旧的 WMS 窗口
@@ -5908,15 +6302,15 @@ ipcMain.handle('switch-wms-account', async (event, account) => {
     wmsIsQuitting = false;
   }
 
-  activeWmsAccountId = account.id;
-  activeWmsWarehouseName = account.warehouseName || '';
-  activeWmsWarehouseNo = account.warehouseNo || '';
+  activeWmsAccountId = storedAccount.id;
+  activeWmsWarehouseName = storedAccount.warehouseName || '';
+  activeWmsWarehouseNo = storedAccount.warehouseNo || '';
   wmsLoggedIn = false;
   wmsLastRestoreResult = null;
-  storeSet('lastWmsAccountId', account.id);
+  storeSet('lastWmsAccountId', storedAccount.id);
 
   // 尝试从 cookie 文件恢复
-  if (cookieManager.validateCookieFile('wms', account.id)) {
+  if (cookieManager.validateCookieFile('wms', storedAccount.id)) {
     const restored = await restoreLastWmsSession({ force: true });
     return {
       success: true,
@@ -5974,9 +6368,12 @@ async function wmsApiCall(apiPath, body) {
 
   const apiUrl = `https://api-w6.jdl.com${apiPath}`;
   let response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
   try {
     response = await wmsSession.fetch(apiUrl, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json;charset=UTF-8',
         'Accept': 'application/json, text/plain, */*',
@@ -5994,7 +6391,10 @@ async function wmsApiCall(apiPath, body) {
       body: bodyStr
     });
   } catch (err) {
-    throw createWmsApiError('network', `WMS 网络请求失败: ${err.message}`);
+    const message = err?.name === 'AbortError' ? 'WMS 请求超时，请稍后重试' : `WMS 网络请求失败: ${err.message}`;
+    throw createWmsApiError('network', message);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   let text;

@@ -63,8 +63,31 @@ const logBox = $('#logBox');
   initAoModule();
   initWmsPrintOutbound();
   initContactModal();
+  initMerchantAccountSwitch();
   loadLogisticsPrefs();
 })();
+
+function initMerchantAccountSwitch() {
+  const button = $('#merchantSwitchBtn');
+  if (!button || !window.electronAPI.returnToMerchantLogin) return;
+  button.addEventListener('click', async () => {
+    if (isExecuting || wmsIsProcessing) {
+      showToast('当前有任务正在执行，请完成或停止任务后再切换账号', 4000, 'warn');
+      return;
+    }
+    button.disabled = true;
+    try {
+      const result = await window.electronAPI.returnToMerchantLogin();
+      if (!result?.success) {
+        showToast(result?.error || '暂时无法切换账号', 4000, 'error');
+        button.disabled = false;
+      }
+    } catch (error) {
+      showToast(error.message || '暂时无法切换账号', 4000, 'error');
+      button.disabled = false;
+    }
+  });
+}
 
 // ========== 加载用户数据 ==========
 async function loadUserData() {
@@ -1642,6 +1665,10 @@ function initWmsEventListeners() {
     let loginAccount = { username, password };
     if (window.electronAPI.saveWmsCredentials) {
       const savedAccount = await window.electronAPI.saveWmsCredentials({ username, password });
+      if (savedAccount?.success === false) {
+        addWmsLog('error', savedAccount.error || 'WMS 账号保存失败');
+        return;
+      }
       if (savedAccount?.id) loginAccount = { ...loginAccount, id: savedAccount.id };
       // 刷新下拉账号列表
       if (window.electronAPI.getWmsAccounts) {
@@ -1652,7 +1679,10 @@ function initWmsEventListeners() {
       }
     }
     addWmsLog('info', '正在打开 WMS 登录窗口...');
-    window.electronAPI.openWmsLogin(loginAccount);
+    const openResult = await window.electronAPI.openWmsLogin(loginAccount);
+    if (openResult?.success === false) {
+      addWmsLog('error', openResult.error || 'WMS 登录窗口打开失败');
+    }
   });
 
   // 查询按钮
@@ -2124,6 +2154,8 @@ async function checkWmsInitialStatus() {
       addWmsLog('info', '未找到保存的 WMS Cookie，请登录 WMS 系统');
     } else if (result?.status === 'no_account') {
       addWmsLog('info', '尚未保存 WMS 账号，请先登录');
+    } else if (result?.status === 'warehouse_missing') {
+      addWmsLog('warn', '已恢复 WMS 会话，但缺少完整仓库信息，正在重新识别');
     }
   } catch (err) {
     wmsRestoreStatus = 'network_error';
@@ -2998,13 +3030,16 @@ async function handleSmEditShopLogin() {
   const account = result.account || accounts.find(a => a.username === username) || accounts[accounts.length - 1];
 
   addSmLog('info', `正在打开店铺后台登录窗口：${account.name || account.username}...`);
-  await window.electronAPI.openShopLogin({
+  const loginResult = await window.electronAPI.openShopLogin({
     id: account.id,
     username: account.username,
     password: account.password,
     name: account.name,
     autoSend: account.autoSend
   });
+  if (loginResult?.success === false) {
+    showToast(loginResult.error || '店铺登录窗口打开失败');
+  }
   // 登录成功后弹窗会由 onShopLoginSuccess 回调自动关闭
 }
 
@@ -3052,13 +3087,17 @@ async function openShopAccountAction(account, preferBackend) {
 
   updateSmLoginStatus(false, '', 'offline');
   addSmLog('info', `正在重新登录店铺：${account.name || account.username}...`);
-  await window.electronAPI.openShopLogin({
+  const loginResult = await window.electronAPI.openShopLogin({
     id: account.id,
     username: account.username,
     password: account.password,
     name: account.name,
     autoSend: account.autoSend
   });
+  if (loginResult?.success === false) {
+    updateSmLoginStatus(false, '', 'offline');
+    addSmLog('error', loginResult.error || '店铺登录窗口打开失败');
+  }
 }
 
 async function handleSmLogin() {
@@ -4124,7 +4163,8 @@ function initWmsPrintOutbound() {
     if (!requireTier('wmsPrintOutbound')) return;
     e.preventDefault();
     const cred = await window.electronAPI.getWmsCredentials();
-    window.electronAPI.openWmsLogin(cred || {});
+    const result = await window.electronAPI.openWmsLogin(cred || {});
+    if (result?.success === false) showToast(result.error || 'WMS 登录窗口打开失败');
   });
 
   // 刷新按钮

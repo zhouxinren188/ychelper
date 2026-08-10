@@ -253,6 +253,10 @@
     .login-btn:hover {
       background: #d35400;
     }
+    .login-btn:disabled {
+      background: #e8a66c;
+      cursor: wait;
+    }
 
     .login-tip {
       color: #bbb;
@@ -313,6 +317,8 @@
       color: #999;
       white-space: nowrap;
     }
+    .login-tip.error { color: #d84a3a; }
+    .login-tip.warn { color: #c27818; }
     .update-changelog {
       display: none;
       width: 100%;
@@ -475,7 +481,7 @@
         </div>
 
         <button class="login-btn" id="loginBtn">登录商家端</button>
-        <p class="login-tip">登录成功后将自动进入主界面</p>
+        <p class="login-tip" id="loginTip">登录成功后将自动进入主界面</p>
       </div>
 
       <div class="login-version" id="loginVersion"></div>
@@ -496,6 +502,9 @@
   <script>
     const usernameInput = document.getElementById('username');
     const passwordInput = document.getElementById('password');
+    const rememberCheck = document.getElementById('rememberCheck');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginTip = document.getElementById('loginTip');
     const accountArrow = document.getElementById('accountArrow');
     const accountDropdown = document.getElementById('accountDropdown');
 
@@ -506,6 +515,7 @@
       if (cred) {
         usernameInput.value = cred.username || '';
         passwordInput.value = cred.password || '';
+        rememberCheck.checked = cred.rememberPassword !== false;
       }
     });
 
@@ -534,6 +544,7 @@
         opt.addEventListener('click', () => {
           usernameInput.value = item.username;
           passwordInput.value = item.password || '';
+          rememberCheck.checked = item.rememberPassword !== false;
           closeDropdown();
         });
         accountDropdown.appendChild(opt);
@@ -566,13 +577,62 @@
       }
     });
 
-    document.getElementById('loginBtn').addEventListener('click', () => {
+    async function handleLogin() {
+      if (loginBtn.disabled) return;
       const username = usernameInput.value.trim();
       const password = passwordInput.value;
-      // 保存凭据
-      window.electronAPI.saveCredentials({ username, password });
-      // 打开登录页面，传递凭据用于自动填充
-      window.electronAPI.openWebLogin({ username, password });
+      const rememberPassword = rememberCheck.checked;
+      loginTip.className = 'login-tip';
+      if (!username) {
+        loginTip.textContent = '请输入京东账号';
+        loginTip.classList.add('error');
+        usernameInput.focus();
+        return;
+      }
+      if (!password) {
+        loginTip.textContent = '请输入密码';
+        loginTip.classList.add('error');
+        passwordInput.focus();
+        return;
+      }
+
+      loginBtn.disabled = true;
+      loginBtn.textContent = '正在打开登录窗口...';
+      try {
+        const saveResult = await window.electronAPI.saveCredentials({ username, password, rememberPassword });
+        if (!saveResult?.success) {
+          loginTip.textContent = saveResult?.error || '账号未能保存，本次仍可继续登录';
+          loginTip.classList.add('warn');
+        } else {
+          loginTip.textContent = rememberPassword
+            ? '账号密码已安全保存，正在打开商家端'
+            : '本次密码不会保存，正在打开商家端';
+        }
+
+        const openResult = await window.electronAPI.openWebLogin({ username, password, rememberPassword });
+        if (openResult && openResult.success === false && !openResult.alreadyOpen) {
+          throw new Error(openResult.error || '登录窗口打开失败');
+        }
+      } catch (error) {
+        loginTip.textContent = error.message || '登录窗口打开失败';
+        loginTip.className = 'login-tip error';
+      } finally {
+        setTimeout(() => {
+          loginBtn.disabled = false;
+          loginBtn.textContent = '登录商家端';
+        }, 800);
+      }
+    }
+
+    loginBtn.addEventListener('click', handleLogin);
+    passwordInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') handleLogin();
+    });
+    usernameInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        if (passwordInput.value) handleLogin();
+        else passwordInput.focus();
+      }
     });
 
     function formatUpdateBytes(bytes) {

@@ -14,10 +14,21 @@ const ENCRYPTED_COOKIE_PREFIX = 'YCH-COOKIE-ENC-V1:';
 function encodeCookieData(data) {
   const json = JSON.stringify(data);
   if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('Cookie 加密不可用，暂以明文保存');
-    return JSON.stringify(data, null, 2);
+    throw new Error('Cookie 加密不可用，已拒绝明文保存');
   }
   return ENCRYPTED_COOKIE_PREFIX + safeStorage.encryptString(json).toString('base64');
+}
+
+function writeCookieFileAtomic(filePath, content) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, content, 'utf-8');
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
+  }
 }
 
 function decodeCookieData(raw, filePath) {
@@ -31,7 +42,7 @@ function decodeCookieData(raw, filePath) {
 
   const data = JSON.parse(raw);
   if (safeStorage.isEncryptionAvailable() && filePath) {
-    fs.writeFileSync(filePath, encodeCookieData(data), 'utf-8');
+    writeCookieFileAtomic(filePath, encodeCookieData(data));
     console.log(`Cookie 文件已迁移为加密格式: ${path.basename(filePath)}`);
   }
   return data;
@@ -179,7 +190,7 @@ async function exportCookies(ses, type, id) {
     };
 
     const filePath = getCookieFilePath(type, id);
-    fs.writeFileSync(filePath, encodeCookieData(data), 'utf-8');
+    writeCookieFileAtomic(filePath, encodeCookieData(data));
     console.log(`Cookie 导出: ${type}-${id} 共 ${uniqueCookies.length} 条 cookie 已保存`);
     return true;
   } catch (err) {
