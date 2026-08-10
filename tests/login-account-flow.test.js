@@ -27,6 +27,14 @@ assert.match(main, /data\.sellerId = profile\.sellerId \|\| '';/,
   '切换商家账号时必须覆盖或清空 sellerId');
 assert.match(main, /const identityVerified = !!\(/,
   '商家端进入后台后必须执行身份接口验证');
+assert.match(main, /webLoginWindow = new BrowserWindow\(\{[\s\S]{0,220}show: false/,
+  '商家端窗口必须默认隐藏，避免工作台页面闪现');
+assert.match(main, /did-start-navigation[\s\S]{0,500}webLoginWindow\.hide\(\)/,
+  '从登录页进入工作台时必须在导航开始阶段隐藏窗口');
+assert.match(main, /if \(isMerchantLoginPageUrl\(url\)\)[\s\S]{0,260}webLoginWindow\.show\(\)/,
+  '只有商家登录页才应主动显示窗口');
+assert.match(main, /requiresInteractiveVerification[\s\S]{0,900}webLoginWindow\.show\(\)/,
+  '检测到滑块或安全验证时必须重新显示商家端窗口');
 assert.doesNotMatch(main, /cookieImported: true[\s\S]{0,120}loggedIn: true/,
   '仅导入商家 Cookie 不得直接标记为已登录');
 

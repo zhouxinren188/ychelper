@@ -487,6 +487,22 @@ function getMerchantSession() {
   return session.defaultSession;
 }
 
+function isMerchantLoginPageUrl(url) {
+  const normalizedUrl = String(url || '').toLowerCase();
+  return normalizedUrl.includes('passport')
+    || normalizedUrl.includes('/login')
+    || normalizedUrl.includes('sso');
+}
+
+function isMerchantWorkspaceUrl(url) {
+  try {
+    return new URL(String(url || '')).hostname.toLowerCase() === 'o.jdl.com'
+      && !isMerchantLoginPageUrl(url);
+  } catch (_) {
+    return false;
+  }
+}
+
 function createLoginWindow({ showWhenReady = true } = {}) {
   if (loginWindow && !loginWindow.isDestroyed()) {
     if (showWhenReady) {
@@ -527,8 +543,12 @@ function createLoginWindow({ showWhenReady = true } = {}) {
 
 async function createWebLoginWindow() {
   if (webLoginWindow && !webLoginWindow.isDestroyed()) {
-    webLoginWindow.show();
-    webLoginWindow.focus();
+    const currentUrl = webLoginWindow.webContents.getURL();
+    // 身份验证期间保持商家工作台隐藏；仅登录页允许重新显示。
+    if (isMerchantLoginPageUrl(currentUrl) || !isLoggingIn) {
+      webLoginWindow.show();
+      webLoginWindow.focus();
+    }
     return { success: false, alreadyOpen: true };
   }
 
@@ -601,29 +621,105 @@ async function createWebLoginWindow() {
     width: 1100,
     height: 750,
     center: true,
+    show: false,
     title: '京东物流 - 登录',
     webPreferences: webPrefs
   });
 
   isLoggingIn = false;
+  let merchantLoginPageSeen = false;
   webLoginWindow.loadURL('https://o.jdl.com');
 
-  // 监听页面跳转，检测登录状态
+  const handleMerchantNavigation = async (url, source) => {
+    console.log(`商家端${source}: ${url}`);
+    if (!webLoginWindow || webLoginWindow.isDestroyed()) return;
+
+    if (isMerchantLoginPageUrl(url)) {
+      merchantLoginPageSeen = true;
+      merchantIdentityValidationAttempts = 0;
+      isLoggingIn = false;
+      if (!webLoginWindow.isVisible()) webLoginWindow.show();
+      webLoginWindow.focus();
+      return;
+    }
+
+    if (isMerchantWorkspaceUrl(url)) {
+      // 登录跳转一开始就隐藏，避免工作台页面短暂闪现。
+      if (webLoginWindow.isVisible()) webLoginWindow.hide();
+      await checkLoginStatus(url);
+      return;
+    }
+
+    // 登录后的安全验证可能跳到独立域名，未知页面必须重新显示给用户处理。
+    if (merchantLoginPageSeen && !webLoginWindow.isVisible()) {
+      webLoginWindow.show();
+      webLoginWindow.focus();
+    }
+  };
+
+  // 从已显示的登录页开始跳向工作台时，在页面提交前立即隐藏窗口。
+  webLoginWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
+    if (!isMainFrame || !merchantLoginPageSeen || !isMerchantWorkspaceUrl(url)) return;
+    if (webLoginWindow && !webLoginWindow.isDestroyed() && webLoginWindow.isVisible()) {
+      webLoginWindow.hide();
+    }
+  });
+
+  // 监听页面跳转，登录页才显示，工作台始终在后台验证。
   webLoginWindow.webContents.on('did-navigate', async (event, url) => {
-    console.log(`商家端导航: ${url}`);
-    await checkLoginStatus(url);
+    await handleMerchantNavigation(url, '导航');
   });
   webLoginWindow.webContents.on('did-navigate-in-page', async (event, url) => {
-    console.log(`商家端页内导航: ${url}`);
-    await checkLoginStatus(url);
+    await handleMerchantNavigation(url, '页内导航');
+  });
+  webLoginWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3 || !webLoginWindow || webLoginWindow.isDestroyed()) return;
+    console.warn(`商家端页面加载失败: ${validatedURL || '(空)'} ${errorCode} ${errorDescription}`);
+    if (!webLoginWindow.isVisible()) webLoginWindow.show();
   });
 
   // 页面加载完成后自动填充账号密码
   webLoginWindow.webContents.on('did-finish-load', async () => {
     if (!webLoginWindow) return; // 窗口已转为jdPageWindow
-    if (!pendingCredentials || !pendingCredentials.username) return;
     const currentUrl = webLoginWindow.webContents.getURL();
-    if (!currentUrl.includes('passport') && !currentUrl.includes('login')) return;
+
+    // 京东可能在登录或跳转工作台期间插入滑块/验证码；检测到后必须让用户可见。
+    try {
+      const requiresInteractiveVerification = await webLoginWindow.webContents.executeJavaScript(`
+        (() => {
+          const selectors = [
+            '#captcha', '[id*="captcha"]', 'iframe[src*="captcha"]', 'iframe[src*="verify"]',
+            '.JDJRV-wrap', '.JDJRV-slide', '.JDJRV-bigimg', '.geetest_panel', '.nc_wrapper',
+            '[class*="slide-verify"]', '[class*="slider-verify"]'
+          ];
+          const isVisible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden'
+              && rect.width > 0 && rect.height > 0;
+          };
+          if (selectors.some(selector => Array.from(document.querySelectorAll(selector)).some(isVisible))) {
+            return true;
+          }
+          const text = String(document.body && document.body.innerText || '').slice(0, 3000);
+          return /拖动滑块|滑块验证|完成拼图|京东安全验证/.test(text);
+        })()
+      `);
+      if (requiresInteractiveVerification) {
+        isLoggingIn = false;
+        if (!webLoginWindow.isVisible()) webLoginWindow.show();
+        webLoginWindow.focus();
+        console.log('商家端检测到滑块或安全验证，已显示窗口等待用户处理');
+        return;
+      }
+    } catch (verificationError) {
+      console.warn('商家端安全验证页面检测失败:', verificationError.message);
+    }
+
+    if (!pendingCredentials || !pendingCredentials.username) return;
+    if (!isMerchantLoginPageUrl(currentUrl)) return;
+    if (!webLoginWindow.isVisible()) webLoginWindow.show();
 
     const { username, password } = pendingCredentials;
     const fillScript = `
@@ -674,12 +770,15 @@ async function checkLoginStatus(url) {
   if (isLoggingIn) return;
 
   // 登录/SSO 页面，跳过
-  if (url.includes('passport') || url.includes('login') || url.includes('sso')) {
+  if (isMerchantLoginPageUrl(url)) {
     return;
   }
 
   // 检测 o.jdl.com 登录成功
-  if (!url.includes('o.jdl.com')) return;
+  if (!isMerchantWorkspaceUrl(url)) return;
+
+  // 已进入商家工作台时立即隐藏，后续数据提取均在后台完成。
+  if (webLoginWindow.isVisible()) webLoginWindow.hide();
 
   isLoggingIn = true;
   console.log('商家端登录成功，开始获取业务数据...');
@@ -715,7 +814,7 @@ async function checkLoginStatus(url) {
     if (!identityVerified) {
       merchantIdentityValidationAttempts += 1;
       const attempt = merchantIdentityValidationAttempts;
-      console.warn(`商家端身份验证未通过（第 ${attempt}/3 次），保持登录窗口可见`);
+      console.warn(`商家端身份验证未通过（第 ${attempt}/3 次），继续在后台重试`);
       isLoggingIn = false;
       if (attempt < 3 && webLoginWindow && !webLoginWindow.isDestroyed()) {
         setTimeout(() => {
@@ -724,6 +823,8 @@ async function checkLoginStatus(url) {
           }
         }, 1500);
       } else if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+        webLoginWindow.show();
+        webLoginWindow.focus();
         dialog.showMessageBox(webLoginWindow, {
           type: 'warning',
           title: '登录状态验证失败',
@@ -1052,6 +1153,10 @@ async function checkLoginStatus(url) {
     console.error('登录处理失败:', err);
     isCheckingSubscription = false;
     isLoggingIn = false;
+    if (webLoginWindow && !webLoginWindow.isDestroyed()) {
+      webLoginWindow.show();
+      webLoginWindow.focus();
+    }
   }
 }
 
