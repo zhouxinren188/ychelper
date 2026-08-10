@@ -35,7 +35,7 @@ assert.match(preload, /returnToMerchantLogin/,
 assert.match(indexHtml, /id="merchantSwitchBtn"/,
   '主界面必须提供切换商家账号按钮');
 assert.match(renderer, /returnToMerchantLogin\(\)/,
-  '切换账号按钮必须接入主进程流程');
+  '切换事业部按钮必须接入主进程流程');
 
 assert.match(main, /data\.lastShopAccountId = activeShopAccountId/,
   '店铺登录成功后必须保存最后活跃店铺 ID');

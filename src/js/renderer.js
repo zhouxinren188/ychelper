@@ -72,18 +72,18 @@ function initMerchantAccountSwitch() {
   if (!button || !window.electronAPI.returnToMerchantLogin) return;
   button.addEventListener('click', async () => {
     if (isExecuting || wmsIsProcessing) {
-      showToast('当前有任务正在执行，请完成或停止任务后再切换账号', 4000, 'warn');
+      showToast('当前有任务正在执行，请完成或停止任务后再切换事业部', 4000, 'warn');
       return;
     }
     button.disabled = true;
     try {
       const result = await window.electronAPI.returnToMerchantLogin();
       if (!result?.success) {
-        showToast(result?.error || '暂时无法切换账号', 4000, 'error');
+        showToast(result?.error || '暂时无法切换事业部', 4000, 'error');
         button.disabled = false;
       }
     } catch (error) {
-      showToast(error.message || '暂时无法切换账号', 4000, 'error');
+      showToast(error.message || '暂时无法切换事业部', 4000, 'error');
       button.disabled = false;
     }
   });

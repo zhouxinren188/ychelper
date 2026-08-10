@@ -2549,7 +2549,7 @@ ipcMain.handle('get-csrf-token', async () => {
 
 ipcMain.handle('return-to-merchant-login', async () => {
   if (shopQueryInProgress) {
-    return { success: false, error: '当前有任务正在执行，请完成后再切换账号' };
+    return { success: false, error: '当前有任务正在执行，请完成后再切换事业部' };
   }
   if (loginWindow && !loginWindow.isDestroyed()) {
     loginWindow.show();
