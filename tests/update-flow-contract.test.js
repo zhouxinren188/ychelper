@@ -54,11 +54,17 @@ assert.match(rules, /multipart\/byteranges/);
 assert.match(rules, /--baselines=/);
 assert.match(rules, /所有三段正式版本号 `X\.Y\.Z` 都必须发布完整安装包/);
 assert.match(rules, /旧用户启动时必须先升级到该完整版本并重启/);
+assert.match(rules, /1\.0\.66 旧客户端兼容桥接/);
+assert.match(rules, /update-1\.0\.66\.1\.zip/);
+assert.match(rules, /完整包兜底必须固定返回 v1\.0\.68/);
 assert.match(rules, /Restart-Service -Name "YchelperServer" -Force/);
 assert.match(rules, /powershell -NoProfile -EncodedCommand/);
 assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
 assert.match(hotBuild, /必须基于当前完整版本/);
 assert.match(onlineVerifier, /function isValidChineseChangelog/);
+assert.match(onlineVerifier, /bootstrapData\.version !== '1\.0\.66\.1'/);
+assert.match(onlineVerifier, /data\.version !== '1\.0\.68'/);
+assert.match(onlineVerifier, /data\.bridge !== true/);
 assert.doesNotMatch(onlineVerifier, /changelog\.includes\('自动更新'\)/,
   'UTF-8 中文校验不得依赖某个固定更新文案');
 

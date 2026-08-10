@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -135,6 +136,30 @@ async function main() {
     throw new Error('差分端点返回的多段 Content-Range 不完整');
   }
 
+  if (baselines.includes('1.0.66')) {
+    const legacyUserAgent = `ychelper-release-verifier-${Date.now()}`;
+    const bootstrapCheck = await expectResponse(`${BASE_URL}/api/update/check?version=1.0.66`, {
+      headers: { 'User-Agent': legacyUserAgent },
+      cache: 'no-store'
+    }, 200, 'v1.0.66 更新界面补丁检测');
+    const bootstrapData = await bootstrapCheck.json();
+    if (!bootstrapData.needUpdate || bootstrapData.version !== '1.0.66.1'
+      || bootstrapData.baseVersion !== '1.0.66' || !bootstrapData.sha512 || !bootstrapData.size) {
+      throw new Error('v1.0.66 未获得 1.0.66.1 更新界面补丁');
+    }
+    const bootstrapDownload = await expectResponse(`${BASE_URL}/api/update/download`, {
+      headers: { 'User-Agent': legacyUserAgent },
+      cache: 'no-store'
+    }, 200, 'v1.0.66 更新界面补丁下载');
+    const bootstrapBuffer = Buffer.from(await bootstrapDownload.arrayBuffer());
+    const bootstrapSha512 = crypto.createHash('sha512').update(bootstrapBuffer).digest('base64');
+    if (bootstrapBuffer.length !== Number(bootstrapData.size)
+      || bootstrapSha512 !== bootstrapData.sha512
+      || bootstrapBuffer[0] !== 0x50 || bootstrapBuffer[1] !== 0x4b) {
+      throw new Error('v1.0.66 更新界面补丁大小、SHA-512 或 ZIP 格式无效');
+    }
+  }
+
   for (const baseline of baselines) {
     const baselineExeName = `ychelper-setup-${baseline}.exe`;
     const baselineExeHead = await expectResponse(`${BASE_URL}/${baselineExeName}`, { method: 'HEAD', cache: 'no-store' }, 200, `历史安装包 v${baseline}`);
@@ -150,8 +175,20 @@ async function main() {
 
     const check = await expectResponse(`${BASE_URL}/api/update/full-check?version=${encodeURIComponent(baseline)}`, { cache: 'no-store' }, 200, '跨版本更新检测');
     const data = await check.json();
-    const legacyFullFallbackDisabled = compareVersions(baseline, '1.0.67') < 0;
-    if (!legacyFullFallbackDisabled && (!data.needUpdate || data.version !== version || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog)) {
+    const legacyBridgeRequired = baseline === '1.0.66';
+    const legacyFullFallbackDisabled = compareVersions(baseline, '1.0.67') < 0 && !legacyBridgeRequired;
+    if (legacyBridgeRequired) {
+      if (!data.needUpdate || data.version !== '1.0.68' || data.bridge !== true
+        || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog) {
+        throw new Error('v1.0.66 未获得 v1.0.68 完整包桥接元数据');
+      }
+      const bridgeHead = await expectResponse(data.downloadUrl, { method: 'HEAD', cache: 'no-store' }, 200, 'v1.0.68 桥接安装包');
+      if (Number(bridgeHead.headers.get('content-length') || 0) !== Number(data.size)) {
+        throw new Error('v1.0.68 桥接安装包大小与元数据不一致');
+      }
+      const bridgeBlockmap = await expectResponse(`${BASE_URL}/api/update/file/ychelper-setup-1.0.68.exe.blockmap`, { cache: 'no-store' }, 200, 'v1.0.68 桥接 blockmap');
+      validateBlockmap(Buffer.from(await bridgeBlockmap.arrayBuffer()), Number(data.size), 'v1.0.68 桥接 blockmap');
+    } else if (!legacyFullFallbackDisabled && (!data.needUpdate || data.version !== version || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog)) {
       throw new Error(`v${baseline} 跨版本检测元数据不完整或未指向 v${version}`);
     }
     if (!legacyFullFallbackDisabled && !isValidChineseChangelog(data.changelog)) {
@@ -164,7 +201,7 @@ async function main() {
       || loginData.sha512 !== localSha || Number(loginData.size) !== localSize || !loginData.changelog) {
       throw new Error(`v${baseline} 登录页跨版本更新元数据不完整或未指向 v${version}`);
     }
-    if (!legacyFullFallbackDisabled && (loginData.downloadUrl !== data.downloadUrl
+    if (!legacyFullFallbackDisabled && !legacyBridgeRequired && (loginData.downloadUrl !== data.downloadUrl
       || loginData.sha512 !== data.sha512 || Number(loginData.size) !== Number(data.size)
       || loginData.changelog !== data.changelog)) {
       throw new Error(`v${baseline} 登录页更新检测与完整更新检测元数据不一致`);
@@ -176,7 +213,7 @@ async function main() {
   console.log('  ✓ 安装包支持 HTTP Range 断点续传');
   console.log('  ✓ 差分更新端点支持 multipart/byteranges');
   if (baselines.length > 0) {
-    console.log(`  ✓ ${baselines.map(item => `v${item}`).join('、')} 均可直接检测并升级到 v${version}`);
+    console.log(`  ✓ ${baselines.map(item => `v${item}`).join('、')} 均有可验收的跨版本升级路径到 v${version}`);
     console.log('  ✓ 所有历史 blockmap 均完整，full-check / login-check 元数据符合对应旧版策略');
   }
 }
