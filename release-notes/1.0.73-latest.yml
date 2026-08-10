@@ -1,0 +1,8 @@
+version: 1.0.73
+files:
+  - url: api/update/file/ychelper-setup-1.0.73.exe
+    sha512: lhkbEhcnF6pKezFHRyPXd+ECpKXz6XV2nbUOP3x1mc+o5OjdWN/PaJQ1u0V0f3EBl2h3Sqin0A0/lB4eNlSYsA==
+    size: 97827255
+path: api/update/file/ychelper-setup-1.0.73.exe
+sha512: lhkbEhcnF6pKezFHRyPXd+ECpKXz6XV2nbUOP3x1mc+o5OjdWN/PaJQ1u0V0f3EBl2h3Sqin0A0/lB4eNlSYsA==
+releaseDate: '2026-08-10T18:01:14.211Z'
