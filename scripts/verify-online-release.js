@@ -31,6 +31,11 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function isValidChineseChangelog(value) {
+  const text = String(value || '');
+  return /[\u3400-\u9fff]/.test(text) && !/�|Ã|â€|åº—/.test(text);
+}
+
 function validateBlockmap(buffer, installerSize, label) {
   let parsed;
   try {
@@ -149,7 +154,7 @@ async function main() {
     if (!legacyFullFallbackDisabled && (!data.needUpdate || data.version !== version || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog)) {
       throw new Error(`v${baseline} 跨版本检测元数据不完整或未指向 v${version}`);
     }
-    if (!legacyFullFallbackDisabled && (!data.changelog.includes('自动更新') || /�|Ã|â€|åº—/.test(data.changelog))) {
+    if (!legacyFullFallbackDisabled && !isValidChineseChangelog(data.changelog)) {
       throw new Error('完整更新说明不是有效的 UTF-8 中文内容');
     }
 

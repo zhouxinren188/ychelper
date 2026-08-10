@@ -8,6 +8,7 @@ const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
+const onlineVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-online-release.js'), 'utf8');
 
 assert.match(main, /autoUpdater\.autoDownload\s*=\s*false/);
 assert.match(main, /autoUpdater\.autoInstallOnAppQuit\s*=\s*false/);
@@ -57,5 +58,8 @@ assert.match(rules, /Restart-Service -Name "YchelperServer" -Force/);
 assert.match(rules, /powershell -NoProfile -EncodedCommand/);
 assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
 assert.match(hotBuild, /必须基于当前完整版本/);
+assert.match(onlineVerifier, /function isValidChineseChangelog/);
+assert.doesNotMatch(onlineVerifier, /changelog\.includes\('自动更新'\)/,
+  'UTF-8 中文校验不得依赖某个固定更新文案');
 
 console.log('更新流程契约测试通过：启动顺序、差分下载、续传兜底、跨多版本、自动安装和更新内容展示均已覆盖');
