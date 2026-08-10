@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
+const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
 
@@ -14,8 +15,14 @@ assert.match(main, /autoUpdater\.disableDifferentialDownload\s*=\s*false/);
 assert.match(main, /autoUpdater\.disableWebInstaller\s*=\s*true/);
 assert.match(main, /await autoUpdater\.downloadUpdate\(\)/);
 assert.match(main, /差分更新下载失败，立即切换完整包续传/);
-assert.match(main, /差分更新不可用，已自动切换完整安装包/);
-assert.match(main, /mode:\s*'差分更新'/);
+assert.match(main, /createUpdateDownloadState/);
+assert.match(main, /autoUpdater\.logger\s*=\s*\{/);
+assert.match(main, /autoUpdaterDownloadState\.inspectUpdaterLog/);
+assert.match(main, /autoUpdaterDownloadState\.handleProgress/);
+assert.match(main, /inspectDifferentialBase/);
+assert.match(main, /hasUsableDifferentialBase/);
+assert.match(main, /本机缺少 installer\.exe，跳过差分下载/);
+assert.match(main, /mode:\s*normalizedProgress\.mode/);
 assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
 assert.match(main, /scheduleAutomaticInstall\('autoUpdater'\)/);
@@ -34,6 +41,10 @@ assert.match(login, /body\.update-mode \.update-bar-wrap[\s\S]{0,220}flex:\s*0 0
 assert.match(login, /data\.bytesPerSecond/);
 assert.match(login, /data\.etaSeconds/);
 assert.match(login, /if \(data\.mode\) details\.push\(data\.mode\)/);
+assert.match(renderer, /data\.message[\s\S]{0,180}正在下载 v/,
+  '运行中更新窗口必须显示差分回退提示');
+assert.match(renderer, /if \(data\.mode\) details\.push\(data\.mode\)/,
+  '运行中更新窗口必须显示差分或完整更新模式');
 assert.match(rules, /latest\.yml/);
 assert.match(rules, /\.blockmap/);
 assert.match(rules, /跨版本/);

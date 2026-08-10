@@ -2350,7 +2350,10 @@ function initSubscriptionListeners() {
   if (window.electronAPI.onShowUpdateDownloading) {
     window.electronAPI.onShowUpdateDownloading((data) => {
       const text = document.getElementById('updateDownloadText');
-      if (text) text.textContent = `正在下载 v${data.version}...`;
+      if (text) {
+        text.textContent = data.message
+          || (data.version ? `正在下载 v${data.version}...` : '正在下载更新...');
+      }
       const changelog = document.getElementById('updateDownloadChangelog');
       if (changelog) {
         changelog.textContent = data.changelog || '';
@@ -2366,7 +2369,9 @@ function initSubscriptionListeners() {
       const pct = document.getElementById('updateDownloadPct');
       if (bar) bar.style.width = data.percent + '%';
       if (pct) {
-        const details = [Math.round(Number(data.percent) || 0) + '%'];
+        const details = [];
+        if (data.mode) details.push(data.mode);
+        details.push(Math.round(Number(data.percent) || 0) + '%');
         if (data.bytesPerSecond) {
           const mbps = Number(data.bytesPerSecond) / 1024 / 1024;
           details.push((mbps >= 0.1 ? mbps.toFixed(1) + ' MB/s' : Math.round(Number(data.bytesPerSecond) / 1024) + ' KB/s'));

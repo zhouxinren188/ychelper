@@ -42,6 +42,12 @@ const {
   isShopLoginUrl,
   isTrustedShopLoginFrameUrl
 } = require('./src/js/shopSessionState');
+const {
+  DIFFERENTIAL_FALLBACK_MESSAGE,
+  MISSING_DIFFERENTIAL_BASE_MESSAGE,
+  createUpdateDownloadState,
+  hasUsableDifferentialBase
+} = require('./src/js/updateDownloadState');
 let cookieManager = null;
 try { cookieManager = require('./src/js/cookieManager'); } catch(e) { console.warn('[启动] cookieManager 模块缺失，热更新后将恢复'); }
 
@@ -1480,6 +1486,63 @@ let activeUpdateContext = 'startup';
 let activeUpdateMetadata = null;
 let periodicUpdateTimer = null;
 
+function handleAutoUpdaterFullFallback(event) {
+  console.warn(`[自动更新] ${event.message} (${event.source})`);
+  if (!autoUpdaterActive || !activeUpdateMetadata) return;
+  activeUpdateMetadata = {
+    ...activeUpdateMetadata,
+    updateMessage: event.message
+  };
+  showAutomaticUpdate(activeUpdateMetadata, activeUpdateContext);
+}
+
+const autoUpdaterDownloadState = createUpdateDownloadState({
+  onFallback: handleAutoUpdaterFullFallback
+});
+
+// electron-updater 在 Windows 上会自行吞掉差分异常并继续全量下载，外层 Promise 不会 reject。
+// 包装官方 logger 接口以识别这条内部回退路径，同时保留全部原始终端和落盘日志。
+const originalAutoUpdaterLogger = autoUpdater.logger || console;
+function forwardAutoUpdaterLog(level, args) {
+  const target = typeof originalAutoUpdaterLogger[level] === 'function'
+    ? originalAutoUpdaterLogger[level]
+    : originalAutoUpdaterLogger.info;
+  if (typeof target !== 'function') return;
+  try {
+    target.apply(originalAutoUpdaterLogger, args);
+  } catch (_) {
+    // 日志输出失败不得中断自动更新流程。
+  }
+}
+autoUpdater.logger = {
+  debug: (...args) => forwardAutoUpdaterLog('debug', args),
+  info: (...args) => forwardAutoUpdaterLog('info', args),
+  warn: (...args) => forwardAutoUpdaterLog('warn', args),
+  error: (...args) => {
+    forwardAutoUpdaterLog('error', args);
+    autoUpdaterDownloadState.inspectUpdaterLog(...args);
+  }
+};
+
+async function inspectDifferentialBase() {
+  if (typeof autoUpdater.getOrCreateDownloadHelper !== 'function') {
+    return { known: false, available: false };
+  }
+  try {
+    const helper = await autoUpdater.getOrCreateDownloadHelper();
+    if (!helper || typeof helper.cacheDir !== 'string') {
+      return { known: false, available: false };
+    }
+    return {
+      known: true,
+      available: hasUsableDifferentialBase(helper.cacheDir)
+    };
+  } catch (err) {
+    console.warn('[自动更新] 无法预检差分基础文件，将交由更新器自行处理:', err.message);
+    return { known: false, available: false };
+  }
+}
+
 function getActiveUpdateWindow(context = activeUpdateContext) {
   if (context === 'startup' && loginWindow && !loginWindow.isDestroyed()) return loginWindow;
   const candidates = [mainWindow, subscriptionWindow, loginWindow];
@@ -1558,12 +1621,13 @@ autoUpdater.on('update-not-available', () => {
 });
 
 autoUpdater.on('download-progress', (progress) => {
+  const normalizedProgress = autoUpdaterDownloadState.handleProgress(progress);
   const payload = {
-    mode: '差分更新',
-    percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
-    bytesPerSecond: Number(progress.bytesPerSecond) || 0,
-    transferred: Number(progress.transferred) || 0,
-    total: Number(progress.total) || 0
+    mode: normalizedProgress.mode,
+    percent: Math.max(0, Math.min(100, Math.round(normalizedProgress.percent || 0))),
+    bytesPerSecond: Number(normalizedProgress.bytesPerSecond) || 0,
+    transferred: Number(normalizedProgress.transferred) || 0,
+    total: Number(normalizedProgress.total) || 0
   };
   payload.etaSeconds = payload.bytesPerSecond > 0 && payload.total > payload.transferred
     ? Math.ceil((payload.total - payload.transferred) / payload.bytesPerSecond)
@@ -1826,12 +1890,23 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
       && isNewerVersion(updateInfo.version, app.getVersion());
 
     if (hasDifferentialUpdate) {
-      activeUpdateMetadata = {
+      autoUpdaterDownloadState.reset();
+      const differentialMetadata = {
         ...updateInfo,
         changelog: fullMetadata && fullMetadata.version === updateInfo.version
           ? fullMetadata.changelog
           : updateInfo.releaseNotes
       };
+      const differentialBase = await inspectDifferentialBase();
+      if (fullMetadata && differentialBase.known && !differentialBase.available) {
+        console.warn('[自动更新] 本机缺少 installer.exe，跳过差分下载');
+        return downloadAndInstallFullUpdate(
+          fullMetadata,
+          context,
+          MISSING_DIFFERENTIAL_BASE_MESSAGE
+        );
+      }
+      activeUpdateMetadata = differentialMetadata;
       activeUpdateContext = context;
       autoUpdaterActive = true;
       showAutomaticUpdate(activeUpdateMetadata, context);
@@ -1839,15 +1914,19 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
         await autoUpdater.downloadUpdate();
         return true;
       } catch (err) {
+        autoUpdaterDownloadState.switchToFullUpdate('download-error', err.stack || err.message);
         autoUpdaterActive = false;
         console.error('差分更新下载失败，立即切换完整包续传:', err.message);
         if (fullMetadata) {
           return downloadAndInstallFullUpdate(
             fullMetadata,
             context,
-            '差分更新不可用，已自动切换完整安装包'
+            DIFFERENTIAL_FALLBACK_MESSAGE
           );
         }
+        sendUpdateWindowEvent('show-update-download-failed', {
+          message: '更新下载失败，请稍后重试'
+        }, context);
       }
     }
 
