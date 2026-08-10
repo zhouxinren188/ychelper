@@ -136,7 +136,6 @@ async function main() {
     throw new Error('差分端点返回的多段 Content-Range 不完整');
   }
 
-  let legacyBridgeLatest = null;
   if (baselines.includes('1.0.66')) {
     const legacyUserAgent = `ychelper-release-verifier-${Date.now()}`;
     const bootstrapCheck = await expectResponse(`${BASE_URL}/api/update/check?version=1.0.66`, {
@@ -168,11 +167,10 @@ async function main() {
     const bridgePath = ((bridgeLatestYml.match(/^path:\s*(.+)$/m) || [])[1] || '').trim();
     const bridgeSha512 = ((bridgeLatestYml.match(/^sha512:\s*(.+)$/m) || [])[1] || '').trim();
     const bridgeSize = Number(((bridgeLatestYml.match(/^\s*size:\s*(\d+)$/m) || [])[1] || 0));
-    if (bridgeVersion !== '1.0.68' || bridgePath !== 'api/update/file/ychelper-setup-1.0.68.exe'
+    if (bridgeVersion !== '1.0.66' || bridgePath !== 'api/update/file/ychelper-setup-1.0.66.exe'
       || !bridgeSha512 || bridgeSize <= 0) {
-      throw new Error('v1.0.66 未被单次定向到 v1.0.68 的 electron-updater 元数据');
+      throw new Error('v1.0.66 未被单次保持在当前版本，无法安全切换到 full-check 桥接');
     }
-    legacyBridgeLatest = { path: bridgePath, sha512: bridgeSha512, size: bridgeSize };
   }
 
   for (const baseline of baselines) {
@@ -196,10 +194,6 @@ async function main() {
       if (!data.needUpdate || data.version !== '1.0.68' || data.bridge !== true
         || !data.downloadUrl || !data.sha512 || !data.size || !data.changelog) {
         throw new Error('v1.0.66 未获得 v1.0.68 完整包桥接元数据');
-      }
-      if (!legacyBridgeLatest || data.sha512 !== legacyBridgeLatest.sha512
-        || Number(data.size) !== legacyBridgeLatest.size) {
-        throw new Error('v1.0.66 的 latest.yml 与 full-check 桥接元数据不一致');
       }
       const bridgeHead = await expectResponse(data.downloadUrl, { method: 'HEAD', cache: 'no-store' }, 200, 'v1.0.68 桥接安装包');
       if (Number(bridgeHead.headers.get('content-length') || 0) !== Number(data.size)) {
