@@ -14,6 +14,9 @@ assert.match(main, /autoUpdater\.disableDifferentialDownload\s*=\s*false/);
 assert.match(main, /autoUpdater\.disableWebInstaller\s*=\s*true/);
 assert.match(main, /await autoUpdater\.downloadUpdate\(\)/);
 assert.match(main, /差分更新下载失败，立即切换完整包续传/);
+assert.match(main, /差分更新不可用，已自动切换完整安装包/);
+assert.match(main, /mode:\s*'差分更新'/);
+assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
 assert.match(main, /scheduleAutomaticInstall\('autoUpdater'\)/);
 assert.match(main, /scheduleAutomaticInstall\('localPath', savePath\)/);
@@ -30,6 +33,7 @@ assert.match(login, /body\.update-mode \.update-bar-wrap[\s\S]{0,220}flex:\s*0 0
   '独立更新页的进度条必须保持为固定高度横线，不能被纵向 flex 拉伸');
 assert.match(login, /data\.bytesPerSecond/);
 assert.match(login, /data\.etaSeconds/);
+assert.match(login, /if \(data\.mode\) details\.push\(data\.mode\)/);
 assert.match(rules, /latest\.yml/);
 assert.match(rules, /\.blockmap/);
 assert.match(rules, /跨版本/);

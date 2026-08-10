@@ -709,7 +709,8 @@
         overlay.classList.add('active');
         title.textContent = '正在下载更新...';
         bar.style.width = '0%';
-        status.textContent = data.version ? 'v' + data.version + ' · 准备下载' : '准备下载';
+        status.textContent = data.message
+          || (data.version ? 'v' + data.version + ' · 准备下载' : '准备下载');
       });
     }
 
@@ -721,7 +722,9 @@
         const percent = Math.max(0, Math.min(100, Number(data.percent) || 0));
         if (bar) bar.style.width = percent + '%';
         if (status) {
-          const details = [Math.round(percent) + '%'];
+          const details = [];
+          if (data.mode) details.push(data.mode);
+          details.push(Math.round(percent) + '%');
           if (data.bytesPerSecond) details.push(formatUpdateBytes(data.bytesPerSecond) + '/s');
           if (data.etaSeconds) details.push(formatUpdateEta(data.etaSeconds) + '完成');
           status.textContent = details.join(' · ');

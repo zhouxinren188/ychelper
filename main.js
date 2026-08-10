@@ -1507,6 +1507,7 @@ function normalizeUpdateNotes(notes) {
 function showAutomaticUpdate(metadata, context = activeUpdateContext) {
   const payload = {
     version: metadata.version,
+    message: metadata.updateMessage || '',
     changelog: normalizeUpdateNotes(metadata.changelog || metadata.releaseNotes)
       || '本次更新包含稳定性与体验优化。'
   };
@@ -1558,6 +1559,7 @@ autoUpdater.on('update-not-available', () => {
 
 autoUpdater.on('download-progress', (progress) => {
   const payload = {
+    mode: '差分更新',
     percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
     bytesPerSecond: Number(progress.bytesPerSecond) || 0,
     transferred: Number(progress.transferred) || 0,
@@ -1634,7 +1636,7 @@ async function checkFullUpdateAvailable() {
 }
 
 // 下载并安装全量更新包
-async function downloadAndInstallFullUpdate(checkData, context = activeUpdateContext) {
+async function downloadAndInstallFullUpdate(checkData, context = activeUpdateContext, fallbackMessage = '') {
   const downloadUrl = getAllowedUpdateUrl(checkData.downloadUrl).toString();
   const tempDir = app.getPath('temp');
   if (!VERSION_PATTERN.test(String(checkData.version || ''))) {
@@ -1643,10 +1645,13 @@ async function downloadAndInstallFullUpdate(checkData, context = activeUpdateCon
   const filename = `ychelper-setup-${checkData.version}.exe`;
   const savePath = path.join(tempDir, filename);
   const expectedSize = Number(checkData.size);
-  activeUpdateMetadata = checkData;
+  const displayMetadata = fallbackMessage
+    ? { ...checkData, updateMessage: fallbackMessage }
+    : checkData;
+  activeUpdateMetadata = displayMetadata;
   activeUpdateContext = context;
 
-  showAutomaticUpdate(checkData, context);
+  showAutomaticUpdate(displayMetadata, context);
 
   try {
     if (fs.existsSync(savePath)) {
@@ -1749,6 +1754,7 @@ async function downloadAndInstallFullUpdate(checkData, context = activeUpdateCon
           const bytesPerSecond = Math.round((receivedBytes - baseBytes) / elapsedSeconds);
           const percent = Math.max(0, Math.min(100, Math.round(receivedBytes / expectedSize * 100)));
           sendUpdateWindowEvent('update-download-progress', {
+            mode: '完整更新',
             percent,
             bytesPerSecond,
             transferred: receivedBytes,
@@ -1835,6 +1841,13 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
       } catch (err) {
         autoUpdaterActive = false;
         console.error('差分更新下载失败，立即切换完整包续传:', err.message);
+        if (fullMetadata) {
+          return downloadAndInstallFullUpdate(
+            fullMetadata,
+            context,
+            '差分更新不可用，已自动切换完整安装包'
+          );
+        }
       }
     }
 
