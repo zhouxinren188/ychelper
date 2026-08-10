@@ -67,6 +67,10 @@
 - SSH: `ssh -o BatchMode=yes Administrator@150.158.54.108`
 - SCP: `scp -o BatchMode=yes <local> Administrator@150.158.54.108:"<remote>"`
 - 服务器项目路径: `C:\ychelper-server`
-- Windows 服务名: `YchelperServer`（由 NSSM 管理；不要误操作同机其他 PM2 进程）
+- 更新接口监听端口: `3000`
+- Windows 服务名: `YchelperServer`，显示名 `YcHelper Server`，由 `C:\nssm\nssm.exe` 管理。部署 `routes/`、`services/` 或其他服务器运行代码后，使用 `Restart-Service -Name "YchelperServer" -Force` 重启，再确认服务状态为 `Running` 且 `Get-NetTCPConnection -LocalPort 3000 -State Listen` 存在监听进程。
+- 远程 SSH 默认命令解析环境可能是 `cmd.exe`。包含 PowerShell 管道、`$_` 或多层引号的命令应先按 UTF-16LE 编码，再用 `powershell -NoProfile -EncodedCommand <base64>` 执行，避免引号被远程 shell 截断后误判服务不存在。
+- 同机 PM2 中的 `ant-toolbox-server`、`dianxiaoer-update` 以及 NSSM 的 `dianxiaoer-*` 均与云仓助手更新服务无关，禁止为发布云仓助手而重启或删除这些进程。
+- 服务重启后必须重新运行 `npm run verify:online-release -- --version=<最新版> --baselines=<全部现网基线>`；仅看到服务为 `Running` 不能视为部署成功。
 - 管理后台密码：通过安全渠道获取，不得写入代码库或开发规范。
-- 上传热更新: `curl -s -X POST -H "x-admin-password: <admin-password>" -F "version=X.X.X" -F "changelog=..." -F "file=@update-X.X.X.zip" http://150.158.54.108:3000/api/update/upload`
+- 上传热更新: `curl -s -X POST -H "x-admin-password: <admin-password>" -F "version=X.Y.Z.N" -F "changelog=..." -F "file=@update-X.Y.Z.N.zip" http://150.158.54.108:3000/api/update/upload`。其中 `X.Y.Z` 必须等于服务器当前完整版本。

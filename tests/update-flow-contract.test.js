@@ -36,6 +36,8 @@ assert.match(rules, /multipart\/byteranges/);
 assert.match(rules, /--baselines=/);
 assert.match(rules, /所有三段正式版本号 `X\.Y\.Z` 都必须发布完整安装包/);
 assert.match(rules, /旧用户启动时必须先升级到该完整版本并重启/);
+assert.match(rules, /Restart-Service -Name "YchelperServer" -Force/);
+assert.match(rules, /powershell -NoProfile -EncodedCommand/);
 assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
 assert.match(hotBuild, /必须基于当前完整版本/);
 
