@@ -26,6 +26,8 @@ assert(startupBlock[0].indexOf('checkAndApplyAutomaticUpdate') < startupBlock[0]
 
 assert.match(login, /class="update-changelog"/);
 assert.match(login, /document\.body\.classList\.add\('update-mode'\)/);
+assert.match(login, /body\.update-mode \.update-bar-wrap[\s\S]{0,220}flex:\s*0 0 8px/,
+  '独立更新页的进度条必须保持为固定高度横线，不能被纵向 flex 拉伸');
 assert.match(login, /data\.bytesPerSecond/);
 assert.match(login, /data\.etaSeconds/);
 assert.match(rules, /latest\.yml/);
