@@ -1,11 +1,12 @@
 /**
  * 热更新打包脚本（仅 src/ 渲染层）
- * 用法: node scripts/make-hot-update.js [version]
+ * 用法: node scripts/make-hot-update.js <baseVersion.revision>
  *
  * 参数：
- *   [version]   版本号，默认取 package.json
+ *   version   四段热修订版本号，例如 package.json 为 1.0.70 时使用 1.0.70.1
  *
- * 注意：热更新仅包含 src/ 目录文件，主进程变更必须走全量发布（npm run build）
+ * 注意：三段正式版本必须走全量发布；热更新仅允许在当前完整版本上追加四段修订号。
+ * 热更新仅包含 src/ 目录文件，主进程变更必须走全量发布（npm run build）。
  */
 
 const path = require('path')
@@ -18,15 +19,27 @@ const DIST_DIR = path.join(ROOT, 'dist')
 // 从命令行参数或 package.json 读取版本
 const args = process.argv.slice(2).filter(arg => !arg.startsWith('--'))
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
-let version = args[0] || pkg.version
+const version = args[0] || ''
+const baseVersion = String(pkg.version || '')
 
-if (!/^\d+\.\d+\.\d+(\.\d+)?$/.test(version)) {
-  console.error('版本号格式错误，应为 x.y.z 或 x.y.z.w，当前:', version)
+if (!/^\d+\.\d+\.\d+$/.test(baseVersion)) {
+  console.error('package.json 必须是三段完整版本号 x.y.z，当前:', baseVersion)
+  process.exit(1)
+}
+
+if (!/^\d+\.\d+\.\d+\.[1-9]\d*$/.test(version)) {
+  console.error('热更新版本必须使用 x.y.z.w；三段正式版本必须发布完整安装包，当前:', version || '(未提供)')
+  process.exit(1)
+}
+
+if (version.split('.').slice(0, 3).join('.') !== baseVersion) {
+  console.error(`热更新 ${version} 必须基于当前完整版本 ${baseVersion}`)
   process.exit(1)
 }
 
 console.log('=== 云仓助手热更新打包 ===')
 console.log('版本:', version)
+console.log('完整基线:', baseVersion)
 console.log('类型: src/ 渲染层仅（主进程变更需全量发布）')
 
 // 1. 确认 src 目录存在

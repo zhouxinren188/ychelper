@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
 
 assert.match(main, /autoUpdater\.autoDownload\s*=\s*false/);
 assert.match(main, /autoUpdater\.autoInstallOnAppQuit\s*=\s*false/);
@@ -33,5 +34,9 @@ assert.match(rules, /跨版本/);
 assert.match(rules, /十几个版本/);
 assert.match(rules, /multipart\/byteranges/);
 assert.match(rules, /--baselines=/);
+assert.match(rules, /所有三段正式版本号 `X\.Y\.Z` 都必须发布完整安装包/);
+assert.match(rules, /旧用户启动时必须先升级到该完整版本并重启/);
+assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
+assert.match(hotBuild, /必须基于当前完整版本/);
 
 console.log('更新流程契约测试通过：启动顺序、差分下载、续传兜底、跨多版本、自动安装和更新内容展示均已覆盖');
