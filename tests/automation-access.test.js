@@ -22,6 +22,9 @@ assert.match(indexHtml,
   '异常订单的查询、重置、批量处理必须复用快速打标按钮组样式');
 assert.doesNotMatch(styleCss, /\.ao-action-bar\s*\{[^}]*gap\s*:/,
   '异常订单按钮组不得保留会拆散分段按钮的间距');
+assert.match(styleCss,
+  /\.sm-filter-actions \.sm-btn-group\s*\{[^}]*flex:\s*0 0 240px;[^}]*width:\s*240px;[^}]*max-width:\s*100%;/,
+  '快速打标的店铺管理按钮组必须缩短为 240px，并在窄屏下保持自适应');
 assert.ok(fs.statSync(path.join(root, 'src', 'index.html')).size
     <= asar.statFile(packagedAsar, 'src\\index.html').size,
   '热更新后的异常订单页面不得超过当前完整版本 ASAR 记录长度');

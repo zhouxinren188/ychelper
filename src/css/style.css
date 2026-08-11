@@ -1709,7 +1709,9 @@ body {
   grid-row: 1;
 }
 .sm-filter-actions .sm-btn-group {
-  width: 100%;
+  flex: 0 0 240px;
+  width: 240px;
+  max-width: 100%;
 }
 .sm-filter-time {
   grid-column: 1;
