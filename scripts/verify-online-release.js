@@ -148,9 +148,9 @@ async function main() {
       cache: 'no-store'
     }, 200, 'v1.0.66 更新界面补丁检测');
     const bootstrapData = await bootstrapCheck.json();
-    if (!bootstrapData.needUpdate || bootstrapData.version !== '1.0.66.2'
+    if (!bootstrapData.needUpdate || bootstrapData.version !== '1.0.66.3'
       || bootstrapData.baseVersion !== '1.0.66' || !bootstrapData.sha512 || !bootstrapData.size) {
-      throw new Error('v1.0.66 未获得 1.0.66.2 自动安装桥接补丁');
+      throw new Error('v1.0.66 未获得 1.0.66.3 等长自动安装桥接补丁');
     }
     const bootstrapDownload = await expectResponse(`${BASE_URL}/api/update/download`, {
       headers: {
@@ -170,10 +170,11 @@ async function main() {
     const bootstrapZip = new AdmZip(bootstrapBuffer);
     const bootstrapPackage = JSON.parse(bootstrapZip.readAsText('package.json'));
     const bootstrapLogin = bootstrapZip.readAsText('src/login.html');
-    if (bootstrapPackage.version !== '1.0.66.2'
-      || !bootstrapLogin.includes('legacy-full-installer-fallback-v2')
+    if (bootstrapPackage.version !== '1.0.66.3'
+      || Buffer.byteLength(bootstrapLogin, 'utf8') !== 13791
+      || !bootstrapLogin.includes('legacy-full-installer-fallback-v3')
       || !bootstrapLogin.includes('confirmUpdateInstallByPath()')) {
-      throw new Error('v1.0.66.2 桥接补丁缺少自动启动完整安装包的兜底逻辑');
+      throw new Error('v1.0.66.3 桥接补丁长度或自动启动完整安装包的兜底逻辑无效');
     }
     const bridgeLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?legacy-bridge=${Date.now()}`, {
       headers: { 'User-Agent': 'electron-builder' },

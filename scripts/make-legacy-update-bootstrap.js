@@ -7,66 +7,92 @@
  */
 
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
+const { execFileSync } = require('child_process')
 const AdmZip = require('adm-zip')
+const { path7za } = require('7zip-bin')
 
 const ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(ROOT, 'dist')
 const LEGACY_BASE_VERSION = '1.0.66'
 const DEFAULT_SOURCE_VERSION = '1.0.66.1'
-const FALLBACK_MARKER = 'legacy-full-installer-fallback-v2'
+const FALLBACK_MARKER = 'legacy-full-installer-fallback-v3'
 
 function injectLegacyInstallerFallback(html, bridgeVersion = '1.0.68') {
   if (html.includes(FALLBACK_MARKER)) return html
 
-  const closingMarker = /  <\/script>\r?\n<\/body>/
-  if (!closingMarker.test(html)) {
-    throw new Error('旧版 login.html 缺少预期的脚本结束标记')
+  const scriptMarker = /<script>/i
+  if (!scriptMarker.test(html)) {
+    throw new Error('旧版 login.html 缺少预期的内联脚本')
   }
 
-  const snippet = `
+  // 必须放在原登录脚本最前面：即使后续旧代码发生运行时异常，轮询也已注册。
+  const snippet = `/*${FALLBACK_MARKER}*/(function(){var o=document.getElementById('updateOverlay'),t=document.getElementById('updateTitle'),b=document.getElementById('updateBar'),s=document.getElementById('updateStatus'),f=function(){if(o)o.classList.add('active');try{var a=window.electronAPI;if(a&&a.confirmUpdateInstallByPath)a.confirmUpdateInstallByPath()}catch(e){}};f();if(t)t.textContent='正在准备兼容升级...';if(b)b.style.width='2%';if(s)s.textContent='v${bridgeVersion}';setInterval(f,500)})();`
 
-    // ${FALLBACK_MARKER}
-    // v1.0.66 主进程已经具备下载安装包和启动安装程序的 IPC；这里不再
-    // 依赖可能丢失的 show-update-install 事件，而是定时触发无副作用查询。
-    (function startLegacyFullInstallerFallback() {
-      var overlay = document.getElementById('updateOverlay');
-      var title = document.getElementById('updateTitle');
-      var bar = document.getElementById('updateBar');
-      var status = document.getElementById('updateStatus');
-      if (overlay) overlay.classList.add('active');
-      if (title) title.textContent = '正在准备兼容升级...';
-      if (bar) bar.style.width = '2%';
-      if (status) status.textContent = 'v${bridgeVersion}';
+  return html.replace(scriptMarker, match => `${match}${snippet}`)
+}
 
-      var attempts = 0;
-      var maxAttempts = 1200; // 最长轮询 30 分钟，避免永久占用登录页。
-      var timer = setInterval(function() {
-        attempts += 1;
-        if (attempts > maxAttempts) {
-          clearInterval(timer);
-          if (overlay) overlay.classList.remove('active');
-          return;
-        }
-        try {
-          if (window.electronAPI && window.electronAPI.confirmUpdateInstallByPath) {
-            // 安装包尚未下载完成时旧主进程会直接忽略；下载完成后会启动安装。
-            window.electronAPI.confirmUpdateInstallByPath();
-          }
-        } catch (error) {
-          // 旧版兼容兜底不得影响登录页运行。
-        }
-      }, 1500);
-    })();`
+function compactHtmlOutsideScript(html) {
+  const match = html.match(/^([\s\S]*?<script>)([\s\S]*?)(<\/script>[\s\S]*)$/i)
+  if (!match) throw new Error('旧版 login.html 结构无法压缩')
 
-  return html.replace(closingMarker, (match) => `${snippet}\n${match}`)
+  function compactShell(value) {
+    return value
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]+/gm, '')
+      .replace(/\r?\n\s*\r?\n/g, '\n')
+      .replace(/>\s+</g, '><')
+  }
+
+  return compactShell(match[1]) + match[2] + compactShell(match[3])
+}
+
+function fitToExactByteSize(html, exactBytes) {
+  const size = Buffer.byteLength(html, 'utf8')
+  if (size > exactBytes) {
+    throw new Error(`桥接登录页 ${size} 字节，超过 ASAR 固定长度 ${exactBytes} 字节`)
+  }
+  const paddingSize = exactBytes - size
+  if (paddingSize === 0) return html
+
+  const closingIndex = html.lastIndexOf('</html>')
+  if (closingIndex < 0) throw new Error('旧版 login.html 缺少 </html>')
+  const padding = paddingSize >= 7
+    ? `<!--${' '.repeat(paddingSize - 7)}-->`
+    : ' '.repeat(paddingSize)
+  return html.slice(0, closingIndex) + padding + html.slice(closingIndex)
+}
+
+function createConstrainedLoginHtml(originalHtml, bridgeVersion = '1.0.68') {
+  const exactBytes = Buffer.byteLength(originalHtml, 'utf8')
+  const injected = injectLegacyInstallerFallback(originalHtml, bridgeVersion)
+  const compacted = compactHtmlOutsideScript(injected)
+  return fitToExactByteSize(compacted, exactBytes)
+}
+
+function extractOriginalLogin(installerPath) {
+  if (!fs.existsSync(installerPath)) throw new Error(`v1.0.66 安装包不存在: ${installerPath}`)
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ychelper-v1066-login-'))
+  try {
+    execFileSync(path7za, [
+      'x', installerPath, `-o${tempDir}`,
+      'resources\\app.asar.unpacked\\src\\login.html', '-y'
+    ], { stdio: 'ignore' })
+    const loginPath = path.join(tempDir, 'resources', 'app.asar.unpacked', 'src', 'login.html')
+    return fs.readFileSync(loginPath, 'utf8')
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 }
 
 function buildLegacyBootstrap({
   sourcePath,
   outputPath,
   targetVersion,
-  bridgeVersion = '1.0.68'
+  bridgeVersion = '1.0.68',
+  originalLoginHtml
 }) {
   if (!/^1\.0\.66\.[1-9]\d*$/.test(targetVersion)) {
     throw new Error(`旧版桥接补丁版本必须是 ${LEGACY_BASE_VERSION}.N`)
@@ -82,10 +108,8 @@ function buildLegacyBootstrap({
     throw new Error('基础桥接包必须包含 src/login.html 和 package.json')
   }
 
-  const loginHtml = injectLegacyInstallerFallback(
-    loginEntry.getData().toString('utf8'),
-    bridgeVersion
-  )
+  if (!originalLoginHtml) throw new Error('必须提供 v1.0.66 安装包中的原始 login.html')
+  const loginHtml = createConstrainedLoginHtml(originalLoginHtml, bridgeVersion)
   const packageJson = JSON.parse(packageEntry.getData().toString('utf8'))
   packageJson.version = targetVersion
 
@@ -105,12 +129,16 @@ if (require.main === module) {
   const sourceVersion = process.argv[3] || DEFAULT_SOURCE_VERSION
   const sourcePath = path.join(DIST_DIR, `update-${sourceVersion}.zip`)
   const outputPath = path.join(DIST_DIR, `update-${targetVersion}.zip`)
-  const result = buildLegacyBootstrap({ sourcePath, outputPath, targetVersion })
+  const installerPath = path.join(DIST_DIR, `ychelper-setup-${LEGACY_BASE_VERSION}.exe`)
+  const originalLoginHtml = extractOriginalLogin(installerPath)
+  const result = buildLegacyBootstrap({ sourcePath, outputPath, targetVersion, originalLoginHtml })
   console.log(`旧版桥接补丁已生成: ${result.outputPath} (${result.size} bytes)`)
 }
 
 module.exports = {
   FALLBACK_MARKER,
   buildLegacyBootstrap,
+  createConstrainedLoginHtml,
+  extractOriginalLogin,
   injectLegacyInstallerFallback
 }
