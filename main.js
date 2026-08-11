@@ -2065,7 +2065,16 @@ async function checkForHotUpdate() {
       loginWindow.show();
     }
     const hotUpdateChangelog = normalizeUpdateNotes(checkData.changelog || checkData.releaseNotes);
-    sendUpdateProgress('downloading', { version: newVersion, percent: 0, changelog: hotUpdateChangelog });
+    sendUpdateProgress('downloading', {
+      version: newVersion,
+      mode: '热更新',
+      percent: 0,
+      bytesPerSecond: 0,
+      transferred: 0,
+      total: Number(checkData.size) || 0,
+      etaSeconds: 0,
+      changelog: hotUpdateChangelog
+    });
 
     // 下载更新包
     const downloadUrl = `${API_BASE_URL}/api/update/download`;
@@ -2088,6 +2097,7 @@ async function checkForHotUpdate() {
           return;
         }
         let receivedSize = 0;
+        const startedAt = Date.now();
         const chunks = [];
 
         response.on('data', (chunk) => {
@@ -2100,7 +2110,20 @@ async function checkForHotUpdate() {
           }
           if (totalSize > 0) {
             const percent = Math.round((receivedSize / totalSize) * 100);
-            sendUpdateProgress('downloading', { version: newVersion, percent, changelog: hotUpdateChangelog });
+            const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.1);
+            const bytesPerSecond = Math.round(receivedSize / elapsedSeconds);
+            sendUpdateProgress('downloading', {
+              version: newVersion,
+              mode: '热更新',
+              percent,
+              bytesPerSecond,
+              transferred: receivedSize,
+              total: totalSize,
+              etaSeconds: bytesPerSecond > 0
+                ? Math.ceil((totalSize - receivedSize) / bytesPerSecond)
+                : 0,
+              changelog: hotUpdateChangelog
+            });
           }
         });
 

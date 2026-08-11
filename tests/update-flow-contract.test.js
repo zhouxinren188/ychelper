@@ -49,11 +49,17 @@ assert.match(login, /body\.update-mode \.update-bar-wrap[\s\S]{0,220}flex:\s*0 0
   '独立更新页的进度条必须保持为固定高度横线，不能被纵向 flex 拉伸');
 assert.match(login, /body\.update-mode \.update-overlay[\s\S]{0,320}justify-content:\s*flex-start/,
   '独立更新页内容必须从上方开始布局，避免标题上方出现大面积空白');
-assert.match(login, /body\.update-mode \.update-changelog:not\(:empty\)[\s\S]{0,180}min-height:\s*180px[\s\S]{0,100}max-height:\s*200px/,
-  '更新说明区域必须提供足够的可视高度');
+assert.match(login, /body\.update-mode \.update-changelog:not\(:empty\)[\s\S]{0,180}min-height:\s*0[\s\S]{0,100}height:\s*auto[\s\S]{0,100}max-height:\s*180px/,
+  '更新说明区域必须按内容自适应高度，避免短说明下方出现大块空白');
 assert.match(login, /data\.bytesPerSecond/);
 assert.match(login, /data\.etaSeconds/);
 assert.match(login, /if \(data\.mode\) details\.push\(data\.mode\)/);
+assert.match(login,
+  /data\.stage === 'downloading'[\s\S]{0,700}data\.mode[\s\S]{0,300}data\.bytesPerSecond[\s\S]{0,300}data\.etaSeconds/,
+  '热更新登录界面必须显示更新模式、下载速度和预计完成时间');
+assert.match(main,
+  /let receivedSize = 0;[\s\S]{0,700}const bytesPerSecond = Math\.round\(receivedSize \/ elapsedSeconds\);[\s\S]{0,300}mode:\s*'热更新'[\s\S]{0,300}etaSeconds:/,
+  '热更新下载通道必须计算并传递速度与预计完成时间');
 assert.match(renderer, /data\.message[\s\S]{0,180}正在下载 v/,
   '运行中更新窗口必须显示差分回退提示');
 assert.match(renderer, /if \(data\.mode\) details\.push\(data\.mode\)/,

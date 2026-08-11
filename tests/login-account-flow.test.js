@@ -35,8 +35,8 @@ assert.match(loginHtml,
   /body\.update-mode \.update-overlay\s*\{[\s\S]{0,360}padding:\s*20px 20px 16px;[\s\S]{0,160}gap:\s*10px;/,
   '更新内容区域必须上移并压缩无意义的顶部留白');
 assert.match(loginHtml,
-  /body\.update-mode \.update-changelog:not\(:empty\)\s*\{[\s\S]{0,180}max-width:\s*none;[\s\S]{0,100}min-height:\s*180px;[\s\S]{0,100}max-height:\s*200px;/,
-  '更新说明区域必须充分利用右侧宽度和高度');
+  /body\.update-mode \.update-changelog:not\(:empty\)\s*\{[\s\S]{0,180}max-width:\s*none;[\s\S]{0,100}min-height:\s*0;[\s\S]{0,100}height:\s*auto;[\s\S]{0,100}max-height:\s*180px;/,
+  '更新说明区域必须按内容自适应高度，并为较长内容提供滚动上限');
 assert.match(loginHtml,
   /body\.update-mode \.update-title\s*\{[\s\S]{0,100}font-size:\s*15px;/,
   '更新模式标题字号应保持紧凑，避免挤占更新内容空间');

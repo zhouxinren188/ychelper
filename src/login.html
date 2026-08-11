@@ -366,8 +366,9 @@
     body.update-mode .update-changelog:not(:empty) {
       display: block;
       max-width: none;
-      min-height: 180px;
-      max-height: 200px;
+      min-height: 0;
+      height: auto;
+      max-height: 180px;
     }
 
     .update-install-modal {
@@ -684,8 +685,15 @@
         enterUpdateMode(data.changelog);
         overlay.classList.add('active');
         title.textContent = '正在下载更新...';
-        bar.style.width = (data.percent || 0) + '%';
-        status.textContent = data.version ? 'v' + data.version : '';
+        const percent = Math.max(0, Math.min(100, Number(data.percent) || 0));
+        bar.style.width = percent + '%';
+        const details = [];
+        if (data.mode) details.push(data.mode);
+        if (data.version) details.push('v' + data.version);
+        details.push(Math.round(percent) + '%');
+        if (data.bytesPerSecond) details.push(formatUpdateBytes(data.bytesPerSecond) + '/s');
+        if (data.etaSeconds) details.push(formatUpdateEta(data.etaSeconds) + '完成');
+        status.textContent = details.join(' · ');
       } else if (data.stage === 'installing') {
         enterUpdateMode(data.changelog);
         overlay.classList.add('active');
