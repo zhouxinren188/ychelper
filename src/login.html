@@ -13,13 +13,11 @@
       height: 100vh;
     }
 
-    /* 整体布局 */
     .login-container {
       display: flex;
       height: 100vh;
     }
 
-    /* 左侧装饰面板 */
     .login-left {
       width: 240px;
       flex-shrink: 0;
@@ -71,7 +69,6 @@
       text-shadow: 0 1px 3px rgba(0,0,0,0.16);
     }
 
-    /* 右侧表单区域 */
     .login-right {
       flex: 1;
       display: flex;
@@ -79,7 +76,6 @@
       position: relative;
     }
 
-    /* 关闭按钮 */
     .close-btn {
       position: absolute;
       top: 6px;
@@ -103,14 +99,12 @@
       color: #fff;
     }
 
-    /* 可拖动区域 */
     .drag-area {
       height: 36px;
       -webkit-app-region: drag;
       flex-shrink: 0;
     }
 
-    /* 表单主体 */
     .form-area {
       flex: 1;
       display: flex;
@@ -132,7 +126,6 @@
       margin-bottom: 28px;
     }
 
-    /* 输入框组 */
     .input-group {
       position: relative;
       margin-bottom: 16px;
@@ -164,7 +157,6 @@
       color: #bbb;
     }
 
-    /* 账号下拉箭头 */
     .account-arrow {
       position: absolute;
       right: 8px;
@@ -190,7 +182,6 @@
       display: flex;
     }
 
-    /* 账号下拉列表 */
     .account-dropdown {
       display: none;
       position: absolute;
@@ -229,7 +220,6 @@
       font-size: 11px;
     }
 
-    /* 记住密码 */
     .remember-row {
       display: flex;
       align-items: center;
@@ -249,7 +239,6 @@
       cursor: pointer;
     }
 
-    /* 登录按钮 */
     .login-btn {
       width: 100%;
       height: 42px;
@@ -277,7 +266,6 @@
       margin-top: 16px;
     }
 
-    /* 热更新进度条 - 底部紧凑卡片 */
     .update-overlay {
       display: none;
       position: fixed;
@@ -382,7 +370,6 @@
       max-height: 156px;
     }
 
-    /* 全量更新安装确认弹窗 */
     .update-install-modal {
       display: none;
       position: fixed;
@@ -433,7 +420,6 @@
   </style>
 </head>
 <body>
-  <!-- 热更新进度条 -->
   <div class="update-overlay" id="updateOverlay">
     <div class="update-title" id="updateTitle">正在检查更新...</div>
     <div class="update-bar-wrap">
@@ -444,7 +430,6 @@
   </div>
 
   <div class="login-container">
-    <!-- 左侧装饰面板 -->
     <div class="login-left">
       <div class="login-left-overlay">
         <div class="login-logo">
@@ -455,7 +440,6 @@
       </div>
     </div>
 
-    <!-- 右侧登录表单 -->
     <div class="login-right">
       <div class="drag-area">
         <button class="close-btn" onclick="window.electronAPI.close()">&times;</button>
@@ -496,7 +480,6 @@
     </div>
   </div>
 
-  <!-- 全量更新安装确认弹窗 -->
   <div class="update-install-modal" id="updateInstallModal">
     <div class="update-install-box">
       <div class="update-install-text" id="updateInstallText">新版本已下载完成</div>
@@ -518,17 +501,28 @@
     const loginVersion = document.getElementById('loginVersion');
 
     let credentialList = [];
+    const HOT_UPDATE_VERSION = '                      '.trim();
+    const electronAPI = window.electronAPI || {};
 
-    window.electronAPI.getAppVersion()
-      .then(version => {
-        if (loginVersion) loginVersion.textContent = '当前版本 v' + version;
-      })
-      .catch(() => {
-        if (loginVersion) loginVersion.textContent = '';
-      });
+    function callElectronApi(name, fallback) {
+      try {
+        const result = typeof electronAPI[name] === 'function'
+          ? Promise.resolve(electronAPI[name]())
+          : Promise.resolve(fallback);
+        return result.catch(() => fallback);
+      } catch (_) {
+        return Promise.resolve(fallback);
+      }
+    }
 
-    // 加载已保存的凭据（默认显示最近一次登录的账号）
-    window.electronAPI.getCredentials().then(cred => {
+    callElectronApi('getAppVersion', '').then(version => {
+      const displayVersion = HOT_UPDATE_VERSION || String(version || '').trim();
+      if (loginVersion) {
+        loginVersion.textContent = displayVersion ? '当前版本 v' + displayVersion : '当前版本';
+      }
+    });
+
+    callElectronApi('getCredentials', null).then(cred => {
       if (cred) {
         usernameInput.value = cred.username || '';
         passwordInput.value = cred.password || '';
@@ -536,15 +530,13 @@
       }
     });
 
-    // 加载历史账号列表
-    window.electronAPI.getCredentialList().then(list => {
+    callElectronApi('getCredentialList', []).then(list => {
       credentialList = list || [];
       if (credentialList.length > 1) {
         accountArrow.classList.add('visible');
       }
     });
 
-    // 渲染下拉列表
     function renderDropdown() {
       accountDropdown.innerHTML = '';
       credentialList.forEach(item => {
@@ -568,7 +560,6 @@
       });
     }
 
-    // 切换下拉框显示
     function toggleDropdown() {
       if (accountDropdown.classList.contains('open')) {
         closeDropdown();
@@ -587,7 +578,6 @@
       toggleDropdown();
     });
 
-    // 点击外部关闭下拉框
     document.addEventListener('click', (e) => {
       if (!accountDropdown.contains(e.target) && e.target !== accountArrow && !accountArrow.contains(e.target)) {
         closeDropdown();
@@ -678,7 +668,6 @@
       if (overlay) overlay.classList.remove('active');
     }
 
-    // 启动检查、热更新及完整更新的统一进度监听
     window.electronAPI.onUpdateProgress((data) => {
       const overlay = document.getElementById('updateOverlay');
       const title = document.getElementById('updateTitle');
@@ -712,7 +701,6 @@
       }
     });
 
-    // 全量更新 - 下载开始
     if (window.electronAPI.onShowUpdateDownloading) {
       window.electronAPI.onShowUpdateDownloading((data) => {
         const overlay = document.getElementById('updateOverlay');
@@ -728,7 +716,6 @@
       });
     }
 
-    // 全量更新 - 下载进度
     if (window.electronAPI.onUpdateDownloadProgress) {
       window.electronAPI.onUpdateDownloadProgress((data) => {
         const bar = document.getElementById('updateBar');
@@ -746,7 +733,6 @@
       });
     }
 
-    // 全量更新 - 下载完成，显示安装确认
     if (window.electronAPI.onShowUpdateInstall) {
       window.electronAPI.onShowUpdateInstall((data) => {
         const overlay = document.getElementById('updateOverlay');
@@ -758,7 +744,6 @@
       });
     }
 
-    // 全量更新 - 安装确认按钮
     var btnYes = document.getElementById('updateInstallYes');
     if (btnYes) {
       btnYes.addEventListener('click', function() {
@@ -779,7 +764,6 @@
       });
     }
 
-    // 全量更新 - 下载失败
     if (window.electronAPI.onShowUpdateDownloadFailed) {
       window.electronAPI.onShowUpdateDownloadFailed((data) => {
         var overlay = document.getElementById('updateOverlay');

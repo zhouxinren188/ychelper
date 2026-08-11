@@ -9,6 +9,7 @@ const updateState = fs.readFileSync(path.join(root, 'src', 'js', 'updateDownload
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
+const hotLoginBuild = fs.readFileSync(path.join(root, 'scripts', 'hot-update-login.js'), 'utf8');
 const artifactVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-release-artifacts.js'), 'utf8');
 const onlineVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-online-release.js'), 'utf8');
 const releaseBaselines = JSON.parse(fs.readFileSync(path.join(root, 'release-baselines.json'), 'utf8'));
@@ -74,6 +75,14 @@ assert.match(rules, /Restart-Service -Name "YchelperServer" -Force/);
 assert.match(rules, /powershell -NoProfile -EncodedCommand/);
 assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
 assert.match(hotBuild, /必须基于当前完整版本/);
+assert.match(hotBuild, /buildHotUpdateLogin/,
+  '热更新打包必须按完整基线重新生成登录页');
+assert.match(hotLoginBuild, /asar\.statFile/,
+  '登录页热更新长度必须读取 ASAR 基线元数据，禁止手写猜测');
+assert.match(hotLoginBuild, /baselinePackage\.version !== sourcePackage\.version/,
+  '热更新不得误用其他完整版本的 ASAR 文件长度');
+assert.match(hotLoginBuild, /renderedBuffer\.length > baseline\.size/,
+  '登录页超过 ASAR 基线时必须阻止热更新并改发完整版本');
 assert.match(artifactVerifier, /release-baselines\.json/);
 assert.match(artifactVerifier, /基线清单未登记目标版本/);
 assert.match(onlineVerifier, /function isValidChineseChangelog/);

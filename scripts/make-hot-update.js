@@ -12,6 +12,7 @@
 const path = require('path')
 const fs = require('fs')
 const AdmZip = require('adm-zip')
+const { buildHotUpdateLogin } = require('./hot-update-login')
 
 const ROOT = path.join(__dirname, '..')
 const DIST_DIR = path.join(ROOT, 'dist')
@@ -57,6 +58,16 @@ const zip = new AdmZip()
 
 // 添加 src/ 目录（保持目录结构）
 zip.addLocalFolder(srcDir, 'src')
+
+// app.asar 即使将文件标记为 unpacked，头部仍记录登录页长度。热更新页面超过
+// 完整基线长度时会被 Electron 截断，因此按基线长度注入热修订号并补齐空格。
+const hotLogin = buildHotUpdateLogin({ rootDir: ROOT, version })
+zip.updateFile('src/login.html', hotLogin.buffer)
+if (zip.getEntry('src/login.html').header.size !== hotLogin.baselineSize) {
+  console.error('错误: 热更新登录页长度未与完整基线对齐')
+  process.exit(1)
+}
+console.log(`登录页 ASAR 兼容长度: ${hotLogin.baselineSize} bytes`)
 
 const zipFilename = `update-${version}.zip`
 const zipPath = path.join(DIST_DIR, zipFilename)
