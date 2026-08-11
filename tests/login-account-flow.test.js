@@ -16,6 +16,12 @@ assert.match(loginHtml, /await window\.electronAPI\.saveCredentials\([\s\S]*awai
   '登录页必须先完成凭据保存，再打开登录窗口');
 assert.match(loginHtml, /if \(!username\)[\s\S]*if \(!password\)/,
   '登录页必须校验账号和密码');
+assert.match(loginHtml, /id="loginVersion">当前版本<\/div>/,
+  '登录与更新界面必须提供当前版本号位置');
+assert.match(loginHtml, /getAppVersion\(\)[\s\S]{0,220}当前版本 v/,
+  '登录页必须读取并显示当前软件版本号');
+assert.doesNotMatch(loginHtml, /body\.update-mode \.login-app-version/,
+  '进入更新模式后不得隐藏当前软件版本号');
 
 assert.match(main, /系统安全存储不可用，已拒绝以明文保存账号和配置/,
   '配置存储不得在安全存储不可用时降级为明文');
@@ -38,12 +44,14 @@ assert.match(main, /requiresInteractiveVerification[\s\S]{0,900}webLoginWindow\.
 assert.doesNotMatch(main, /cookieImported: true[\s\S]{0,120}loggedIn: true/,
   '仅导入商家 Cookie 不得直接标记为已登录');
 
-assert.match(preload, /returnToMerchantLogin/,
-  'preload 必须暴露返回商家登录页接口');
-assert.match(indexHtml, /id="merchantSwitchBtn"/,
-  '主界面必须提供切换商家账号按钮');
-assert.match(renderer, /returnToMerchantLogin\(\)/,
-  '切换事业部按钮必须接入主进程流程');
+assert.doesNotMatch(preload, /returnToMerchantLogin|return-to-merchant-login/,
+  'preload 不应继续暴露已删除的切换事业部接口');
+assert.doesNotMatch(indexHtml, /merchantSwitchBtn|切换事业部/,
+  '主界面不应继续显示切换事业部按钮');
+assert.doesNotMatch(renderer, /returnToMerchantLogin|merchantSwitchBtn/,
+  '渲染进程不应保留切换事业部按钮逻辑');
+assert.doesNotMatch(main, /ipcMain\.handle\('return-to-merchant-login'/,
+  '主进程不应保留无调用方的切换事业部 IPC');
 
 assert.match(main, /data\.lastShopAccountId = activeShopAccountId/,
   '店铺登录成功后必须保存最后活跃店铺 ID');

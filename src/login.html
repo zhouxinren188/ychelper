@@ -58,6 +58,18 @@
       text-shadow: 0 2px 8px rgba(0,0,0,0.2);
       letter-spacing: 2px;
     }
+    .login-app-version {
+      margin-top: 9px;
+      padding: 3px 10px;
+      border: 1px solid rgba(255,255,255,0.34);
+      border-radius: 999px;
+      background: rgba(133,70,13,0.2);
+      color: rgba(255,255,255,0.94);
+      font-size: 11px;
+      line-height: 1.4;
+      letter-spacing: 0.2px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.16);
+    }
 
     /* 右侧表单区域 */
     .login-right {
@@ -265,14 +277,6 @@
       margin-top: 16px;
     }
 
-    .login-version {
-      position: absolute;
-      bottom: 16px;
-      right: 24px;
-      font-size: 11px;
-      color: #ccc;
-    }
-
     /* 热更新进度条 - 底部紧凑卡片 */
     .update-overlay {
       display: none;
@@ -335,8 +339,7 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
-    body.update-mode .form-area,
-    body.update-mode .login-version {
+    body.update-mode .form-area {
       visibility: hidden;
       pointer-events: none;
     }
@@ -445,6 +448,7 @@
           <img src="img/logo.png" alt="logo" />
         </div>
         <div class="login-app-name">云仓助手</div>
+        <div class="login-app-version" id="loginVersion">当前版本</div>
       </div>
     </div>
 
@@ -486,8 +490,6 @@
         <button class="login-btn" id="loginBtn">登录商家端</button>
         <p class="login-tip" id="loginTip">登录成功后将自动进入主界面</p>
       </div>
-
-      <div class="login-version" id="loginVersion"></div>
     </div>
   </div>
 
@@ -510,8 +512,17 @@
     const loginTip = document.getElementById('loginTip');
     const accountArrow = document.getElementById('accountArrow');
     const accountDropdown = document.getElementById('accountDropdown');
+    const loginVersion = document.getElementById('loginVersion');
 
     let credentialList = [];
+
+    window.electronAPI.getAppVersion()
+      .then(version => {
+        if (loginVersion) loginVersion.textContent = '当前版本 v' + version;
+      })
+      .catch(() => {
+        if (loginVersion) loginVersion.textContent = '';
+      });
 
     // 加载已保存的凭据（默认显示最近一次登录的账号）
     window.electronAPI.getCredentials().then(cred => {

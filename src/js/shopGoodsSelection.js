@@ -66,6 +66,9 @@
         case '最高价':
           selected.push(...pickPricedItem(group, 'max'));
           break;
+        case '前N个':
+          selected.push(...group.slice(0, normalizedCount));
+          break;
         case 'N个':
           selected.push(...pickRandomItems(group, normalizedCount, random));
           break;

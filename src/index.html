@@ -63,7 +63,6 @@
         <div class="titlebar-left" style="-webkit-app-region: drag;"></div>
         <div class="titlebar-right">
           <span class="department-name" id="departmentName"></span>
-          <button class="merchant-switch-btn" id="merchantSwitchBtn" type="button">切换事业部</button>
           <div class="window-controls">
             <button class="win-btn" onclick="window.electronAPI.minimize()">&#8722;</button>
             <button class="win-btn close-btn" onclick="window.electronAPI.close()">&times;</button>
@@ -485,6 +484,7 @@
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最后1个" />SKU最后1个</label>
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最低价" />最低价</label>
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="最高价" />最高价</label>
+                  <label class="sm-radio"><input type="radio" name="smGoodsQty" value="前N个" />SKU前<input type="number" id="smFirstQtyN" min="1" value="10" class="sm-qty-input" />个</label>
                   <label class="sm-radio"><input type="radio" name="smGoodsQty" value="N个" />随机<input type="number" id="smQtyN" min="1" value="10" class="sm-qty-input" />个</label>
                 </div>
               </div>

@@ -2744,41 +2744,6 @@ ipcMain.handle('get-csrf-token', async () => {
   return storeGet('csrfToken', '');
 });
 
-ipcMain.handle('return-to-merchant-login', async () => {
-  if (shopQueryInProgress) {
-    return { success: false, error: '当前有任务正在执行，请完成后再切换事业部' };
-  }
-  if (loginWindow && !loginWindow.isDestroyed()) {
-    loginWindow.show();
-    loginWindow.focus();
-    return { success: true };
-  }
-
-  stopHeartbeat();
-  currentSessionToken = null;
-  isLoggingIn = false;
-  pendingCredentials = null;
-  merchantIdentityValidationAttempts = 0;
-
-  createLoginWindow({ showWhenReady: true });
-
-  if (subscriptionWindow && !subscriptionWindow.isDestroyed()) {
-    subscriptionWindow.destroy();
-    subscriptionWindow = null;
-  }
-  if (departmentSelectWindow && !departmentSelectWindow.isDestroyed()) {
-    departmentSelectWindow.destroy();
-    departmentSelectWindow = null;
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const switchingWindow = mainWindow;
-    switchingWindow.once('closed', () => { wmsIsQuitting = false; });
-    switchingWindow.destroy();
-  }
-
-  return { success: true };
-});
-
 // ========== IPC: 快捷模式 ==========
 
 const DEFAULT_MODES = [

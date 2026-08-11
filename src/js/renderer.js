@@ -63,31 +63,8 @@ const logBox = $('#logBox');
   initAoModule();
   initWmsPrintOutbound();
   initContactModal();
-  initMerchantAccountSwitch();
   loadLogisticsPrefs();
 })();
-
-function initMerchantAccountSwitch() {
-  const button = $('#merchantSwitchBtn');
-  if (!button || !window.electronAPI.returnToMerchantLogin) return;
-  button.addEventListener('click', async () => {
-    if (isExecuting || wmsIsProcessing) {
-      showToast('当前有任务正在执行，请完成或停止任务后再切换事业部', 4000, 'warn');
-      return;
-    }
-    button.disabled = true;
-    try {
-      const result = await window.electronAPI.returnToMerchantLogin();
-      if (!result?.success) {
-        showToast(result?.error || '暂时无法切换事业部', 4000, 'error');
-        button.disabled = false;
-      }
-    } catch (error) {
-      showToast(error.message || '暂时无法切换事业部', 4000, 'error');
-      button.disabled = false;
-    }
-  });
-}
 
 // ========== 加载用户数据 ==========
 async function loadUserData() {
@@ -2628,6 +2605,11 @@ async function initSmModule() {
     const qtyN = $('#smQtyN');
     if (qtyN) qtyN.value = savedQtyN;
   }
+  const savedFirstQtyN = localStorage.getItem('sm_goodsFirstQtyN');
+  if (savedFirstQtyN) {
+    const firstQtyN = $('#smFirstQtyN');
+    if (firstQtyN) firstQtyN.value = savedFirstQtyN;
+  }
 }
 
 // ========== 店铺账号管理 ==========
@@ -2793,21 +2775,26 @@ function initSmEventListeners() {
       if (smGoods.length > 0) applySmQtyFilter();
     });
   });
-  const qtyNInput = $('#smQtyN');
-  if (qtyNInput) {
-    qtyNInput.addEventListener('input', () => {
-      localStorage.setItem('sm_goodsQtyN', qtyNInput.value);
+  const bindSmQtyCountInput = (inputId, mode, storageKey) => {
+    const input = $(`#${inputId}`);
+    if (!input) return;
+    input.addEventListener('input', () => localStorage.setItem(storageKey, input.value));
+    input.addEventListener('change', () => {
+      localStorage.setItem(storageKey, input.value);
+      const radio = document.querySelector(`input[name="smGoodsQty"][value="${mode}"]`);
+      if (radio && radio.checked && smGoods.length > 0) applySmQtyFilter();
     });
-    qtyNInput.addEventListener('change', () => {
-      localStorage.setItem('sm_goodsQtyN', qtyNInput.value);
-      const nRadio = document.querySelector('input[name="smGoodsQty"][value="N个"]');
-      if (nRadio && nRadio.checked && smGoods.length > 0) applySmQtyFilter();
+    input.addEventListener('focus', () => {
+      const radio = document.querySelector(`input[name="smGoodsQty"][value="${mode}"]`);
+      if (radio) {
+        radio.checked = true;
+        localStorage.setItem('sm_goodsQty', mode);
+        if (smGoods.length > 0) applySmQtyFilter();
+      }
     });
-    qtyNInput.addEventListener('focus', () => {
-      const nRadio = document.querySelector('input[name="smGoodsQty"][value="N个"]');
-      if (nRadio) { nRadio.checked = true; localStorage.setItem('sm_goodsQty', 'N个'); }
-    });
-  }
+  };
+  bindSmQtyCountInput('smFirstQtyN', '前N个', 'sm_goodsFirstQtyN');
+  bindSmQtyCountInput('smQtyN', 'N个', 'sm_goodsQtyN');
 
   // 店铺管理弹窗
   const smShopModalEl = $('#smShopModal');
@@ -3485,7 +3472,8 @@ function applySmQtyFilter() {
 
   const qtyRadio = document.querySelector('input[name="smGoodsQty"]:checked');
   const qtyVal = qtyRadio ? qtyRadio.value : '全部';
-  const qtyCount = parseInt($('#smQtyN').value) || 10;
+  const qtyCountInput = qtyVal === '前N个' ? $('#smFirstQtyN') : $('#smQtyN');
+  const qtyCount = parseInt(qtyCountInput?.value, 10) || 10;
   if (!window.shopGoodsSelection || typeof window.shopGoodsSelection.selectGoodsPerProduct !== 'function') {
     console.error('[SM] 每个SPU取SKU筛选模块未加载，保留全部SKU');
     smFilteredGoods = smGoods.slice();
@@ -3494,7 +3482,11 @@ function applySmQtyFilter() {
   }
 
   const spuCount = new Set(smGoods.map(item => String(item.productCode || ''))).size;
-  const modeLabel = qtyVal === 'N个' ? `每个SPU随机${qtyCount}个` : `每个SPU ${qtyVal}`;
+  const modeLabel = qtyVal === 'N个'
+    ? `每个SPU随机${qtyCount}个`
+    : qtyVal === '前N个'
+      ? `每个SPU前${qtyCount}个`
+      : `每个SPU ${qtyVal}`;
   console.log(
     `[SM] 每个SPU取SKU: mode=${modeLabel}, ` +
     `SPU=${spuCount}, 输入SKU=${smGoods.length}, 输出SKU=${smFilteredGoods.length}`

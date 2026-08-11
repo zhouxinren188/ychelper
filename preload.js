@@ -13,7 +13,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCredentials: () => ipcRenderer.invoke('get-credentials'),
   getCredentialList: () => ipcRenderer.invoke('get-credential-list'),
   saveCredentials: (cred) => ipcRenderer.invoke('save-credentials', cred),
-  returnToMerchantLogin: () => ipcRenderer.invoke('return-to-merchant-login'),
 
   // 商家端多账号管理
   getMerchantAccounts: () => ipcRenderer.invoke('get-merchant-accounts'),

@@ -1,7 +1,22 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { groupGoodsByProduct, selectGoodsPerProduct } = require('../src/js/shopGoodsSelection');
+
+const root = path.join(__dirname, '..');
+const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
+
+const firstNPosition = indexHtml.indexOf('value="前N个"');
+const randomNPosition = indexHtml.indexOf('value="N个"');
+assert(firstNPosition >= 0 && randomNPosition > firstNPosition,
+  'SKU前N个选项必须存在并位于随机N个之前');
+assert.match(indexHtml, /id="smFirstQtyN"/,
+  'SKU前N个必须有独立的数量输入框');
+assert.match(renderer, /sm_goodsFirstQtyN/,
+  'SKU前N个数量必须保存并在下次启动恢复');
 
 const goods = [
   ...[10, 20, 30, 40, 50, 60].map((price, index) => ({
@@ -31,6 +46,10 @@ assert.deepStrictEqual(
   selectGoodsPerProduct(goods, '最高价').map(item => item.sku),
   ['A6', 'B1', 'C1']
 );
+assert.deepStrictEqual(
+  selectGoodsPerProduct(goods, '前N个', 2).map(item => item.sku),
+  ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
+);
 
 const randomFive = selectGoodsPerProduct(goods, 'N个', 5, () => 0.25);
 const randomCounts = randomFive.reduce((counts, item) => {
@@ -52,6 +71,10 @@ const fourAfterPriceFilter = eightSkuProduct.filter(item => item.price >= 50);
 const upToFive = selectGoodsPerProduct(fourAfterPriceFilter, 'N个', 5, () => 0.5);
 assert.strictEqual(fourAfterPriceFilter.length, 4);
 assert.deepStrictEqual(upToFive.map(item => item.sku), ['D5', 'D6', 'D7', 'D8']);
+assert.deepStrictEqual(
+  selectGoodsPerProduct(fourAfterPriceFilter, '前N个', 5).map(item => item.sku),
+  ['D5', 'D6', 'D7', 'D8']
+);
 
 const missingCodes = [{ sku: 'X1' }, { sku: 'X2' }];
 assert.deepStrictEqual(

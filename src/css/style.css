@@ -36,26 +36,6 @@ body {
   white-space: nowrap;
   -webkit-app-region: drag;
 }
-.merchant-switch-btn {
-  height: 24px;
-  padding: 0 11px;
-  border: 1px solid #d8e0e8;
-  border-radius: 6px;
-  background: #fff;
-  color: #526273;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color .18s ease, color .18s ease, background .18s ease;
-}
-.merchant-switch-btn:hover {
-  border-color: #e67e22;
-  background: #fff8f1;
-  color: #d96d13;
-}
-.merchant-switch-btn:disabled {
-  cursor: wait;
-  opacity: .55;
-}
 .window-controls {
   display: flex;
 }
