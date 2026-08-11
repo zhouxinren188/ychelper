@@ -6,10 +6,11 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node test-date-query.js && node test-sku-expand.js && node tests/date-time-range-picker.test.js && node tests/shop-goods-query.test.js && node tests/shop-goods-selection.test.js && node tests/shop-export-file.test.js && node tests/shop-session-state.test.js && node tests/wms-page-state.test.js && node tests/wms-session-state.test.js && node tests/automation-access.test.js && node tests/login-account-flow.test.js && node tests/ipc-contract.test.js && node tests/update-download-state.test.js && node tests/update-flow-contract.test.js",
+    "test": "node test-date-query.js && node test-sku-expand.js && node tests/date-time-range-picker.test.js && node tests/shop-goods-query.test.js && node tests/shop-goods-selection.test.js && node tests/shop-export-file.test.js && node tests/shop-session-state.test.js && node tests/wms-page-state.test.js && node tests/wms-session-state.test.js && node tests/automation-access.test.js && node tests/login-account-flow.test.js && node tests/ipc-contract.test.js && node tests/update-download-state.test.js && node tests/legacy-update-bootstrap.test.js && node tests/update-flow-contract.test.js",
     "build": "node scripts/build.js",
     "build:dir": "node scripts/build.js --dir",
     "make-hot-update": "node scripts/make-hot-update.js",
+    "make-legacy-bootstrap": "node scripts/make-legacy-update-bootstrap.js",
     "verify:release-artifacts": "node scripts/verify-release-artifacts.js",
     "verify:online-release": "node scripts/verify-online-release.js"
   },
