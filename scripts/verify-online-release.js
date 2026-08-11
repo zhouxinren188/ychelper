@@ -7,6 +7,7 @@ const AdmZip = require('adm-zip');
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const BASE_URL = 'http://150.158.54.108:3000';
+const RELEASE_BASELINES_FILE = path.join(ROOT, 'release-baselines.json');
 
 function arg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -31,6 +32,32 @@ function compareVersions(left, right) {
     if (difference !== 0) return difference;
   }
   return 0;
+}
+
+function readReleaseBaselines() {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(RELEASE_BASELINES_FILE, 'utf8'));
+  } catch (err) {
+    throw new Error(`无法读取线上支持基线清单: ${err.message}`);
+  }
+  if (!data || !Array.isArray(data.versions) || data.versions.length === 0) {
+    throw new Error('线上支持基线清单缺少 versions');
+  }
+  const versions = data.versions.map(value => String(value).trim());
+  versions.forEach(value => {
+    if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(value)) {
+      throw new Error(`线上支持基线清单包含无效版本号: ${value || '(空)'}`);
+    }
+  });
+  if (new Set(versions).size !== versions.length) {
+    throw new Error('线上支持基线清单包含重复版本号');
+  }
+  const sorted = [...versions].sort(compareVersions);
+  if (versions.some((value, index) => value !== sorted[index])) {
+    throw new Error('线上支持基线清单必须按版本号从低到高排列');
+  }
+  return versions;
 }
 
 function isValidChineseChangelog(value) {
@@ -63,12 +90,17 @@ function validateBlockmap(buffer, installerSize, label) {
 async function main() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const version = arg('version', pkg.version);
-  const baselines = (arg('baselines') || arg('baseline'))
-    .split(',')
+  if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(version)) throw new Error('目标版本号无效');
+  const baselineArgument = arg('baselines') || arg('baseline');
+  const configuredVersions = baselineArgument ? [] : readReleaseBaselines();
+  if (!baselineArgument && !configuredVersions.includes(version)) {
+    throw new Error(`基线清单未登记目标版本 v${version}，发布前必须先更新 release-baselines.json`);
+  }
+  const baselines = (baselineArgument ? baselineArgument.split(',') : configuredVersions)
     .map(value => value.trim())
     .filter(Boolean)
-    .filter((value, index, all) => all.indexOf(value) === index);
-  if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(version)) throw new Error('目标版本号无效');
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .filter(value => baselineArgument || compareVersions(value, version) < 0);
   for (const baseline of baselines) {
     if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(baseline)) throw new Error(`基线版本号无效: ${baseline}`);
     if (compareVersions(version, baseline) <= 0) throw new Error(`目标版本 v${version} 必须高于基线 v${baseline}`);

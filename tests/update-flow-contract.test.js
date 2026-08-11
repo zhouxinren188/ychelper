@@ -8,7 +8,9 @@ const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
+const artifactVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-release-artifacts.js'), 'utf8');
 const onlineVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-online-release.js'), 'utf8');
+const releaseBaselines = JSON.parse(fs.readFileSync(path.join(root, 'release-baselines.json'), 'utf8'));
 
 assert.match(main, /autoUpdater\.autoDownload\s*=\s*false/);
 assert.match(main, /autoUpdater\.autoInstallOnAppQuit\s*=\s*false/);
@@ -51,7 +53,8 @@ assert.match(rules, /\.blockmap/);
 assert.match(rules, /跨版本/);
 assert.match(rules, /十几个版本/);
 assert.match(rules, /multipart\/byteranges/);
-assert.match(rules, /--baselines=/);
+assert.match(rules, /release-baselines\.json/);
+assert.match(rules, /显式参数只用于故障诊断/);
 assert.match(rules, /所有三段正式版本号 `X\.Y\.Z` 都必须发布完整安装包/);
 assert.match(rules, /旧用户启动时必须先升级到该完整版本并重启/);
 assert.match(rules, /1\.0\.66 旧客户端兼容桥接/);
@@ -62,7 +65,28 @@ assert.match(rules, /Restart-Service -Name "YchelperServer" -Force/);
 assert.match(rules, /powershell -NoProfile -EncodedCommand/);
 assert.match(hotBuild, /三段正式版本必须发布完整安装包/);
 assert.match(hotBuild, /必须基于当前完整版本/);
+assert.match(artifactVerifier, /release-baselines\.json/);
+assert.match(artifactVerifier, /基线清单未登记目标版本/);
 assert.match(onlineVerifier, /function isValidChineseChangelog/);
+assert.match(onlineVerifier, /release-baselines\.json/);
+assert.match(onlineVerifier, /基线清单未登记目标版本/);
+assert(releaseBaselines.versions.includes('1.0.66'));
+assert(releaseBaselines.versions.includes('1.0.74'));
+assert(!releaseBaselines.versions.includes('1.0.63'));
+assert.strictEqual(new Set(releaseBaselines.versions).size, releaseBaselines.versions.length);
+assert.deepStrictEqual(
+  releaseBaselines.versions,
+  [...releaseBaselines.versions].sort((left, right) => {
+    const leftParts = left.split('.').map(Number);
+    const rightParts = right.split('.').map(Number);
+    const length = Math.max(leftParts.length, rightParts.length);
+    for (let index = 0; index < length; index += 1) {
+      const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+      if (difference !== 0) return difference;
+    }
+    return 0;
+  })
+);
 assert.match(onlineVerifier, /bootstrapData\.version !== '1\.0\.66\.3'/);
 assert.match(onlineVerifier, /legacy-full-installer-fallback-v3/);
 assert.match(onlineVerifier, /Buffer\.byteLength\(bootstrapLogin, 'utf8'\) !== 13791/);

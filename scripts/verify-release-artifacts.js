@@ -5,6 +5,7 @@ const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
+const RELEASE_BASELINES_FILE = path.join(ROOT, 'release-baselines.json');
 
 function fail(message) {
   throw new Error(`[发布文件校验失败] ${message}`);
@@ -14,6 +15,44 @@ function readArg(name) {
   const prefix = `--${name}=`;
   const item = process.argv.slice(2).find(arg => arg.startsWith(prefix));
   return item ? item.slice(prefix.length) : '';
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left).split('.').map(Number);
+  const rightParts = String(right).split('.').map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function readReleaseBaselines(version) {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(RELEASE_BASELINES_FILE, 'utf8'));
+  } catch (err) {
+    fail(`无法读取线上支持基线清单: ${err.message}`);
+  }
+  if (!data || !Array.isArray(data.versions) || data.versions.length === 0) {
+    fail('线上支持基线清单缺少 versions');
+  }
+  const versions = data.versions.map(item => String(item).trim());
+  versions.forEach(item => {
+    if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(item)) {
+      fail(`线上支持基线清单包含无效版本号: ${item || '(空)'}`);
+    }
+  });
+  if (new Set(versions).size !== versions.length) fail('线上支持基线清单包含重复版本号');
+  const sorted = [...versions].sort(compareVersions);
+  if (versions.some((item, index) => item !== sorted[index])) {
+    fail('线上支持基线清单必须按版本号从低到高排列');
+  }
+  if (!versions.includes(version)) {
+    fail(`基线清单未登记目标版本 v${version}`);
+  }
+  return versions.filter(item => compareVersions(item, version) < 0);
 }
 
 function yamlValue(source, key) {
@@ -134,8 +173,8 @@ function main() {
   if (actualSha !== latestSha) fail('安装包 SHA-512 与 latest.yml 不一致');
   const blockCount = verifyBlockmap(blockmapPath, actualSize);
 
-  const baselines = (readArg('baseline') || process.env.YCHELPER_RELEASE_BASELINE || '')
-    .split(',')
+  const baselineArgument = readArg('baseline') || process.env.YCHELPER_RELEASE_BASELINE || '';
+  const baselines = (baselineArgument ? baselineArgument.split(',') : readReleaseBaselines(version))
     .map(item => item.trim())
     .filter(Boolean);
   baselines.forEach(baseline => verifyHistoricalVersion(baseline, blockmapPath));
