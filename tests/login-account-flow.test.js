@@ -31,6 +31,15 @@ assert.doesNotMatch(loginHtml, /\b(?:const|let|class)\s+electronAPI\b/,
   '登录页不得声明与 contextBridge 注入对象 electronAPI 同名的全局词法变量');
 assert.doesNotMatch(loginHtml, /body\.update-mode \.login-app-version/,
   '进入更新模式后不得隐藏当前软件版本号');
+assert.match(loginHtml,
+  /body\.update-mode \.update-overlay\s*\{[\s\S]{0,360}padding:\s*20px 20px 16px;[\s\S]{0,160}gap:\s*10px;/,
+  '更新内容区域必须上移并压缩无意义的顶部留白');
+assert.match(loginHtml,
+  /body\.update-mode \.update-changelog:not\(:empty\)\s*\{[\s\S]{0,180}max-width:\s*none;[\s\S]{0,100}min-height:\s*180px;[\s\S]{0,100}max-height:\s*200px;/,
+  '更新说明区域必须充分利用右侧宽度和高度');
+assert.match(loginHtml,
+  /body\.update-mode \.update-title\s*\{[\s\S]{0,100}font-size:\s*15px;/,
+  '更新模式标题字号应保持紧凑，避免挤占更新内容空间');
 
 assert.match(main, /系统安全存储不可用，已拒绝以明文保存账号和配置/,
   '配置存储不得在安全存储不可用时降级为明文');
