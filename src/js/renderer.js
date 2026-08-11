@@ -2436,6 +2436,7 @@ let smSelectedShopState = 'empty'; // empty | checking | online | offline | erro
 let smQueryProgressHideTimer = null;
 let smQueryEstimateStartedAt = 0;
 let smDateRangePickerController = null;
+let smQueryRunning = false;
 
 // DOM 引用
 const smShopSelect = $('#smShopSelect');
@@ -2454,6 +2455,31 @@ const smQueryProgressEta = $('#smQueryProgressEta');
 const smQueryProgressFill = $('#smQueryProgressFill');
 let smShopAccountStateMap = {};
 let smShopDropdownCheckVersion = 0;
+
+function setSmResultActionsEnabled(enabled) {
+  const shouldEnable = Boolean(enabled) && !smQueryRunning;
+  ['smExportBtn', 'smSendBtn', 'smSendDownBtn'].forEach(id => {
+    const button = $(`#${id}`);
+    if (button) button.disabled = !shouldEnable;
+  });
+}
+
+function setSmQueryBusy(busy) {
+  smQueryRunning = Boolean(busy);
+  if (smQueryRunning) closeSmShopSelectDropdown();
+
+  const queryBtn = $('#smQueryBtn');
+  if (queryBtn) {
+    queryBtn.disabled = smQueryRunning || !smLoggedIn;
+    queryBtn.textContent = smQueryRunning ? '查询中...' : '查询商品';
+  }
+  if (smShopSelectTrigger) smShopSelectTrigger.disabled = smQueryRunning;
+  const manageBtn = $('#smManageBtn');
+  if (manageBtn) manageBtn.disabled = smQueryRunning;
+  const loginBtn = $('#smLoginBtn');
+  if (loginBtn) loginBtn.disabled = smQueryRunning || smSelectedShopState === 'checking';
+  setSmResultActionsEnabled(smFilteredGoods.length > 0);
+}
 
 function getSmShopStateLabel(state) {
   if (state === 'online') return '在线';
@@ -2651,6 +2677,7 @@ function initSmEventListeners() {
 
   if (smShopSelectTrigger) {
     smShopSelectTrigger.addEventListener('click', () => {
+      if (smQueryRunning) return;
       if (smShopSelectDropdown?.hidden) {
         openSmShopSelectDropdown();
       } else {
@@ -2674,6 +2701,10 @@ function initSmEventListeners() {
   // 店铺下拉切换时同步状态
   if (smShopSelect) {
     smShopSelect.addEventListener('change', async () => {
+      if (smQueryRunning) {
+        showToast('商品查询进行中，请等待完成后再切换店铺');
+        return;
+      }
       const selectedId = smShopSelect.value;
       syncSmShopSelectTrigger();
       if (!selectedId) {
@@ -2739,13 +2770,20 @@ function initSmEventListeners() {
   const selectAll = $('#smSelectAll');
   if (selectAll && smGoodsTableBody) {
     selectAll.addEventListener('change', () => {
-      const checks = smGoodsTableBody.querySelectorAll('.sm-goods-check');
+      const checks = smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check');
       checks.forEach(cb => { cb.checked = selectAll.checked; });
+      syncSmSelectionCheckboxes();
     });
     smGoodsTableBody.addEventListener('change', (e) => {
-      if (e.target.classList.contains('sm-goods-check')) {
-        const checks = smGoodsTableBody.querySelectorAll('.sm-goods-check');
-        selectAll.checked = Array.from(checks).every(cb => cb.checked);
+      if (e.target.classList.contains('sm-spu-check')) {
+        const row = e.target.closest('.sm-spu-row');
+        getSmSkuRowsForGroup(row?.dataset.groupKey).forEach(skuRow => {
+          const checkbox = skuRow.querySelector('.sm-goods-check');
+          if (checkbox) checkbox.checked = e.target.checked;
+        });
+      }
+      if (e.target.classList.contains('sm-goods-check') || e.target.classList.contains('sm-spu-check')) {
+        syncSmSelectionCheckboxes();
       }
     });
   }
@@ -3120,16 +3158,16 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
   if (loginBtn) {
     if (smSelectedShopState === 'empty') {
       loginBtn.textContent = '登录店铺';
-      loginBtn.disabled = false;
+      loginBtn.disabled = smQueryRunning;
     } else if (smSelectedShopState === 'checking') {
       loginBtn.textContent = '检测中...';
       loginBtn.disabled = true;
     } else if (smSelectedShopState === 'online') {
       loginBtn.textContent = '进入后台';
-      loginBtn.disabled = false;
+      loginBtn.disabled = smQueryRunning;
     } else {
       loginBtn.textContent = '重新登录';
-      loginBtn.disabled = false;
+      loginBtn.disabled = smQueryRunning;
     }
   }
 
@@ -3147,7 +3185,7 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
     smStatusDot.className = `sm-shop-status-inline ${visualState}`;
     smStatusDot.textContent = getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
-    if (queryBtn) queryBtn.disabled = false;
+    if (queryBtn) queryBtn.disabled = smQueryRunning;
   } else {
     smStatusDot.className = `sm-shop-status-inline ${visualState}`;
     smStatusDot.textContent = smSelectedShopState === 'empty'
@@ -3283,8 +3321,18 @@ function finishSmQueryProgress(success, message = '') {
 async function handleSmQuery() {
   if (!requireTier('shopManage')) return;
   console.log('[SM] handleSmQuery called, smLoggedIn:', smLoggedIn);
+  if (smQueryRunning) {
+    showToast('商品查询正在进行中');
+    return;
+  }
   if (!smLoggedIn) {
     showToast('请先登录店铺后台');
+    return;
+  }
+
+  const queryAccountId = String(smShopSelect.value || '');
+  if (!queryAccountId) {
+    showToast('请先选择店铺');
     return;
   }
 
@@ -3299,17 +3347,30 @@ async function handleSmQuery() {
     return;
   }
 
+  const priceMinText = $('#smPriceMin').value.trim();
+  const priceMaxText = $('#smPriceMax').value.trim();
+  const priceMin = priceMinText === '' ? null : Number(priceMinText);
+  const priceMax = priceMaxText === '' ? null : Number(priceMaxText);
+  if ((priceMin != null && (!Number.isFinite(priceMin) || priceMin < 0)) ||
+      (priceMax != null && (!Number.isFinite(priceMax) || priceMax < 0))) {
+    showToast('售价范围必须是大于或等于0的有效数字');
+    return;
+  }
+  if (priceMin != null && priceMax != null && priceMin > priceMax) {
+    showToast('最低售价不能高于最高售价');
+    return;
+  }
+
   const params = {
+    accountId: queryAccountId,
     dateFrom,
     dateTo,
-    priceMin: $('#smPriceMin').value || '',
-    priceMax: $('#smPriceMax').value || '',
+    priceMin: priceMinText,
+    priceMax: priceMaxText,
     goodsStatus: (document.querySelector('input[name="smGoodsStatus"]:checked') || {}).value || '售卖中'
   };
 
-  const queryBtn = $('#smQueryBtn');
-  queryBtn.disabled = true;
-  queryBtn.textContent = '查询中...';
+  setSmQueryBusy(true);
   startSmQueryProgress();
   addSmLog('info', '正在查询店铺商品...');
   let querySucceeded = false;
@@ -3319,16 +3380,13 @@ async function handleSmQuery() {
     const result = await window.electronAPI.shopQueryGoods(params);
 
     if (result.success) {
+      if (String(smShopSelect.value || '') !== queryAccountId) {
+        throw new Error('查询期间店铺已发生变化，本次结果已丢弃，请重新查询');
+      }
       querySucceeded = true;
       smGoods = result.goods || [];
       applySmQtyFilter();
       addSmLog('success', `查询完成，共 ${smGoods.length} 条SKU记录`);
-
-      if (smGoods.length > 0) {
-        $('#smExportBtn').disabled = false;
-        $('#smSendBtn').disabled = false;
-        $('#smSendDownBtn').disabled = false;
-      }
 
       if (result.message) {
         addSmLog('info', result.message);
@@ -3338,18 +3396,22 @@ async function handleSmQuery() {
       smGoods = [];
       smFilteredGoods = [];
       renderSmGoodsTable();
-      if (result.needLogin) updateSmLoginStatus(false, '');
+      setSmResultActionsEnabled(false);
+      if (result.needLogin) updateSmLoginStatus(false, '', 'offline');
       console.error('[SM] 店铺商品查询失败:', result.error || '未知错误');
       addSmLog('error', `查询失败: ${result.error}`);
     }
   } catch (err) {
     queryError = err.message || '未知错误';
+    smGoods = [];
+    smFilteredGoods = [];
+    renderSmGoodsTable();
+    setSmResultActionsEnabled(false);
     console.error('[SM] 店铺商品查询异常:', err);
     addSmLog('error', `查询异常: ${err.message}`);
   } finally {
     finishSmQueryProgress(querySucceeded, queryError);
-    queryBtn.disabled = !smLoggedIn;
-    queryBtn.textContent = '查询商品';
+    setSmQueryBusy(false);
   }
 }
 
@@ -3358,7 +3420,11 @@ function renderSmGoodsTable() {
     smGoodsTableBody.innerHTML = '<tr class="wms-empty-row"><td colspan="8" class="wms-empty-state">暂无数据</td></tr>';
     smGoodsCount.classList.remove('visible');
     const selectAll = $('#smSelectAll');
-    if (selectAll) selectAll.checked = false;
+    if (selectAll) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+    }
+    setSmResultActionsEnabled(false);
     return;
   }
 
@@ -3366,13 +3432,15 @@ function renderSmGoodsTable() {
   const groups = [];
   const groupMap = new Map();
   smFilteredGoods.forEach((item, idx) => {
-    const pcode = item.productCode || '';
-    if (!groupMap.has(pcode)) {
-      const group = { productCode: pcode, items: [], startIdx: idx };
+    const pcode = String(item.productCode || '').trim();
+    // 响应异常缺少 productCode 时，每条记录必须独立成组，不能把不同商品合并。
+    const groupKey = pcode || `__missing_product_${idx}`;
+    if (!groupMap.has(groupKey)) {
+      const group = { groupKey, productCode: pcode, items: [], startIdx: idx };
       groups.push(group);
-      groupMap.set(pcode, group);
+      groupMap.set(groupKey, group);
     }
-    groupMap.get(pcode).items.push({ ...item, originalIdx: idx });
+    groupMap.get(groupKey).items.push({ ...item, originalIdx: idx });
   });
 
   smGoodsCount.textContent = `${smFilteredGoods.length} 个`;
@@ -3386,7 +3454,11 @@ function renderSmGoodsTable() {
     const skuCount = group.items.length;
 
     // 价格范围
-    const prices = group.items.map(i => i.price).filter(p => p != null).map(p => parseFloat(p));
+    const prices = group.items
+      .map(item => item.price)
+      .filter(value => value != null && String(value).trim() !== '')
+      .map(Number)
+      .filter(Number.isFinite);
     let priceDisplay = '';
     if (prices.length > 0) {
       const min = Math.min(...prices);
@@ -3399,8 +3471,9 @@ function renderSmGoodsTable() {
     mainTr.className = 'sm-spu-row';
     mainTr.style.cursor = 'pointer';
     mainTr.dataset.spu = group.productCode;
+    mainTr.dataset.groupKey = group.groupKey;
     mainTr.innerHTML = `
-      <td><input type="checkbox" class="sm-goods-check" data-idx="${firstItem.originalIdx}" checked /></td>
+      <td><input type="checkbox" class="sm-spu-check" aria-label="选择该商品的全部SKU" checked /></td>
       <td>${spuSeq}</td>
       <td><b>${escapeHtml(group.productCode)}</b> <span class="sm-sku-toggle" style="color:#2d7be0;font-size:12px;margin-left:6px;">▶ ${skuCount}个SKU</span></td>
       <td></td>
@@ -3417,6 +3490,7 @@ function renderSmGoodsTable() {
       subTr.className = 'sm-sku-row';
       subTr.style.display = 'none';
       subTr.dataset.spuSku = group.productCode;
+      subTr.dataset.groupKey = group.groupKey;
       subTr.innerHTML = `
         <td><input type="checkbox" class="sm-goods-check" data-idx="${item.originalIdx}" checked /></td>
         <td>${spuSeq}-${subIdx + 1}</td>
@@ -3435,8 +3509,7 @@ function renderSmGoodsTable() {
   smGoodsTableBody.querySelectorAll('.sm-spu-row').forEach(row => {
     row.addEventListener('click', (e) => {
       if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') return;
-      const pcode = row.dataset.spu;
-      const skuRows = smGoodsTableBody.querySelectorAll(`tr[data-spu-sku="${pcode}"]`);
+      const skuRows = getSmSkuRowsForGroup(row.dataset.groupKey);
       const toggleEl = row.querySelector('.sm-sku-toggle');
       const isHidden = skuRows.length > 0 && skuRows[0].style.display === 'none';
       skuRows.forEach(r => {
@@ -3461,6 +3534,36 @@ function renderSmGoodsTable() {
 
   const selectAll = $('#smSelectAll');
   if (selectAll) selectAll.checked = true;
+  syncSmSelectionCheckboxes();
+  setSmResultActionsEnabled(true);
+}
+
+function getSmSkuRowsForGroup(groupKey) {
+  const normalizedKey = String(groupKey || '');
+  return Array.from(smGoodsTableBody.querySelectorAll('.sm-sku-row'))
+    .filter(row => String(row.dataset.groupKey || '') === normalizedKey);
+}
+
+function syncSmSelectionCheckboxes() {
+  const skuChecks = Array.from(smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check'));
+  smGoodsTableBody.querySelectorAll('.sm-spu-row').forEach(row => {
+    const groupChecks = getSmSkuRowsForGroup(row.dataset.groupKey)
+      .map(skuRow => skuRow.querySelector('.sm-goods-check'))
+      .filter(Boolean);
+    const checkedCount = groupChecks.filter(checkbox => checkbox.checked).length;
+    const groupCheck = row.querySelector('.sm-spu-check');
+    if (groupCheck) {
+      groupCheck.checked = groupChecks.length > 0 && checkedCount === groupChecks.length;
+      groupCheck.indeterminate = checkedCount > 0 && checkedCount < groupChecks.length;
+    }
+  });
+
+  const selectAll = $('#smSelectAll');
+  if (selectAll) {
+    const checkedCount = skuChecks.filter(checkbox => checkbox.checked).length;
+    selectAll.checked = skuChecks.length > 0 && checkedCount === skuChecks.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < skuChecks.length;
+  }
 }
 
 function applySmQtyFilter() {
@@ -3496,17 +3599,19 @@ function applySmQtyFilter() {
 }
 
 function getSelectedSmSkus() {
-  const checks = smGoodsTableBody.querySelectorAll('.sm-goods-check');
-  const skus = [];
+  const checks = smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check');
+  const selectedIndexes = [];
   checks.forEach(cb => {
     if (cb.checked) {
-      const idx = parseInt(cb.dataset.idx);
-      if (smFilteredGoods[idx]) {
-        skus.push(smFilteredGoods[idx].sku);
-      }
+      selectedIndexes.push(Number.parseInt(cb.dataset.idx, 10));
     }
   });
-  return skus;
+  if (window.shopGoodsSelection?.collectUniqueSkuValues) {
+    return window.shopGoodsSelection.collectUniqueSkuValues(smFilteredGoods, selectedIndexes);
+  }
+  return [...new Set(selectedIndexes
+    .map(index => String(smFilteredGoods[index]?.sku || '').trim())
+    .filter(Boolean))];
 }
 
 // ========== 导出 TXT ==========

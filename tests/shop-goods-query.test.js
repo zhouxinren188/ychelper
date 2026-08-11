@@ -11,8 +11,10 @@ const {
   buildSkuListRequest,
   extractProductPage,
   extractSkuList,
+  filterGoodsByPriceRange,
   getProductId,
   getProductState,
+  isShopSffAuthenticationFailure,
   normalizeShopDateTime,
   queryProductPagesPageMajor
 } = require('../src/js/shopGoodsQuery');
@@ -51,6 +53,26 @@ assert.throws(
   () => buildShopSffRequestHeaders({ bodyText: '{}', h5st: 'x', dsmEid: 'eid', cookies: [] }),
   /Cookie 不完整/
 );
+
+const priceGoods = [
+  { sku: 'no-price', price: null },
+  { sku: 'invalid-price', price: 'not-a-number' },
+  { sku: 'zero', price: 0 },
+  { sku: 'ten', price: 10 },
+  { sku: 'twenty', price: '20' }
+];
+assert.deepStrictEqual(
+  filterGoodsByPriceRange(priceGoods, '10', '20').map(item => item.sku),
+  ['ten', 'twenty'],
+  '设置价格范围后，缺少有效价格的SKU不能绕过筛选'
+);
+assert.deepStrictEqual(
+  filterGoodsByPriceRange(priceGoods, '0', '').map(item => item.sku),
+  ['zero', 'ten', 'twenty']
+);
+assert.strictEqual(filterGoodsByPriceRange(priceGoods, '', '').length, priceGoods.length);
+assert.throws(() => filterGoodsByPriceRange(priceGoods, '20', '10'), /最低售价不能高于/);
+assert.throws(() => filterGoodsByPriceRange(priceGoods, '-1', ''), /有效数字/);
 
 assert.strictEqual(getProductState('在售'), '4');
 assert.strictEqual(getProductState('售卖中'), '4');
@@ -162,6 +184,10 @@ assert.deepStrictEqual(skus.items.map(item => item.skuId), skuIds);
 const risk = extractProductPage(JSON.stringify({ code: 601, msg: '风险校验失败' }));
 assert.strictEqual(risk.success, false);
 assert.strictEqual(risk.code, 601);
+assert.strictEqual(isShopSffAuthenticationFailure(risk), false);
+assert.strictEqual(isShopSffAuthenticationFailure({ code: 401, error: '请求失败' }), true);
+assert.strictEqual(isShopSffAuthenticationFailure({ code: 500, error: '登录状态已失效' }), true);
+assert.strictEqual(isShopSffAuthenticationFailure({ code: 312, error: '签名校验失败' }), false);
 
 async function testPageMajorFlow() {
   const calls = [];
@@ -205,6 +231,24 @@ async function testPageMajorFlow() {
   assert.deepStrictEqual(result.allProducts.map(item => item.productId), ['p1', 'p2', 'p3']);
   assert.strictEqual(result.skuMap.size, 3);
   assert.strictEqual(result.totalPages, 2);
+
+  const clampedPageCalls = [];
+  const clampedResult = await queryProductPagesPageMajor({
+    pageSize: 100,
+    fetchProductPage: async pageNum => {
+      clampedPageCalls.push(pageNum);
+      return {
+        totalCount: 120,
+        pageSize: 50,
+        items: [{ productId: `clamped-${pageNum}` }]
+      };
+    },
+    fetchSkuList: async productId => [{ skuId: `${productId}-sku` }]
+  });
+  assert.deepStrictEqual(clampedPageCalls, [1, 2, 3],
+    '服务端下调pageSize后必须按响应中的实际页大小查询完全部页');
+  assert.strictEqual(clampedResult.pageSize, 50);
+  assert.strictEqual(clampedResult.totalPages, 3);
 }
 
 testPageMajorFlow()

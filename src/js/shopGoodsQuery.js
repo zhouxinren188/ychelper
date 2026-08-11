@@ -8,6 +8,7 @@ const SKU_LIST_API = 'dsm.product.manage.SkuInfoReadViewService.querySkuList';
 const SHOP_REQUEST_RESPONSE_DELAY_MS = 300;
 const SKU_REQUEST_TIMEOUT_MS = 30000;
 const SHOP_REQUEST_COOKIE_NAMES = ['thor', 'flash'];
+const SHOP_AUTH_FAILURE_PATTERN = /(?:unauthori[sz]ed|forbidden|not[ _-]?login|login[ _-]?(?:expired|invalid)|未登录|请(?:先|重新)?登录|登录(?:状态|信息|会话)?(?:已)?(?:失效|过期|无效)|token[^\n]{0,24}(?:失效|过期|无效)|鉴权失败|认证失败)/i;
 
 function buildShopCookieHeader(cookies = []) {
   const selected = new Map();
@@ -193,6 +194,14 @@ function parseSffResponse(responseText) {
   return { success: true, code: 200, json };
 }
 
+function isShopSffAuthenticationFailure(parsed = {}) {
+  const code = Number(parsed.code ?? parsed.json?.code);
+  const message = String(
+    parsed.error || parsed.json?.msg || parsed.json?.message || ''
+  );
+  return code === 401 || code === 403 || SHOP_AUTH_FAILURE_PATTERN.test(message);
+}
+
 function extractProductPage(responseText) {
   const parsed = parseSffResponse(responseText);
   if (!parsed.success) return parsed;
@@ -243,6 +252,39 @@ function getProductId(product) {
   return String(product.productId || product.product_id || product.spuId || product.wareId || '');
 }
 
+function parseOptionalPrice(value, label) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return null;
+  const price = Number(text);
+  if (!Number.isFinite(price) || price < 0) {
+    throw new Error(`${label}必须是大于或等于0的有效数字`);
+  }
+  return price;
+}
+
+/**
+ * 价格筛选必须先于“每个 SPU 取 SKU”执行。
+ * 只要设置了任一价格边界，缺少有效价格的 SKU 就不能绕过筛选。
+ */
+function filterGoodsByPriceRange(goods, priceMin, priceMax) {
+  const min = parseOptionalPrice(priceMin, '最低售价');
+  const max = parseOptionalPrice(priceMax, '最高售价');
+  if (min != null && max != null && min > max) {
+    throw new Error('最低售价不能高于最高售价');
+  }
+
+  const source = Array.isArray(goods) ? goods : [];
+  if (min == null && max == null) return source.slice();
+
+  return source.filter(item => {
+    const rawPrice = item && item.price;
+    if (rawPrice == null || String(rawPrice).trim() === '') return false;
+    const price = Number(rawPrice);
+    if (!Number.isFinite(price)) return false;
+    return (min == null || price >= min) && (max == null || price <= max);
+  });
+}
+
 async function queryProductPagesPageMajor(options = {}) {
   const pageSize = Math.max(1, Number.parseInt(options.pageSize, 10) || 100);
   if (typeof options.fetchProductPage !== 'function' || typeof options.fetchSkuList !== 'function') {
@@ -258,6 +300,7 @@ async function queryProductPagesPageMajor(options = {}) {
   const skuMap = new Map();
   let totalCount = 0;
   let totalPages = 1;
+  let effectivePageSize = pageSize;
   let processedProducts = 0;
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -267,7 +310,10 @@ async function queryProductPagesPageMajor(options = {}) {
     }
     if (pageNum === 1) {
       totalCount = Math.max(0, Number(page.totalCount) || 0);
-      totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+      // 京东可能把请求的 pageSize 下调。必须以首屏响应中的实际分页大小计算，
+      // 否则请求 100、实际返回 50 时只会查询一半页数。
+      effectivePageSize = Math.max(1, Number.parseInt(page.pageSize, 10) || pageSize);
+      totalPages = Math.max(1, Math.ceil(totalCount / effectivePageSize));
     }
 
     allProducts.push(...page.items);
@@ -306,7 +352,7 @@ async function queryProductPagesPageMajor(options = {}) {
     processedProducts += page.items.length;
   }
 
-  return { allProducts, skuMap, totalCount, totalPages, processedProducts };
+  return { allProducts, skuMap, totalCount, totalPages, pageSize: effectivePageSize, processedProducts };
 }
 
 module.exports = {
@@ -322,8 +368,10 @@ module.exports = {
   buildSkuListRequest,
   extractProductPage,
   extractSkuList,
+  filterGoodsByPriceRange,
   getProductId,
   getProductState,
+  isShopSffAuthenticationFailure,
   normalizeShopDateTime,
   parseSffResponse,
   queryProductPagesPageMajor

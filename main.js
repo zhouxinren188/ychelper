@@ -33,7 +33,9 @@ const {
   buildSkuListRequest,
   extractProductPage,
   extractSkuList,
+  filterGoodsByPriceRange,
   getProductState,
+  isShopSffAuthenticationFailure,
   queryProductPagesPageMajor
 } = require('./src/js/shopGoodsQuery');
 const {
@@ -3024,6 +3026,9 @@ ipcMain.handle('save-shop-account', async (event, account) => {
 
 ipcMain.handle('delete-shop-account', async (event, id) => {
   assertAutomationAccess();
+  if (shopQueryInProgress && String(id || '') === activeShopAccountId) {
+    return { success: false, busy: true, error: '商品查询进行中，暂时不能删除当前店铺' };
+  }
   let list = storeGet('shopAccounts', []);
   const deletedAccount = list.find(a => a.id === id);
   if (!deletedAccount) return { success: false, error: '店铺账号不存在', list };
@@ -3619,6 +3624,9 @@ async function createShopLoginWindow() {
 
 ipcMain.handle('open-shop-login', async (event, cred) => {
   assertAutomationAccess();
+  if (shopQueryInProgress) {
+    return { success: false, busy: true, error: '商品查询进行中，请等待查询完成后再重新登录' };
+  }
   const accountId = String(cred?.id || '');
   const storedAccount = storeGet('shopAccounts', []).find(account => account.id === accountId);
   if (!storedAccount) {
@@ -3707,6 +3715,9 @@ ipcMain.handle('check-shop-accounts-status', async () => {
 // 切换店铺账号（尝试从 cookie 文件恢复，免登录）
 ipcMain.handle('switch-shop-account', async (event, account) => {
   assertAutomationAccess();
+  if (shopQueryInProgress) {
+    return { success: false, busy: true, error: '商品查询进行中，请等待查询完成后再切换店铺' };
+  }
   if (!account || !account.id) {
     return { success: false, error: '无效的店铺账号' };
   }
@@ -4391,6 +4402,7 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
     if (product.priceDetailVO && product.priceDetailVO.jdPrice != null) {
       price = parseFloat(product.priceDetailVO.jdPrice);
     }
+    if (!Number.isFinite(price)) price = null;
 
     let imageUrl = product.logo || '';
     if (imageUrl && !imageUrl.startsWith('http')) {
@@ -4399,10 +4411,15 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
 
     const productCode = String(product.productId || '');
     const expandedSkus = skuMap.get(productCode);
+    const productGoodsStart = allGoods.length;
 
     if (expandedSkus && expandedSkus.length > 0) {
       for (const skuItem of expandedSkus) {
         const skuId = getSkuItemId(skuItem);
+        if (!skuId) {
+          console.warn(`[店铺商品] 商品${productCode || '(缺少productId)'}返回了缺少skuId的记录，已跳过`);
+          continue;
+        }
         let skuPrice = price;
         const skuPriceVo = skuItem.priceDetailVO || skuItem.priceVo || skuItem.price || null;
         if (skuPriceVo && skuPriceVo.jdPrice != null) {
@@ -4412,6 +4429,7 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
         } else if (skuItem.price != null) {
           skuPrice = parseFloat(skuItem.price);
         }
+        if (!Number.isFinite(Number(skuPrice))) skuPrice = null;
         let skuListDate = listDate;
         if (skuItem.onlineTime) {
           const ot = skuItem.onlineTime;
@@ -4447,11 +4465,14 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
           image: imageUrl
         });
       }
-    } else {
-      let skuId = '';
-      if (product.productSkuInfoVO && product.productSkuInfoVO.skuId) {
-        skuId = String(product.productSkuInfoVO.skuId);
-      }
+      if (allGoods.length > productGoodsStart) continue;
+    }
+
+    let skuId = '';
+    if (product.productSkuInfoVO && product.productSkuInfoVO.skuId) {
+      skuId = String(product.productSkuInfoVO.skuId);
+    }
+    if (skuId) {
       allGoods.push({
         sku: skuId,
         productCode: productCode,
@@ -4460,6 +4481,8 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
         listDate: listDate,
         image: imageUrl
       });
+    } else {
+      console.warn(`[店铺商品] 商品${productCode || '(缺少productId)'}没有可用SKU编号，已跳过`);
     }
   }
 
@@ -4830,6 +4853,12 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     return { success: false, error: '已有查询任务在进行中，请等待完成' };
   }
   shopQueryInProgress = true;
+  const queryAccountId = activeShopAccountId;
+  const assertQueryAccountUnchanged = () => {
+    if (!queryAccountId || activeShopAccountId !== queryAccountId) {
+      throw new Error('查询期间店铺账号已发生变化，本次查询已停止');
+    }
+  };
   const emitProgress = progress => {
     try { onProgress(progress); } catch (error) {}
   };
@@ -4847,6 +4876,7 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
 
     const win = await ensureShopPageWindow({ show: false });
     await ensureShopGoodsPageReady(win);
+    assertQueryAccountUnchanged();
     emitProgress({ stage: 'preparing', message: '商品页已就绪，正在查询第1页…' });
 
     lastShopSffResponseFinishedAt = 0;
@@ -4857,18 +4887,21 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     const queryResult = await queryProductPagesPageMajor({
       pageSize: queryOptions.pageSize,
       fetchProductPage: async pageNum => {
+        assertQueryAccountUnchanged();
         const requestBody = pageNum === 1
           ? firstProductRequestBody
           : buildProductListRequest({ ...queryOptions, pageNum });
         const responseBody = await executeShopSffRequest(win, PRODUCT_LIST_API, requestBody);
         const page = extractProductPage(responseBody);
         if (!page.success) {
+          if (isShopSffAuthenticationFailure(page)) shopLoggedIn = false;
           logShopApiFailure(page, `商品列表第${pageNum}页`);
           throw new Error(formatShopApiError(page, `商品列表第${pageNum}页`));
         }
         return page;
       },
       fetchSkuList: async productId => {
+        assertQueryAccountUnchanged();
         const skuResponseBody = await executeShopSffRequest(
           win,
           SKU_LIST_API,
@@ -4877,6 +4910,7 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
         );
         const skuResult = extractSkuList(skuResponseBody);
         if (!skuResult.success) {
+          if (isShopSffAuthenticationFailure(skuResult)) shopLoggedIn = false;
           logShopApiFailure(skuResult, `商品${productId}的SKU查询`);
           throw new Error(formatShopApiError(skuResult, `商品${productId}的SKU查询`));
         }
@@ -4936,12 +4970,7 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
       return { success: false, error: parsed.error || '商品与SKU数据组合失败' };
     }
 
-    let goods = parsed.goods;
-    const pMin = params.priceMin ? Number.parseFloat(params.priceMin) : 0;
-    const pMax = params.priceMax ? Number.parseFloat(params.priceMax) : Infinity;
-    if (pMin > 0 || pMax < Infinity) {
-      goods = goods.filter(item => item.price == null || (item.price >= pMin && item.price <= pMax));
-    }
+    const goods = filterGoodsByPriceRange(parsed.goods, params.priceMin, params.priceMax);
 
     const message = `查询到${allProducts.length}个商品，完整展开为${goods.length}个SKU`;
     console.log(`[店铺商品] ${message}`);
@@ -4972,6 +5001,14 @@ ipcMain.handle('shop-query-goods', async (event, params) => {
   }
   if (!shopLoggedIn) {
     return { success: false, error: '店铺未登录，请先登录店铺后台', needLogin: true };
+  }
+  const requestedAccountId = String(params && params.accountId || '');
+  if (!requestedAccountId || requestedAccountId !== activeShopAccountId) {
+    return {
+      success: false,
+      error: '当前店铺与查询店铺不一致，请重新选择店铺后再查询',
+      needLogin: true
+    };
   }
 
   try {

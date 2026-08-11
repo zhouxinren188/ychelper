@@ -80,5 +80,20 @@
     return selected.filter(Boolean);
   }
 
-  return { groupGoodsByProduct, selectGoodsPerProduct };
+  function collectUniqueSkuValues(goods, indexes) {
+    const source = Array.isArray(goods) ? goods : [];
+    const selectedIndexes = Array.isArray(indexes) ? indexes : [];
+    const seen = new Set();
+    const skus = [];
+    for (const rawIndex of selectedIndexes) {
+      const index = Number.parseInt(rawIndex, 10);
+      const sku = String(source[index] && source[index].sku || '').trim();
+      if (!sku || seen.has(sku)) continue;
+      seen.add(sku);
+      skus.push(sku);
+    }
+    return skus;
+  }
+
+  return { collectUniqueSkuValues, groupGoodsByProduct, selectGoodsPerProduct };
 });
