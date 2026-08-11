@@ -139,7 +139,11 @@ async function main() {
   if (baselines.includes('1.0.66')) {
     const legacyUserAgent = `ychelper-release-verifier-${Date.now()}`;
     const bootstrapCheck = await expectResponse(`${BASE_URL}/api/update/check?version=1.0.66`, {
-      headers: { 'User-Agent': legacyUserAgent },
+      headers: {
+        'User-Agent': legacyUserAgent,
+        'If-None-Match': '"cached-legacy-check"',
+        'If-Modified-Since': new Date(0).toUTCString()
+      },
       cache: 'no-store'
     }, 200, 'v1.0.66 更新界面补丁检测');
     const bootstrapData = await bootstrapCheck.json();
@@ -148,7 +152,11 @@ async function main() {
       throw new Error('v1.0.66 未获得 1.0.66.1 更新界面补丁');
     }
     const bootstrapDownload = await expectResponse(`${BASE_URL}/api/update/download`, {
-      headers: { 'User-Agent': legacyUserAgent },
+      headers: {
+        'User-Agent': legacyUserAgent,
+        'If-None-Match': '"cached-legacy-download"',
+        'If-Modified-Since': new Date(0).toUTCString()
+      },
       cache: 'no-store'
     }, 200, 'v1.0.66 更新界面补丁下载');
     const bootstrapBuffer = Buffer.from(await bootstrapDownload.arrayBuffer());
@@ -197,7 +205,16 @@ async function main() {
     const baselineBlockBuffer = Buffer.from(await baselineBlockResponse.arrayBuffer());
     validateBlockmap(baselineBlockBuffer, baselineSize, `历史 blockmap v${baseline}`);
 
-    const check = await expectResponse(`${BASE_URL}/api/update/full-check?version=${encodeURIComponent(baseline)}`, { cache: 'no-store' }, 200, '跨版本更新检测');
+    const fullCheckOptions = baseline === '1.0.66'
+      ? {
+          cache: 'no-store',
+          headers: {
+            'If-None-Match': '"cached-legacy-full-check"',
+            'If-Modified-Since': new Date(0).toUTCString()
+          }
+        }
+      : { cache: 'no-store' };
+    const check = await expectResponse(`${BASE_URL}/api/update/full-check?version=${encodeURIComponent(baseline)}`, fullCheckOptions, 200, '跨版本更新检测');
     const data = await check.json();
     const legacyBridgeRequired = baseline === '1.0.66';
     const legacyFullFallbackDisabled = compareVersions(baseline, '1.0.67') < 0 && !legacyBridgeRequired;
