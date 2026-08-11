@@ -351,11 +351,11 @@
       left: 240px;
       transform: none;
       min-width: 0;
-      padding: 48px 42px;
+      padding: 48px 32px 24px;
       border-radius: 0;
       box-shadow: none;
       flex-direction: column;
-      justify-content: center;
+      justify-content: flex-start;
       gap: 14px;
     }
     body.update-mode .update-title {
@@ -365,7 +365,7 @@
     }
     body.update-mode .update-bar-wrap {
       width: 100%;
-      max-width: 300px;
+      max-width: 320px;
       height: 8px;
       min-height: 8px;
       max-height: 8px;
@@ -377,6 +377,9 @@
     }
     body.update-mode .update-changelog:not(:empty) {
       display: block;
+      max-width: 320px;
+      min-height: 126px;
+      max-height: 156px;
     }
 
     /* 全量更新安装确认弹窗 */

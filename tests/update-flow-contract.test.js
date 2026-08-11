@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
+const updateState = fs.readFileSync(path.join(root, 'src', 'js', 'updateDownloadState.js'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
@@ -25,6 +26,10 @@ assert.match(main, /autoUpdaterDownloadState\.handleProgress/);
 assert.match(main, /inspectDifferentialBase/);
 assert.match(main, /hasUsableDifferentialBase/);
 assert.match(main, /本机缺少 installer\.exe，跳过差分下载/);
+assert.match(updateState, /function repairDifferentialBaseFromPendingUpdateSync/,
+  '当前完整版本必须能通过 src 热修订在下一次完整更新前修复差分基础缓存');
+assert.match(updateState, /currentVersion = getRuntimeAppVersion\(\)/,
+  '旧主进程只传 cacheDir 时也必须能识别当前应用版本并执行缓存修复');
 assert.match(main, /mode:\s*normalizedProgress\.mode/);
 assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
@@ -41,6 +46,10 @@ assert.match(login, /class="update-changelog"/);
 assert.match(login, /document\.body\.classList\.add\('update-mode'\)/);
 assert.match(login, /body\.update-mode \.update-bar-wrap[\s\S]{0,220}flex:\s*0 0 8px/,
   '独立更新页的进度条必须保持为固定高度横线，不能被纵向 flex 拉伸');
+assert.match(login, /body\.update-mode \.update-overlay[\s\S]{0,320}justify-content:\s*flex-start/,
+  '独立更新页内容必须从上方开始布局，避免标题上方出现大面积空白');
+assert.match(login, /body\.update-mode \.update-changelog:not\(:empty\)[\s\S]{0,180}min-height:\s*126px[\s\S]{0,100}max-height:\s*156px/,
+  '更新说明区域必须提供足够的可视高度');
 assert.match(login, /data\.bytesPerSecond/);
 assert.match(login, /data\.etaSeconds/);
 assert.match(login, /if \(data\.mode\) details\.push\(data\.mode\)/);

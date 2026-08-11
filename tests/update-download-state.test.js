@@ -1,15 +1,19 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const {
   DIFFERENTIAL_FALLBACK_MESSAGE,
   DIFFERENTIAL_UPDATE_MODE,
   FULL_UPDATE_MODE,
   createUpdateDownloadState,
-  hasUsableDifferentialBase
+  getBlockmapInstallerSize,
+  hasUsableDifferentialBase,
+  repairDifferentialBaseFromPendingUpdate
 } = require('../src/js/updateDownloadState');
 
 const fallbackEvents = [];
@@ -67,16 +71,73 @@ assert.doesNotThrow(() => {
 });
 assert.strictEqual(callbackFailureState.getMode(), FULL_UPDATE_MODE);
 
-// 下载前预检：缓存缺失或空文件时直接使用完整包，只有非空 installer.exe 才尝试差分。
+// 下载前预检：installer.exe 必须和 current.blockmap 对应同一安装包。
 const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ychelper-update-state-'));
 try {
   assert.strictEqual(hasUsableDifferentialBase(cacheDir), false);
   fs.writeFileSync(path.join(cacheDir, 'installer.exe'), Buffer.alloc(0));
   assert.strictEqual(hasUsableDifferentialBase(cacheDir), false);
-  fs.writeFileSync(path.join(cacheDir, 'installer.exe'), Buffer.from('MZ-test-installer'));
+  const installer = Buffer.from('MZ-test-installer');
+  fs.writeFileSync(path.join(cacheDir, 'installer.exe'), installer);
+  fs.writeFileSync(path.join(cacheDir, 'current.blockmap'), zlib.gzipSync(JSON.stringify({
+    version: '2',
+    files: [{ name: 'file', offset: 0, sizes: [installer.length], checksums: ['test'] }]
+  })));
   assert.strictEqual(hasUsableDifferentialBase(cacheDir), true);
+  assert.strictEqual(getBlockmapInstallerSize(path.join(cacheDir, 'current.blockmap')), installer.length);
+  fs.writeFileSync(path.join(cacheDir, 'installer.exe'), Buffer.from('MZ-wrong-size'));
+  assert.strictEqual(hasUsableDifferentialBase(cacheDir), false);
 } finally {
   fs.rmSync(cacheDir, { recursive: true, force: true });
 }
 
-console.log('更新下载状态测试通过：已覆盖内部差分回退、进度重置兜底及单次通知');
+async function testDifferentialBaseRepair() {
+  const repairCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ychelper-update-repair-'));
+  const pendingDir = path.join(repairCacheDir, 'pending');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  const version = '1.0.76';
+  const fileName = `ychelper-setup-${version}.exe`;
+  const pendingInstaller = Buffer.from('MZ-current-version-installer');
+  const pendingBlockmap = zlib.gzipSync(JSON.stringify({
+    version: '2',
+    files: [{ name: 'file', offset: 0, sizes: [pendingInstaller.length], checksums: ['test'] }]
+  }));
+  const sha512 = crypto.createHash('sha512').update(pendingInstaller).digest('base64');
+
+  try {
+    fs.writeFileSync(path.join(pendingDir, fileName), pendingInstaller);
+    fs.writeFileSync(path.join(pendingDir, 'current.blockmap'), pendingBlockmap);
+    fs.writeFileSync(path.join(pendingDir, 'update-info.json'), JSON.stringify({ fileName, sha512 }));
+    const sameSizeStaleInstaller = Buffer.alloc(pendingInstaller.length, 0x61);
+    sameSizeStaleInstaller.write('MZ');
+    fs.writeFileSync(path.join(repairCacheDir, 'installer.exe'), sameSizeStaleInstaller);
+    fs.writeFileSync(path.join(repairCacheDir, 'current.blockmap'), pendingBlockmap);
+
+    assert.strictEqual(hasUsableDifferentialBase(repairCacheDir), true,
+      '没有运行时版本时只能确认尺寸配对，模拟旧客户端现状');
+    assert.strictEqual(hasUsableDifferentialBase(repairCacheDir, '1.0.75'), true,
+      'pending 属于其他版本时不能破坏现有尺寸配对缓存');
+    assert.strictEqual(hasUsableDifferentialBase(repairCacheDir, version), true);
+
+    // The asynchronous entry point used by newer clients must repair the same real-world mismatch.
+    fs.writeFileSync(path.join(repairCacheDir, 'installer.exe'), Buffer.from('MZ-stale-installer'));
+    fs.writeFileSync(path.join(repairCacheDir, 'current.blockmap'), pendingBlockmap);
+    const repaired = await repairDifferentialBaseFromPendingUpdate(repairCacheDir, version);
+    assert.strictEqual(repaired.repaired, true);
+    assert.deepStrictEqual(fs.readFileSync(path.join(repairCacheDir, 'installer.exe')), pendingInstaller);
+    assert.strictEqual(hasUsableDifferentialBase(repairCacheDir), true);
+
+    const unchanged = await repairDifferentialBaseFromPendingUpdate(repairCacheDir, version);
+    assert.strictEqual(unchanged.repaired, false);
+    assert.strictEqual(unchanged.reason, 'base-already-current');
+  } finally {
+    fs.rmSync(repairCacheDir, { recursive: true, force: true });
+  }
+}
+
+testDifferentialBaseRepair()
+  .then(() => console.log('更新下载状态测试通过：已覆盖差分回退、进度重置、缓存配对校验及自动修复'))
+  .catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
