@@ -169,7 +169,18 @@ async function main() {
     const bridgeSize = Number(((bridgeLatestYml.match(/^\s*size:\s*(\d+)$/m) || [])[1] || 0));
     if (bridgeVersion !== '1.0.66' || bridgePath !== 'api/update/file/ychelper-setup-1.0.66.exe'
       || !bridgeSha512 || bridgeSize <= 0) {
-      throw new Error('v1.0.66 未被单次保持在当前版本，无法安全切换到 full-check 桥接');
+      throw new Error('v1.0.66 未被保持在当前版本，无法安全切换到 full-check 桥接');
+    }
+    const repeatedBridgeLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?legacy-bridge-repeat=${Date.now()}`, {
+      headers: { 'User-Agent': 'electron-builder' },
+      cache: 'no-store'
+    }, 200, 'v1.0.66 重复请求定向桥接 latest.yml');
+    const repeatedBridgeLatestYml = await repeatedBridgeLatestResponse.text();
+    const repeatedBridgeVersion = ((repeatedBridgeLatestYml.match(/^version:\s*(.+)$/m) || [])[1] || '').trim();
+    const repeatedBridgePath = ((repeatedBridgeLatestYml.match(/^path:\s*(.+)$/m) || [])[1] || '').trim();
+    if (repeatedBridgeVersion !== '1.0.66'
+      || repeatedBridgePath !== 'api/update/file/ychelper-setup-1.0.66.exe') {
+      throw new Error('v1.0.66 桥接状态被首次 latest.yml 请求提前消耗');
     }
   }
 

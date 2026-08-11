@@ -64,6 +64,8 @@ assert.match(hotBuild, /必须基于当前完整版本/);
 assert.match(onlineVerifier, /function isValidChineseChangelog/);
 assert.match(onlineVerifier, /bootstrapData\.version !== '1\.0\.66\.1'/);
 assert.match(onlineVerifier, /bridgeVersion !== '1\.0\.66'/);
+assert.match(onlineVerifier, /legacy-bridge-repeat=/);
+assert.match(onlineVerifier, /repeatedBridgeVersion !== '1\.0\.66'/);
 assert.match(onlineVerifier, /data\.version !== '1\.0\.68'/);
 assert.match(onlineVerifier, /data\.bridge !== true/);
 assert.doesNotMatch(onlineVerifier, /changelog\.includes\('自动更新'\)/,
