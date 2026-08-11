@@ -502,12 +502,12 @@
 
     let credentialList = [];
     const HOT_UPDATE_VERSION = '                      '.trim();
-    const electronAPI = window.electronAPI || {};
+    const api = window.electronAPI || {};
 
     function callElectronApi(name, fallback) {
       try {
-        const result = typeof electronAPI[name] === 'function'
-          ? Promise.resolve(electronAPI[name]())
+        const result = typeof api[name] === 'function'
+          ? Promise.resolve(api[name]())
           : Promise.resolve(fallback);
         return result.catch(() => fallback);
       } catch (_) {

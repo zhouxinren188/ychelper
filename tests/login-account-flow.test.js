@@ -27,6 +27,8 @@ assert.match(loginHtml, /callElectronApi\('getAppVersion',[\s\S]{0,300}当前版
   '登录页必须隔离异常并显示当前软件版本号');
 assert.match(loginHtml, /callElectronApi\('getCredentials',[\s\S]{0,260}usernameInput\.value/,
   '版本接口失败不得阻断已保存账号和密码的恢复');
+assert.doesNotMatch(loginHtml, /\b(?:const|let|class)\s+electronAPI\b/,
+  '登录页不得声明与 contextBridge 注入对象 electronAPI 同名的全局词法变量');
 assert.doesNotMatch(loginHtml, /body\.update-mode \.login-app-version/,
   '进入更新模式后不得隐藏当前软件版本号');
 
@@ -103,7 +105,11 @@ async function verifyHotLoginRuntime() {
     const dom = new JSDOM(loginReadThroughAsar.toString('utf8'), {
       runScripts: 'dangerously',
       beforeParse(window) {
-        window.electronAPI = electronAPI;
+        Object.defineProperty(window, 'electronAPI', {
+          value: electronAPI,
+          configurable: false,
+          writable: false
+        });
       }
     });
     await new Promise(resolve => setImmediate(resolve));

@@ -66,6 +66,15 @@
 
 6. 任何发布步骤失败都应停止后续曝光；不得删除或覆盖已经上线的旧文件。修复后使用新的版本号重新构建发布。
 
+7. 登录页、更新页等使用 `contextBridge.exposeInMainWorld()` 的页面必须通过真实打包后的 Electron/Chromium 冒烟测试。页面脚本禁止用 `const`、`let` 或 `class` 再声明与 preload 注入对象相同的全局名称（例如 `electronAPI`）；Chromium 会因不可配置全局属性发生语法错误，导致整段脚本不执行。JSDOM 模拟测试不能单独作为通过依据；至少应验证版本号显示、已保存账号密码恢复、登录按钮事件和渲染进程无语法异常。
+
+## 2026-08-11 v1.0.77.1 登录页脚本失败复盘
+
+1. **现象**：用户从 v1.0.76.1 完整升级到 v1.0.77、再应用 v1.0.77.1 后，登录页仍只显示“当前版本”，保存过的账号和密码也没有回填。
+2. **根因**：登录页声明了 `const electronAPI = window.electronAPI || {}`，而 preload 已通过 `contextBridge` 注入不可配置的同名全局对象。真实 Chromium 抛出 `SyntaxError: Identifier 'electronAPI' has already been declared`，导致包含版本显示、凭据恢复和登录按钮绑定的整段内联脚本完全不执行。账号数据并未因此被删除。
+3. **测试遗漏**：原有 JSDOM 测试只给 `window.electronAPI` 赋普通可配置属性，无法复现 Electron `contextBridge` 的全局属性约束；即使 ASAR 长度、ZIP 哈希和 JSDOM DOM 断言都通过，也不能证明真实 Electron 页面能够解析执行。
+4. **修复与验收**：页面内部改用不冲突的局部变量名，并增加同名全局词法声明静态拦截；随后必须从真实打包程序启动登录页，通过 Chromium DevTools 协议确认版本号、保存凭据、强制重载后账号密码恢复以及无 `Runtime.exceptionThrown`。
+
 ## 1.0.66 旧客户端兼容桥接
 
 1. **不得宣称 1.0.66 可直接升级**：原始 v1.0.66 登录页缺少完整包下载完成事件监听，且其 `full-check` 曾被服务端禁用。仅验证 `latest.yml`、安装包和 blockmap 可访问，不能证明该版本能够完成安装。
