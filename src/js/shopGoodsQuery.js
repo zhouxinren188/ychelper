@@ -252,6 +252,91 @@ function getProductId(product) {
   return String(product.productId || product.product_id || product.spuId || product.wareId || '');
 }
 
+/**
+ * 快速打标的“商品名称”与京东商品列表保持一致，统一显示 SPU 标题。
+ * SKU 名称可能自带规格，saleAttrs 也只是 SKU 规格，不能拼进商品标题。
+ */
+function getShopGoodsDisplayName(product, skuItem) {
+  const productName = String(product && product.productName || '').trim();
+  if (productName) return productName;
+  return String(
+    skuItem && (skuItem.skuName || skuItem.sku_name || skuItem.name) || ''
+  ).trim();
+}
+
+/**
+ * SKU 子行保留 SKU 原始标题；当接口只返回 SPU 标题时，从 saleAttrs 补回规格选项。
+ * 该值只用于展开后的 SKU 行，不得替代 SPU 主标题。
+ */
+function getShopSkuDisplayName(product, skuItem) {
+  const productName = String(product && product.productName || '').trim();
+  const source = skuItem && typeof skuItem === 'object' ? skuItem : {};
+  const skuName = String(source.skuName || source.sku_name || source.name || '').trim();
+  if (skuName && skuName !== productName) return skuName;
+
+  const saleAttrs = source.saleAttrs || source.saleAttrList || source.attrs || source.specs;
+  const optionValues = Array.isArray(saleAttrs)
+    ? saleAttrs.map(attr => {
+        if (attr == null) return '';
+        if (typeof attr !== 'object') return String(attr).trim();
+        if (Array.isArray(attr.attrValueAlias) && attr.attrValueAlias.length > 0) {
+          return String(attr.attrValueAlias[0] || '').trim();
+        }
+        if (typeof attr.attrValueAlias === 'string') return attr.attrValueAlias.trim();
+        if (Array.isArray(attr.attrValues) && attr.attrValues.length > 0) {
+          return String(attr.attrValues[0] || '').trim();
+        }
+        return String(attr.attrValueName || attr.attrValue || attr.name || '').trim();
+      }).filter(Boolean)
+    : [];
+
+  const baseName = skuName || productName;
+  if (optionValues.length === 0) return baseName;
+  const optionText = `[${optionValues.join(', ')}]`;
+  return baseName ? `${baseName} ${optionText}` : optionText;
+}
+
+/**
+ * 商品状态优先使用商品列表响应中的 SPU 状态。
+ * “全部商品”查询没有可用回退值；只有查询明确限定 4/5 时才按筛选条件回退。
+ */
+function getShopProductStatus(product, fallbackProductState = null) {
+  const source = product && typeof product === 'object' ? product : {};
+  const textCandidates = [
+    source.productStateName,
+    source.productStatusName,
+    source.saleStatusName,
+    source.statusName,
+    source.productStateDesc,
+    source.productStatusDesc
+  ];
+
+  for (const candidate of textCandidates) {
+    const text = String(candidate == null ? '' : candidate).trim();
+    if (!text) continue;
+    if (text.includes('下架')) return '已下架';
+    if (text.includes('售卖') || text.includes('在售') || text.includes('上架')) return '售卖中';
+  }
+
+  const codeCandidates = [
+    source.productState,
+    source.productStatus,
+    source.saleStatus,
+    source.wareStatus,
+    source.status
+  ];
+  for (const candidate of codeCandidates) {
+    const code = String(candidate == null ? '' : candidate).trim();
+    if (code === '4') return '售卖中';
+    if (code === '5') return '已下架';
+  }
+
+  const fallback = String(fallbackProductState == null ? '' : fallbackProductState).trim();
+  if (fallback === '4' || fallback === '售卖中' || fallback === '在售') return '售卖中';
+  if (fallback === '5' || fallback === '已下架' || fallback === '下架') return '已下架';
+  return '未知';
+}
+
 function parseOptionalPrice(value, label) {
   const text = String(value == null ? '' : value).trim();
   if (!text) return null;
@@ -371,6 +456,9 @@ module.exports = {
   filterGoodsByPriceRange,
   getProductId,
   getProductState,
+  getShopGoodsDisplayName,
+  getShopProductStatus,
+  getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
   normalizeShopDateTime,
   parseSffResponse,

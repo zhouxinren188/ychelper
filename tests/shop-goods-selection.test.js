@@ -23,6 +23,17 @@ assert.match(renderer, /sm_goodsFirstQtyN/,
   'SKU前N个数量必须保存并在下次启动恢复');
 assert.match(renderer, /class="sm-spu-check"/,
   'SPU主行必须使用独立的整组勾选框，不能复用第一条SKU索引');
+assert(
+  indexHtml.indexOf('<th>状态</th>') > 0 &&
+  indexHtml.indexOf('<th>状态</th>') < indexHtml.indexOf('<th>操作日期</th>'),
+  '状态列必须位于操作日期前'
+);
+assert.match(renderer, /item\.skuName \|\| item\.name/,
+  '展开后的SKU标题必须优先显示SKU名称和规格选项');
+assert.match(renderer, /sm-status-badge is-on-sale/,
+  '售卖中商品必须显示状态徽标');
+assert.match(renderer, /sm-status-badge is-off-shelf/,
+  '已下架商品必须显示状态徽标');
 const selectedSkuFunction = renderer.slice(
   renderer.indexOf('function getSelectedSmSkus()'),
   renderer.indexOf('// ========== 导出 TXT ==========')

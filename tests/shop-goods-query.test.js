@@ -14,6 +14,9 @@ const {
   filterGoodsByPriceRange,
   getProductId,
   getProductState,
+  getShopGoodsDisplayName,
+  getShopProductStatus,
+  getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
   normalizeShopDateTime,
   queryProductPagesPageMajor
@@ -80,6 +83,53 @@ assert.strictEqual(getProductState('下架'), '5');
 assert.strictEqual(getProductState('已下架'), '5');
 assert.strictEqual(getProductState('全部商品'), null);
 assert.strictEqual(getProductState(''), '4');
+const officialProductTitle = '花卉数字油画diy填色新款手工填充油彩画丙烯涂色装饰画';
+assert.strictEqual(
+  getShopGoodsDisplayName(
+    { productName: officialProductTitle },
+    {
+      skuName: `${officialProductTitle} [2714, 30/40X内框+画笔+颜料]`,
+      saleAttrs: [{ attrValueAlias: ['2714'] }]
+    }
+  ),
+  officialProductTitle,
+  '商品名称必须显示SPU标题，不能拼接SKU规格'
+);
+assert.strictEqual(
+  getShopGoodsDisplayName({}, { skuName: '仅有SKU标题' }),
+  '仅有SKU标题',
+  'SPU标题缺失时才回退到SKU标题'
+);
+assert.strictEqual(
+  getShopSkuDisplayName(
+    { productName: officialProductTitle },
+    { skuName: officialProductTitle, saleAttrs: [
+      { attrValueAlias: ['2714'] },
+      { attrValueName: '30/40X内框+画笔+颜料' }
+    ] }
+  ),
+  `${officialProductTitle} [2714, 30/40X内框+画笔+颜料]`,
+  '展开后的SKU标题必须补回规格选项'
+);
+assert.strictEqual(
+  getShopSkuDisplayName(
+    { productName: officialProductTitle },
+    { skuName: `${officialProductTitle} [S181, 30*40CM内框]` }
+  ),
+  `${officialProductTitle} [S181, 30*40CM内框]`,
+  'SKU接口已经返回完整标题时不得重复拼接规格'
+);
+assert.strictEqual(getShopProductStatus({ productState: 4 }), '售卖中');
+assert.strictEqual(getShopProductStatus({ productState: '5' }), '已下架');
+assert.strictEqual(getShopProductStatus({ productStateName: '商品已下架' }, '4'), '已下架');
+assert.strictEqual(getShopProductStatus({ productStatusName: '正在售卖' }, '5'), '售卖中');
+assert.strictEqual(getShopProductStatus({}, '4'), '售卖中');
+assert.strictEqual(getShopProductStatus({}, '5'), '已下架');
+assert.strictEqual(
+  getShopProductStatus({}, null),
+  '未知',
+  '全部商品查询缺少实际状态字段时不能猜测为售卖中'
+);
 assert.strictEqual(normalizeShopDateTime('2026-04-14', false), '2026-04-14 00:00:00');
 assert.strictEqual(normalizeShopDateTime('2026-04-14', true), '2026-04-14 23:59:59');
 assert.strictEqual(normalizeShopDateTime('2026-04-14T08:05', false), '2026-04-14 08:05:00');

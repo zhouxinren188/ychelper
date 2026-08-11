@@ -35,6 +35,9 @@ const {
   extractSkuList,
   filterGoodsByPriceRange,
   getProductState,
+  getShopGoodsDisplayName,
+  getShopProductStatus,
+  getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
   queryProductPagesPageMajor
 } = require('./src/js/shopGoodsQuery');
@@ -4365,9 +4368,10 @@ async function injectRequestInterceptor(win, dateFrom, dateTo) {
  * 从 queryValidProductList 响应体解析商品数据
  * @param {string} responseBody - API 响应 JSON 字符串
  * @param {Map} skuMap - productId → SKU列表 的映射（可为空 Map）
+ * @param {string|null} fallbackProductState - 查询明确限定的商品状态（4/5），仅在响应缺字段时回退
  * @returns {Object} { success, goods, total } 或 { success: false, error }
  */
-function parseProductListResponse(responseBody, skuMap = new Map()) {
+function parseProductListResponse(responseBody, skuMap = new Map(), fallbackProductState = null) {
   let json;
   try {
     json = JSON.parse(responseBody);
@@ -4389,6 +4393,7 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
   const allGoods = [];
   for (const product of items) {
     const productName = product.productName || '';
+    const productStatus = getShopProductStatus(product, fallbackProductState);
     let listDate = '';
     if (product.onlineTime) {
       const ts = typeof product.onlineTime === 'number' ? product.onlineTime : parseInt(product.onlineTime);
@@ -4443,24 +4448,15 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
             }
           }
         }
-        let skuName = skuItem.skuName || skuItem.sku_name || skuItem.name || productName;
-        const saleAttrs = skuItem.saleAttrs || skuItem.saleAttrList || skuItem.attrs || skuItem.specs || null;
-        if (saleAttrs && Array.isArray(saleAttrs)) {
-          const attrs = saleAttrs.map(a => {
-            if (Array.isArray(a.attrValueAlias) && a.attrValueAlias.length > 0) return a.attrValueAlias[0];
-            if (typeof a.attrValueAlias === 'string' && a.attrValueAlias) return a.attrValueAlias;
-            if (Array.isArray(a.attrValues) && a.attrValues.length > 0) return a.attrValues[0];
-            return a.attrValueName || a.attrValue || a.name || '';
-          }).filter(Boolean);
-          if (attrs.length > 0 && !skuName.includes('[')) {
-            skuName = productName + ' [' + attrs.join(', ') + ']';
-          }
-        }
+        const displayName = getShopGoodsDisplayName(product, skuItem);
+        const skuDisplayName = getShopSkuDisplayName(product, skuItem);
         allGoods.push({
           sku: skuId,
           productCode: productCode,
-          name: skuName,
+          name: displayName,
+          skuName: skuDisplayName,
           price: skuPrice,
+          status: productStatus,
           listDate: skuListDate,
           image: imageUrl
         });
@@ -4473,11 +4469,14 @@ function parseProductListResponse(responseBody, skuMap = new Map()) {
       skuId = String(product.productSkuInfoVO.skuId);
     }
     if (skuId) {
+      const fallbackSkuItem = product.productSkuInfoVO || {};
       allGoods.push({
         sku: skuId,
         productCode: productCode,
-        name: productName,
+        name: getShopGoodsDisplayName(product, fallbackSkuItem),
+        skuName: getShopSkuDisplayName(product, fallbackSkuItem),
         price: price,
+        status: productStatus,
         listDate: listDate,
         image: imageUrl
       });
@@ -4965,7 +4964,7 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     const { allProducts, skuMap } = queryResult;
 
     const combinedResponse = JSON.stringify({ code: 200, data: { data: allProducts } });
-    const parsed = parseProductListResponse(combinedResponse, skuMap);
+    const parsed = parseProductListResponse(combinedResponse, skuMap, queryOptions.productState);
     if (!parsed.success) {
       return { success: false, error: parsed.error || '商品与SKU数据组合失败' };
     }

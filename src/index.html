@@ -516,27 +516,54 @@
           </div>
 
           <!-- 商品列表表格 -->
-          <div class="ao-table-section">
-            <div class="ao-table-header">
-              <span>商品列表</span>
-              <span class="wms-order-count" id="smGoodsCount"></span>
+          <div class="ao-table-section sm-product-panel">
+            <div class="ao-table-header sm-product-panel-header">
+              <div class="sm-product-panel-title">
+                <span>
+                  <strong>商品列表</strong>
+                  <small>按商品分组，可展开选择具体 SKU</small>
+                </span>
+              </div>
+              <div class="sm-product-panel-summary">
+                <span class="sm-selection-count" id="smSelectedCount">已选 0</span>
+                <span class="wms-order-count" id="smGoodsCount"></span>
+              </div>
             </div>
-            <div class="ao-table-wrapper">
-              <table class="ao-table">
+            <div class="ao-table-wrapper sm-product-table-wrapper">
+              <table class="ao-table sm-product-table">
+                <colgroup>
+                  <col class="sm-col-check" />
+                  <col class="sm-col-index" />
+                  <col class="sm-col-image" />
+                  <col class="sm-col-title" />
+                  <col class="sm-col-price" />
+                  <col class="sm-col-status" />
+                  <col class="sm-col-date" />
+                </colgroup>
                 <thead>
                   <tr>
-                    <th style="width:32px"><input type="checkbox" id="smSelectAll" /></th>
-                    <th style="width:42px">序号</th>
-                    <th>商品编码</th>
-                    <th>SKU编号</th>
-                    <th style="width:52px">主图</th>
-                    <th>商品名称</th>
-                    <th style="width:80px">售价</th>
-                    <th style="width:100px">上架日期</th>
+                    <th><input type="checkbox" id="smSelectAll" aria-label="全选所有SKU" /></th>
+                    <th>序号</th>
+                    <th>主图</th>
+                    <th>商品信息</th>
+                    <th>售价</th>
+                    <th>状态</th>
+                    <th>操作日期</th>
                   </tr>
                 </thead>
                 <tbody id="smGoodsTableBody">
-                  <tr class="wms-empty-row"><td colspan="8" class="wms-empty-state">请先登录店铺并查询商品</td></tr>
+                  <tr class="wms-empty-row sm-empty-row">
+                    <td colspan="7" class="wms-empty-state sm-product-empty-state">
+                      <span class="sm-empty-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M4.5 7.5 12 3l7.5 4.5v9L12 21l-7.5-4.5z" />
+                          <path d="M4.8 7.7 12 12l7.2-4.3M12 12v9" />
+                        </svg>
+                      </span>
+                      <strong>还没有商品数据</strong>
+                      <span>选择已登录店铺并查询后，商品会按 SPU 分组展示</span>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>

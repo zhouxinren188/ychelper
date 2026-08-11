@@ -2443,6 +2443,7 @@ const smShopSelect = $('#smShopSelect');
 const smLogBox = $('#smLogBox');
 const smGoodsTableBody = $('#smGoodsTableBody');
 const smGoodsCount = $('#smGoodsCount');
+const smSelectedCount = $('#smSelectedCount');
 const smStatusDot = $('#smStatusTag');
 const smShopSelectTrigger = $('#smShopSelectTrigger');
 const smShopSelectText = $('#smShopSelectText');
@@ -3415,10 +3416,36 @@ async function handleSmQuery() {
   }
 }
 
+function getSmStatusBadgeMarkup(status) {
+  if (status === '售卖中') {
+    return '<span class="sm-status-badge is-on-sale"><span class="sm-status-dot" aria-hidden="true"></span>售卖中</span>';
+  }
+  if (status === '已下架') {
+    return '<span class="sm-status-badge is-off-shelf"><span class="sm-status-dot" aria-hidden="true"></span>已下架</span>';
+  }
+  return '<span class="sm-status-badge is-unknown"><span class="sm-status-dot" aria-hidden="true"></span>未知</span>';
+}
+
 function renderSmGoodsTable() {
   if (smFilteredGoods.length === 0) {
-    smGoodsTableBody.innerHTML = '<tr class="wms-empty-row"><td colspan="8" class="wms-empty-state">暂无数据</td></tr>';
+    smGoodsTableBody.innerHTML = `
+      <tr class="wms-empty-row sm-empty-row">
+        <td colspan="7" class="wms-empty-state sm-product-empty-state">
+          <span class="sm-empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4.5 7.5 12 3l7.5 4.5v9L12 21l-7.5-4.5z"></path>
+              <path d="M4.8 7.7 12 12l7.2-4.3M12 12v9"></path>
+            </svg>
+          </span>
+          <strong>没有符合条件的商品</strong>
+          <span>可以调整时间、售价或商品状态后重新查询</span>
+        </td>
+      </tr>`;
     smGoodsCount.classList.remove('visible');
+    if (smSelectedCount) {
+      smSelectedCount.textContent = '已选 0';
+      smSelectedCount.classList.remove('has-selection');
+    }
     const selectAll = $('#smSelectAll');
     if (selectAll) {
       selectAll.checked = false;
@@ -3443,7 +3470,7 @@ function renderSmGoodsTable() {
     groupMap.get(groupKey).items.push({ ...item, originalIdx: idx });
   });
 
-  smGoodsCount.textContent = `${smFilteredGoods.length} 个`;
+  smGoodsCount.textContent = `${groups.length} SPU · ${smFilteredGoods.length} SKU`;
   smGoodsCount.classList.add('visible');
 
   smGoodsTableBody.innerHTML = '';
@@ -3469,37 +3496,51 @@ function renderSmGoodsTable() {
     // 主行（SPU 行）
     const mainTr = document.createElement('tr');
     mainTr.className = 'sm-spu-row';
-    mainTr.style.cursor = 'pointer';
     mainTr.dataset.spu = group.productCode;
     mainTr.dataset.groupKey = group.groupKey;
+    mainTr.setAttribute('aria-expanded', 'false');
     mainTr.innerHTML = `
-      <td><input type="checkbox" class="sm-spu-check" aria-label="选择该商品的全部SKU" checked /></td>
-      <td>${spuSeq}</td>
-      <td><b>${escapeHtml(group.productCode)}</b> <span class="sm-sku-toggle" style="color:#2d7be0;font-size:12px;margin-left:6px;">▶ ${skuCount}个SKU</span></td>
-      <td></td>
-      <td>${firstItem.image ? `<span class="sm-thumb-wrap"><img class="sm-thumb" src="${escapeHtml(firstItem.image)}" /><img class="sm-thumb-zoom" src="${escapeHtml(firstItem.image)}" /></span>` : ''}</td>
-      <td title="${escapeHtml(firstItem.name || '')}">${escapeHtml(firstItem.name || '')}</td>
-      <td>${priceDisplay}</td>
-      <td>${escapeHtml(firstItem.listDate || '')}</td>
+      <td><span class="sm-check-wrap"><input type="checkbox" class="sm-spu-check" aria-label="选择该商品的全部SKU" checked /></span></td>
+      <td><span class="sm-index-badge">${spuSeq}</span></td>
+      <td>${firstItem.image
+        ? `<span class="sm-thumb-wrap"><img class="sm-thumb" src="${escapeHtml(firstItem.image)}" alt="" /><img class="sm-thumb-zoom" src="${escapeHtml(firstItem.image)}" alt="" /></span>`
+        : `<span class="sm-thumb-placeholder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 16 4.2-4.2 3 3L14 12l6 6"></path><circle cx="15.5" cy="7.5" r="2"></circle><rect x="3" y="3" width="18" height="18" rx="4"></rect></svg></span>`}
+      </td>
+      <td>
+        <div class="sm-title-cell" title="${escapeHtml(firstItem.name || '')}">
+          <strong class="sm-product-title">${escapeHtml(firstItem.name || '未命名商品')}</strong>
+          <span class="sm-product-subtitle sm-spu-subtitle">SPU：${escapeHtml(group.productCode || '暂无编码')} · 共 ${skuCount} 个 SKU</span>
+        </div>
+      </td>
+      <td>${priceDisplay ? `<span class="sm-price-value">${priceDisplay}</span>` : '<span class="sm-cell-empty">—</span>'}</td>
+      <td>${getSmStatusBadgeMarkup(firstItem.status)}</td>
+      <td><span class="sm-date-value">${escapeHtml(firstItem.listDate || '—')}</span></td>
     `;
     smGoodsTableBody.appendChild(mainTr);
 
     // SKU 子行
     group.items.forEach((item, subIdx) => {
+      const skuDisplayName = item.skuName || item.name || '未命名商品';
       const subTr = document.createElement('tr');
       subTr.className = 'sm-sku-row';
       subTr.style.display = 'none';
       subTr.dataset.spuSku = group.productCode;
       subTr.dataset.groupKey = group.groupKey;
       subTr.innerHTML = `
-        <td><input type="checkbox" class="sm-goods-check" data-idx="${item.originalIdx}" checked /></td>
-        <td>${spuSeq}-${subIdx + 1}</td>
-        <td>${escapeHtml(item.productCode || '')}</td>
-        <td>${escapeHtml(item.sku || '')}</td>
-        <td></td>
-        <td title="${escapeHtml(item.name || '')}">└─ ${escapeHtml(item.name || '')}</td>
-        <td>${item.price != null ? '¥' + item.price : ''}</td>
-        <td>${escapeHtml(item.listDate || '')}</td>
+        <td><span class="sm-check-wrap"><input type="checkbox" class="sm-goods-check" data-idx="${item.originalIdx}" aria-label="选择SKU ${escapeHtml(item.sku || '')}" checked /></span></td>
+        <td><span class="sm-sku-index">${spuSeq}.${subIdx + 1}</span></td>
+        <td><span class="sm-hierarchy-line" aria-hidden="true"></span></td>
+        <td>
+          <div class="sm-title-cell sm-sku-title-cell" title="${escapeHtml(skuDisplayName)}">
+            <span class="sm-sku-title">${escapeHtml(skuDisplayName)}</span>
+            <span class="sm-product-meta-row">
+              <span class="sm-sku-code">SKU：${escapeHtml(item.sku || '暂无编号')}</span>
+            </span>
+          </div>
+        </td>
+        <td>${item.price != null ? `<span class="sm-price-value is-sku">¥${escapeHtml(item.price)}</span>` : '<span class="sm-cell-empty">—</span>'}</td>
+        <td>${getSmStatusBadgeMarkup(item.status)}</td>
+        <td><span class="sm-date-value">${escapeHtml(item.listDate || '—')}</span></td>
       `;
       smGoodsTableBody.appendChild(subTr);
     });
@@ -3510,14 +3551,12 @@ function renderSmGoodsTable() {
     row.addEventListener('click', (e) => {
       if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') return;
       const skuRows = getSmSkuRowsForGroup(row.dataset.groupKey);
-      const toggleEl = row.querySelector('.sm-sku-toggle');
       const isHidden = skuRows.length > 0 && skuRows[0].style.display === 'none';
       skuRows.forEach(r => {
         r.style.display = isHidden ? '' : 'none';
       });
-      if (toggleEl) {
-        toggleEl.textContent = isHidden ? `▼ ${skuRows.length}个SKU` : `▶ ${skuRows.length}个SKU`;
-      }
+      row.classList.toggle('is-expanded', isHidden);
+      row.setAttribute('aria-expanded', String(isHidden));
     });
   });
 
@@ -3556,6 +3595,12 @@ function syncSmSelectionCheckboxes() {
       groupCheck.checked = groupChecks.length > 0 && checkedCount === groupChecks.length;
       groupCheck.indeterminate = checkedCount > 0 && checkedCount < groupChecks.length;
     }
+    row.classList.toggle('is-unselected', checkedCount === 0);
+    row.classList.toggle('is-partial', checkedCount > 0 && checkedCount < groupChecks.length);
+    getSmSkuRowsForGroup(row.dataset.groupKey).forEach(skuRow => {
+      const skuCheck = skuRow.querySelector('.sm-goods-check');
+      skuRow.classList.toggle('is-unselected', !skuCheck || !skuCheck.checked);
+    });
   });
 
   const selectAll = $('#smSelectAll');
@@ -3563,6 +3608,10 @@ function syncSmSelectionCheckboxes() {
     const checkedCount = skuChecks.filter(checkbox => checkbox.checked).length;
     selectAll.checked = skuChecks.length > 0 && checkedCount === skuChecks.length;
     selectAll.indeterminate = checkedCount > 0 && checkedCount < skuChecks.length;
+    if (smSelectedCount) {
+      smSelectedCount.textContent = `已选 ${checkedCount}`;
+      smSelectedCount.classList.toggle('has-selection', checkedCount > 0);
+    }
   }
 }
 
