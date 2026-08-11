@@ -1341,16 +1341,6 @@ body {
   border-color: #e67e22;
 }
 
-/* ao-btn 禁用状态 */
-.ao-btn:disabled {
-  background: #b0c4de;
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-.ao-btn:disabled:hover {
-  background: #b0c4de;
-}
-
 /* 中等弹窗 */
 .modal-md { width: 450px; }
 
@@ -2003,27 +1993,6 @@ body {
   border-radius: 4px;
   overflow: hidden;
 }
-.ao-btn {
-  height: 34px;
-  min-width: 76px;
-  padding: 0 16px;
-  font-size: 13px;
-  font-weight: bold;
-  border: none;
-  border-right: 1px solid #fff;
-  background: #4a9de0;
-  color: #fff;
-  cursor: pointer;
-  transition: background 0.15s;
-  border-radius: 0;
-}
-.ao-btn:last-child {
-  border-right: none;
-}
-.ao-btn:hover {
-  background: #3b8cca;
-}
-
 /* 操作列蓝色文字按钮 */
 .ao-action-link {
   color: #3498db;
@@ -2397,41 +2366,6 @@ body {
 .sku-field input {
   flex: 1;
   min-width: 0;
-}
-
-/* ao 按钮组 */
-.ao-action-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.ao-btn {
-  padding: 6px 16px;
-  font-size: 13px;
-  border: 1px solid #d9d9d9;
-  background: #fff;
-  color: #333;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.ao-btn:hover {
-  border-color: #e67e22;
-  color: #e67e22;
-}
-.ao-btn-reset {
-  background: #f5f5f5;
-  color: #666;
-}
-.ao-btn-batch {
-  background: #e67e22;
-  color: #fff;
-  border-color: #e67e22;
-}
-.ao-btn-batch:hover {
-  background: #d35400;
-  color: #fff;
-  border-color: #d35400;
 }
 
 /* 店铺商品操作按钮组 */
