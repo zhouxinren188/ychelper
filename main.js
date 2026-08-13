@@ -76,8 +76,8 @@ process.stderr.on('error', (err) => { if (err.code === 'EPIPE') return; throw er
 const API_BASE_URL = 'http://150.158.54.108:3000';
 const APP_KEY = 'ychelper-client';
 const APP_SECRET = 'ychelper_s3cret_k3y_2024_change_this'; // 需与服务端一致
-// 云仓助手开放服务的正式 HTTPS 地址由服务器主线部署时确认。保持空值不会发起任务网络请求。
-const CLOUD_ORDER_SERVICE_BASE_URL = '';
+// 云仓助手订单执行端仅连接固定的正式 HTTPS origin；协议层继续限制请求路径和 TLS。
+const CLOUD_ORDER_SERVICE_BASE_URL = 'https://150.158.54.108:3443';
 const MAX_UPDATE_METADATA_SIZE = 1024 * 1024;
 const MAX_HOT_UPDATE_SIZE = 50 * 1024 * 1024;
 const MAX_FULL_UPDATE_SIZE = 250 * 1024 * 1024;

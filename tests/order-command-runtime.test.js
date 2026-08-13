@@ -63,7 +63,11 @@ assert.match(mainSource, /ipcMain\.handle\('get-machine-code'/);
 assert.match(mainSource, /ipcMain\.handle\('generate-machine-code'/);
 assert.match(mainSource, /ipcMain\.handle\('get-order-command-status'/);
 assert.doesNotMatch(mainSource, /ipcMain\.handle\('enroll-order-executor'/);
-assert.match(mainSource, /const CLOUD_ORDER_SERVICE_BASE_URL = ''/);
+assert.match(
+  mainSource,
+  /const CLOUD_ORDER_SERVICE_BASE_URL = 'https:\/\/150\.158\.54\.108:3443'/,
+  '订单执行端必须固定连接受信任 HTTPS 服务，不得保持禁用或使用动态地址'
+);
 assert.match(mainSource, /new OrderControlPlaneClient\(/);
 assert.match(mainSource, /new OrderControlPlaneRunner\(/);
 assert.match(mainSource, /new OrderControlPlaneWorker\(/);

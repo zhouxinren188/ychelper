@@ -79,9 +79,11 @@ const NOW = Date.parse('2026-08-13T00:00:00.000Z');
   );
 
   let destroyedWith = '';
+  let requestOptions = null;
   const cancellableTransport = createHttpsJsonTransport({
     baseUrl: 'https://central.example.com',
-    requestImpl: () => {
+    requestImpl: (_target, options) => {
+      requestOptions = options;
       const request = new EventEmitter();
       request.end = () => {};
       request.destroy = error => {
@@ -100,6 +102,8 @@ const NOW = Date.parse('2026-08-13T00:00:00.000Z');
   transportAbortController.abort();
   await assert.rejects(cancelledRequest, error => error && error.code === 'request_aborted');
   assert.strictEqual(destroyedWith, 'request_aborted');
+  assert.strictEqual(requestOptions.rejectUnauthorized, true,
+    '订单服务 HTTPS 请求必须显式启用严格证书校验');
 
   console.log('Simple command service client tests passed');
 })().catch(error => {

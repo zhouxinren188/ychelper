@@ -106,7 +106,12 @@ function createHttpsJsonTransport(options = {}) {
     };
     if (signal) signal.addEventListener('abort', abortRequest, { once: true });
 
-    request = requestImpl(target, { method: 'POST', headers, timeout: timeoutMs }, response => {
+    request = requestImpl(target, {
+      method: 'POST',
+      headers,
+      timeout: timeoutMs,
+      rejectUnauthorized: true
+    }, response => {
       const chunks = [];
       let received = 0;
       response.on('data', chunk => {
