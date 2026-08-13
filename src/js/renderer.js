@@ -57,6 +57,7 @@ const logBox = $('#logBox');
   await loadModes();
   await loadSubscriptionInfo();
   initNavigation();
+  await initMachineCodeModule();
   initEventListeners();
   initSubscriptionListeners();
   initSmModule();
@@ -143,6 +144,158 @@ function initNavigation() {
       $(`#page-${page}`).classList.add('active');
     });
   });
+}
+
+// ========== 机器码 ==========
+async function initMachineCodeModule() {
+  const valueEl = $('#machineCodeValue');
+  const copyBtn = $('#machineCodeCopyBtn');
+  const emptyStateEl = $('#machineCodeEmptyState');
+  const generatedStateEl = $('#machineCodeGeneratedState');
+  const generateBtn = $('#machineCodeGenerateBtn');
+  const feedbackEl = $('#machineCodeCopyFeedback');
+  const transportEl = $('#machineTransportStatus');
+  const capabilitySummaryEl = $('#machineCapabilitySummary');
+  const capabilityListEl = $('#machineCapabilityList');
+  if (!valueEl || !copyBtn || !emptyStateEl || !generatedStateEl || !generateBtn) return;
+
+  let currentMachineCode = '';
+
+  const showPendingState = () => {
+    currentMachineCode = '';
+    valueEl.textContent = '';
+    valueEl.classList.remove('machine-code-value-error');
+    emptyStateEl.hidden = false;
+    generatedStateEl.hidden = true;
+    generateBtn.disabled = false;
+    copyBtn.disabled = true;
+  };
+
+  const showGeneratedState = machineCode => {
+    currentMachineCode = machineCode;
+    valueEl.textContent = machineCode;
+    valueEl.classList.remove('machine-code-value-error');
+    emptyStateEl.hidden = true;
+    generatedStateEl.hidden = false;
+    copyBtn.disabled = false;
+  };
+
+  const renderExecutionStatus = statusResult => {
+    if (!statusResult || statusResult.success !== true) {
+      transportEl.textContent = '本机执行端不可用';
+      transportEl.className = 'status-error';
+      capabilitySummaryEl.textContent = statusResult?.error || '状态读取失败';
+      capabilitySummaryEl.className = 'status-error';
+      capabilityListEl.replaceChildren();
+      return;
+    }
+
+    const transportEnabled = statusResult.transport?.enabled === true;
+    const machineCodeGenerated = statusResult.generated === true;
+    const controlPlaneConfigured = statusResult.control_plane?.configured === true;
+    const executorAuthenticated = statusResult.control_plane?.authenticated === true;
+    transportEl.textContent = statusResult.online === true
+      ? '在线，正在等待指令'
+      : transportEnabled
+      ? '正在连接云仓助手服务'
+      : machineCodeGenerated
+      ? controlPlaneConfigured && !executorAuthenticated
+        ? '云仓助手登录会话不可用'
+        : '服务接口尚未启用'
+      : '未启用（尚未生成机器码）';
+    transportEl.className = statusResult.online === true ? 'status-ok' : 'status-muted';
+
+    const capabilities = Array.isArray(statusResult.capabilities) ? statusResult.capabilities : [];
+    const enabledCount = capabilities.filter(item => item.enabled === true).length;
+    capabilitySummaryEl.textContent = `${enabledCount}/${capabilities.length} 已启用`;
+    capabilitySummaryEl.className = enabledCount > 0 ? 'status-ok' : 'status-muted';
+
+    capabilityListEl.replaceChildren();
+    capabilities.forEach(capability => {
+      const item = document.createElement('li');
+      const command = document.createElement('code');
+      const state = document.createElement('span');
+      command.textContent = capability.command;
+      state.textContent = capability.enabled ? '已启用' : '未接入';
+      state.className = capability.enabled ? 'capability-enabled' : 'capability-disabled';
+      item.append(command, state);
+      capabilityListEl.appendChild(item);
+    });
+  };
+
+  const copyMachineCode = async () => {
+    if (!currentMachineCode) return;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(currentMachineCode);
+      } else {
+        const input = document.createElement('textarea');
+        input.value = currentMachineCode;
+        input.setAttribute('readonly', '');
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand('copy');
+        input.remove();
+        if (!copied) throw new Error('系统剪贴板不可用');
+      }
+      feedbackEl.textContent = '已复制到剪贴板';
+      feedbackEl.className = 'machine-code-copy-feedback success';
+    } catch (error) {
+      feedbackEl.textContent = `复制失败：${error.message}`;
+      feedbackEl.className = 'machine-code-copy-feedback error';
+    }
+  };
+  copyBtn.addEventListener('click', copyMachineCode);
+
+  generateBtn.addEventListener('click', async () => {
+    generateBtn.disabled = true;
+    generateBtn.textContent = '正在生成...';
+    feedbackEl.textContent = '正在读取本机主板和系统设备信息，请稍候...';
+    feedbackEl.className = 'machine-code-copy-feedback';
+    try {
+      const machineResult = await window.electronAPI.generateMachineCode();
+      if (!machineResult || machineResult.success !== true || !machineResult.machine_code) {
+        throw new Error(machineResult?.error || '机器码生成失败');
+      }
+      showGeneratedState(machineResult.machine_code);
+      feedbackEl.textContent = '机器码已生成并安全保存在本机';
+      feedbackEl.className = 'machine-code-copy-feedback success';
+      renderExecutionStatus(await window.electronAPI.getOrderCommandStatus());
+    } catch (error) {
+      showPendingState();
+      feedbackEl.textContent = `生成失败：${error.message}`;
+      feedbackEl.className = 'machine-code-copy-feedback error';
+    } finally {
+      generateBtn.textContent = '生成机器码';
+      if (!currentMachineCode) generateBtn.disabled = false;
+    }
+  });
+
+  try {
+    const [machineResult, statusResult] = await Promise.all([
+      window.electronAPI.getMachineCode(),
+      window.electronAPI.getOrderCommandStatus()
+    ]);
+
+    if (!machineResult || machineResult.success !== true) {
+      throw new Error(machineResult?.error || '机器码读取失败');
+    }
+    if (machineResult.generated === true && machineResult.machine_code) {
+      showGeneratedState(machineResult.machine_code);
+    } else {
+      showPendingState();
+    }
+    renderExecutionStatus(statusResult);
+  } catch (error) {
+    showPendingState();
+    generateBtn.disabled = true;
+    feedbackEl.textContent = error.message;
+    feedbackEl.className = 'machine-code-copy-feedback error';
+    if (transportEl) transportEl.textContent = '本机执行端不可用';
+    if (capabilitySummaryEl) capabilitySummaryEl.textContent = '0/5 已启用';
+  }
 }
 
 // ========== 事件绑定 ==========
