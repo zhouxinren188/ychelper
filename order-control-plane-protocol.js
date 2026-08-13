@@ -139,7 +139,18 @@ function validateWaitResponse(response, expectedMachineCode, nowMs = Date.now())
 
 function prepareExecutorResponse(response, machineCode) {
   assertPlainObject(response, 'executor response');
+  const command = assertString(response.command, 'command', { maxLength: 128 });
+  if (!COMMAND_DEFINITIONS[command]) {
+    throw new ControlPlaneProtocolError('invalid_response', 'command is not in the fixed allowlist');
+  }
   const sanitized = sanitizeResult(response);
+  // `sanitizeResult` intentionally redacts nested keys named `command` because
+  // arbitrary command-shaped data must never become an execution entry point.
+  // The top-level field is different: it is the fixed protocol discriminator
+  // emitted by our executor and required by the server to bind the result to
+  // the dispatched task. Restore only this allowlisted envelope field after
+  // sanitizing the rest of the response.
+  sanitized.command = command;
   sanitized.executor = { machine_code: assertMachineCode(machineCode) };
   delete sanitized.device_id;
   delete sanitized.executor_instance_id;

@@ -65,6 +65,8 @@ const NOW = Date.parse('2026-08-13T00:00:00.000Z');
     executor: { machine_code: MACHINE_CODE },
     completed_at: '2026-08-13T00:00:01.000Z'
   });
+  const resultCall = calls.find(call => call.path.endsWith('/result'));
+  assert.strictEqual(resultCall.body.response.command, 'exception.order.check');
 
   const unauthenticated = new OrderControlPlaneClient({
     baseUrl: 'https://central.example.com',

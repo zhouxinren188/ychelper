@@ -70,14 +70,28 @@ const resultBody = buildResultRequest({
     reason: 'query_completed',
     message: '',
     delivery: { received: true, executed: true, replayed: false, receipt_id: 'receipt-001', business_confirmed: true },
-    result: {},
+    result: {
+      exception_count: 1,
+      diagnostic: { command: 'must-not-be-forwarded' }
+    },
     verification: null,
     executor: { machine_code: MACHINE_CODE },
     completed_at: '2026-08-13T00:00:01.000Z'
   }
 });
 assert.deepStrictEqual(resultBody.response.executor, { machine_code: MACHINE_CODE });
+assert.strictEqual(resultBody.response.command, 'exception.order.check');
+assert.strictEqual(resultBody.response.result.exception_count, 1);
+assert.strictEqual(resultBody.response.result.diagnostic.command, '[REDACTED]');
 assert.strictEqual(JSON.stringify(resultBody).includes('executor_instance_id'), false);
 assert.strictEqual(JSON.stringify(resultBody).includes('device_id'), false);
+assert.throws(() => buildResultRequest({
+  machineCode: MACHINE_CODE,
+  response: {
+    protocol_version: '1.0',
+    task_id: 'task-002',
+    command: 'arbitrary.shell.command'
+  }
+}), /fixed allowlist/);
 
 console.log('Simple command service protocol tests passed');
