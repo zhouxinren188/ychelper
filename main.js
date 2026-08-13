@@ -19,6 +19,11 @@ const {
 const { getMachineCodePendingStatus, OrderCommandRuntime } = require('./order-command-runtime');
 const { registerExceptionOrderAdapters } = require('./order-exception-adapters');
 const { ExceptionSnapshotStore } = require('./order-exception-snapshot-store');
+const {
+  assertRequiredExceptionSources,
+  fetchJsonWithTimeout,
+  resolveAbnormalQueryContext
+} = require('./abnormal-query-support');
 const { OrderControlPlaneClient } = require('./order-control-plane-client');
 const { OrderControlPlaneRunner } = require('./order-control-plane-runner');
 const { OrderControlPlaneWorker } = require('./order-control-plane-worker');
@@ -7081,7 +7086,8 @@ async function fetchBillExceptionList({ csrfToken, sellerNo, deptNo, deptName, b
   params.set('aoData', aoData);
 
   const url = `https://o.jdl.com/billexception/queryBillExceptionListNew.do?rand=${Math.random()}`;
-  const response = await getMerchantSession().fetch(url, {
+  const merchantSession = getMerchantSession();
+  return fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -7091,9 +7097,6 @@ async function fetchBillExceptionList({ csrfToken, sellerNo, deptNo, deptName, b
     },
     body: params.toString()
   });
-
-  const text = await response.text();
-  return JSON.parse(text);
 }
 
 // 查询异常订单中心列表（soExceptionCentre）
@@ -7145,7 +7148,8 @@ async function fetchSoExceptionList({ csrfToken, soNo, spSoNo, soYear, page, pag
   params.set('consigneeMobile', '');
 
   const url = `https://o.jdl.com/soExceptionCentre/querySoExceptionList.do?rand=${Math.random()}`;
-  const response = await getMerchantSession().fetch(url, {
+  const merchantSession = getMerchantSession();
+  return fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -7155,9 +7159,6 @@ async function fetchSoExceptionList({ csrfToken, soNo, spSoNo, soYear, page, pag
     },
     body: params.toString()
   });
-
-  const text = await response.text();
-  return JSON.parse(text);
 }
 
 // 时间归一化：毫秒时间戳或格式化字符串 → 毫秒数
@@ -7174,15 +7175,29 @@ function normalizeToTimestamp(val) {
 
 async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, year, source, page, pageSize } = {}, options = {}) {
   try {
-    const csrfToken = storeGet('csrfToken', '');
-    const sellerId = storeGet('sellerId', '');
-    const sellerNo = sellerId ? `CCP00${sellerId}` : '';
+    const queryContext = resolveAbnormalQueryContext({
+      currentUsername,
+      orderCommandAccountIdentity,
+      activeMerchantAccountId,
+      csrfToken: storeGet('csrfToken', ''),
+      sellerId: storeGet('sellerId', ''),
+      userData: storeGet('userData', null),
+      merchantAccounts: storeGet('merchantAccounts', [])
+    }, {
+      requestedDeptNo: deptName,
+      requestedMerchantName: merchantName,
+      requireSelectedDepartment: options.contextMode === 'remote'
+    });
+    const { csrfToken, sellerNo, billExceptionDeptValue } = queryContext;
 
-    if (!csrfToken || !sellerNo) {
-      return { success: false, error: '未登录或登录信息已过期，请重新登录', orders: [], total: 0 };
-    }
-
-    console.log('查询异常订单:', JSON.stringify({ sellerNo, deptName, orderNo, year, source, page, pageSize }));
+    console.log('查询异常订单:', JSON.stringify({
+      hasOrderNo: Boolean(orderNo),
+      year,
+      source: source || 'all',
+      page,
+      pageSize,
+      contextMode: options.contextMode === 'remote' ? 'remote' : 'manual'
+    }));
 
     // 根据订单号判断查询字段
     let billNo = '', sellerBillNo = '', soNo = '', spSoNo = '';
@@ -7267,7 +7282,7 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
     if (source === 'billexception') {
       // 仅查异常中心
       const data = await fetchBillExceptionList({
-        csrfToken, sellerNo, deptNo: '', deptName: deptName || '',
+        csrfToken, sellerNo, deptNo: '', deptName: billExceptionDeptValue,
         billNo, sellerBillNo, exceptionStatus: '1',
         soYear, soSource: '', page: qPage, pageSize: qPageSize
       });
@@ -7294,7 +7309,7 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
       // 全部：并发查两个 API
       const [billExResult, soExResult] = await Promise.allSettled([
         fetchBillExceptionList({
-          csrfToken, sellerNo, deptNo: '', deptName: deptName || '',
+          csrfToken, sellerNo, deptNo: '', deptName: billExceptionDeptValue,
           billNo, sellerBillNo, exceptionStatus: '1',
           soYear, soSource: '', page: qPage, pageSize: qPageSize
         }),
@@ -7302,6 +7317,7 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
           csrfToken, soNo, spSoNo, soYear, page: qPage, pageSize: qPageSize
         })
       ]);
+      assertRequiredExceptionSources([billExResult, soExResult], options.requireAllSources);
 
       let billExOrders = [];
       let soExOrders = [];
@@ -7350,7 +7366,13 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
     };
   } catch (err) {
     console.error('查询异常订单失败:', err.message);
-    return { success: false, error: err.message, orders: [], total: 0 };
+    return {
+      success: false,
+      error: err.message,
+      errorCode: err && err.code ? String(err.code) : 'abnormal_query_failed',
+      orders: [],
+      total: 0
+    };
   }
 }
 
@@ -7546,9 +7568,11 @@ async function queryExceptionRecordsForCommand(locator) {
     source: '',
     page: 1,
     pageSize: 100
-  }, { requireAllSources: true });
+  }, { requireAllSources: true, contextMode: 'remote' });
   if (!result || result.success !== true) {
-    throw new Error(result && result.error ? String(result.error) : '异常订单查询失败');
+    const error = new Error(result && result.error ? String(result.error) : '异常订单查询失败');
+    if (result && result.errorCode) error.code = String(result.errorCode);
+    throw error;
   }
 
   const records = (Array.isArray(result.orders) ? result.orders : [])
