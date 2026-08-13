@@ -11,6 +11,18 @@ const excelGen = require('./src/js/excelGenerator');
 const { buildShopSkuExportFileName } = require('./src/js/shopExportFile');
 const { canUseAutomation } = require('./src/js/subscriptionAccess');
 const {
+  getMachineCodeAccountKey,
+  getOrCreateMachineCode,
+  isValidMachineCode,
+  MACHINE_CODE_SOURCE
+} = require('./machine-code');
+const { getMachineCodePendingStatus, OrderCommandRuntime } = require('./order-command-runtime');
+const { registerExceptionOrderAdapters } = require('./order-exception-adapters');
+const { ExceptionSnapshotStore } = require('./order-exception-snapshot-store');
+const { OrderControlPlaneClient } = require('./order-control-plane-client');
+const { OrderControlPlaneRunner } = require('./order-control-plane-runner');
+const { OrderControlPlaneWorker } = require('./order-control-plane-worker');
+const {
   WMS_WAREHOUSE_MULTI_LABEL_SELECTOR,
   WMS_WAREHOUSE_SECTION_SELECTOR,
   WMS_WAREHOUSE_SINGLE_LABEL_SELECTOR,
@@ -64,6 +76,8 @@ process.stderr.on('error', (err) => { if (err.code === 'EPIPE') return; throw er
 const API_BASE_URL = 'http://150.158.54.108:3000';
 const APP_KEY = 'ychelper-client';
 const APP_SECRET = 'ychelper_s3cret_k3y_2024_change_this'; // 需与服务端一致
+// 云仓助手开放服务的正式 HTTPS 地址由服务器主线部署时确认。保持空值不会发起任务网络请求。
+const CLOUD_ORDER_SERVICE_BASE_URL = '';
 const MAX_UPDATE_METADATA_SIZE = 1024 * 1024;
 const MAX_HOT_UPDATE_SIZE = 50 * 1024 * 1024;
 const MAX_FULL_UPDATE_SIZE = 250 * 1024 * 1024;
@@ -96,6 +110,13 @@ let heartbeatTimer = null;
 let subscriptionWindow = null;
 let departmentSelectWindow = null;
 let deptSelectResolve = null; // 事业部选择的 Promise resolver
+let orderCommandRuntime = null;
+let orderCommandRuntimeError = '';
+let orderCommandAccountIdentity = '';
+let machineCodeGenerationPromise = null;
+let orderControlPlaneClient = null;
+let orderControlPlaneRunner = null;
+let orderControlPlaneWorker = null;
 
 // 生成设备ID
 function getDeviceId() {
@@ -424,6 +445,126 @@ function storeUpdate(update) {
   if (storeReadBlocked) return false;
   update(data);
   return saveStore(data);
+}
+
+function initializeOrderCommandRuntime(accountIdentity, { generate = false } = {}) {
+  const accountKey = getMachineCodeAccountKey(accountIdentity);
+  const loadMachineCode = () => {
+    const data = loadStore();
+    const records = data.machineCodeRecords && typeof data.machineCodeRecords === 'object'
+      ? data.machineCodeRecords
+      : {};
+    const record = records[accountKey];
+    if (!record || record.source !== MACHINE_CODE_SOURCE) return null;
+    if (!isValidMachineCode(record.machineCode)) {
+      throw new Error('本机已保存的机器码格式损坏，已安全停用订单执行端');
+    }
+    return record.machineCode;
+  };
+  const saveMachineCode = value => storeUpdate(data => {
+    const records = data.machineCodeRecords && typeof data.machineCodeRecords === 'object'
+      ? data.machineCodeRecords
+      : {};
+    records[accountKey] = {
+      source: MACHINE_CODE_SOURCE,
+      machineCode: value
+    };
+    data.machineCodeRecords = records;
+  });
+  const machineCode = generate
+    ? getOrCreateMachineCode({ accountIdentity, load: loadMachineCode, save: saveMachineCode })
+    : loadMachineCode();
+  if (!machineCode) return null;
+  orderCommandRuntime = new OrderCommandRuntime({
+    machineCode,
+    loadState: () => {
+      const data = loadStore();
+      const states = data.orderCommandStates && typeof data.orderCommandStates === 'object'
+        ? data.orderCommandStates
+        : {};
+      return states[accountKey] || null;
+    },
+    saveState: state => {
+      const saved = storeUpdate(data => {
+        const states = data.orderCommandStates && typeof data.orderCommandStates === 'object'
+          ? data.orderCommandStates
+          : {};
+        states[accountKey] = state;
+        data.orderCommandStates = states;
+      });
+      if (!saved) {
+        throw new Error('订单执行状态无法持久化');
+      }
+    },
+    logger: console
+  });
+  if (CLOUD_ORDER_SERVICE_BASE_URL) {
+    orderControlPlaneClient = new OrderControlPlaneClient({
+      baseUrl: CLOUD_ORDER_SERVICE_BASE_URL,
+      machineCode,
+      executorVersion: app.getVersion(),
+      getSessionToken: () => currentSessionToken || ''
+    });
+  }
+  {
+    const exceptionSnapshotStore = new ExceptionSnapshotStore({
+      machineCode,
+      loadState: () => {
+        const data = loadStore();
+        const states = data.exceptionOrderSnapshotStates && typeof data.exceptionOrderSnapshotStates === 'object'
+          ? data.exceptionOrderSnapshotStates
+          : {};
+        return states[accountKey] || null;
+      },
+      saveState: state => storeUpdate(data => {
+        const states = data.exceptionOrderSnapshotStates && typeof data.exceptionOrderSnapshotStates === 'object'
+          ? data.exceptionOrderSnapshotStates
+          : {};
+        states[accountKey] = state;
+        data.exceptionOrderSnapshotStates = states;
+      })
+    });
+    registerExceptionOrderAdapters(orderCommandRuntime.executor, {
+      queryExceptionRecords: queryExceptionRecordsForCommand,
+      resolveExceptionRecords: resolveExceptionRecordsForCommand,
+      createExceptionSnapshot: args => exceptionSnapshotStore.create(args),
+      getExceptionSnapshot: (ref, options) => exceptionSnapshotStore.get(ref, options),
+      assertExceptionSnapshotRecords: (ref, records, options) => {
+        return exceptionSnapshotStore.assertRecordsMatch(ref, records, options);
+      },
+      claimExceptionSnapshot: (ref, options) => exceptionSnapshotStore.claim(ref, options)
+    });
+  }
+  if (orderControlPlaneClient) {
+    orderControlPlaneRunner = new OrderControlPlaneRunner({
+      client: orderControlPlaneClient,
+      runtime: orderCommandRuntime
+    });
+    orderControlPlaneWorker = new OrderControlPlaneWorker({
+      client: orderControlPlaneClient,
+      runner: orderControlPlaneRunner,
+      logger: console
+    });
+    orderControlPlaneWorker.start();
+  }
+  orderCommandRuntimeError = '';
+  return orderCommandRuntime;
+}
+
+function activateOrderCommandRuntime(accountIdentity) {
+  if (orderControlPlaneWorker) orderControlPlaneWorker.stop();
+  orderCommandRuntime = null;
+  orderControlPlaneClient = null;
+  orderControlPlaneRunner = null;
+  orderControlPlaneWorker = null;
+  orderCommandRuntimeError = '';
+  orderCommandAccountIdentity = String(accountIdentity || '').trim();
+  try {
+    initializeOrderCommandRuntime(orderCommandAccountIdentity);
+  } catch (error) {
+    orderCommandRuntimeError = error.message;
+    console.error('[订单执行端] 安全停用:', error.message);
+  }
 }
 
 let currentUsername = ''; // 当前登录的用户名，用于按账号存储数据
@@ -1116,6 +1257,7 @@ async function checkLoginStatus(url) {
         });
         isCheckingSubscription = false;
         isLoggingIn = false;
+        activateOrderCommandRuntime(jdUsername);
         createMainWindow();
         startHeartbeat();
       } else {
@@ -2495,6 +2637,7 @@ app.on('before-quit', () => {
     periodicUpdateTimer = null;
   }
   stopHeartbeat();
+  if (orderControlPlaneWorker) orderControlPlaneWorker.stop();
   shopSffHttpsAgent.destroy();
   // 清理隐藏的JD页面窗口
   if (jdPageWindow && !jdPageWindow.isDestroyed()) {
@@ -7029,7 +7172,7 @@ function normalizeToTimestamp(val) {
   return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
-ipcMain.handle('query-abnormal-orders', async (event, { merchantName, deptName, orderNo, shopName, year, source, page, pageSize }) => {
+async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, year, source, page, pageSize } = {}, options = {}) {
   try {
     const csrfToken = storeGet('csrfToken', '');
     const sellerId = storeGet('sellerId', '');
@@ -7168,6 +7311,9 @@ ipcMain.handle('query-abnormal-orders', async (event, { merchantName, deptName, 
         billExCount = billExResult.value.iTotalRecords || billExResult.value.iTotalDisplayRecords || billExOrders.length;
       } else {
         console.error('异常中心查询失败:', billExResult.reason || '数据异常');
+        if (options.requireAllSources === true) {
+          throw new Error('异常中心查询失败，无法确认订单完整异常状态');
+        }
       }
 
       if (soExResult.status === 'fulfilled' && soExResult.value && soExResult.value.aaData) {
@@ -7175,6 +7321,9 @@ ipcMain.handle('query-abnormal-orders', async (event, { merchantName, deptName, 
         soExCount = soExResult.value.iTotalRecords || soExResult.value.iTotalDisplayRecords || soExOrders.length;
       } else {
         console.error('异常订单中心查询失败:', soExResult.reason || '数据异常');
+        if (options.requireAllSources === true) {
+          throw new Error('异常订单中心查询失败，无法确认订单完整异常状态');
+        }
       }
 
       // 合并后按时间降序排序，截取 pageSize 条
@@ -7203,7 +7352,9 @@ ipcMain.handle('query-abnormal-orders', async (event, { merchantName, deptName, 
     console.error('查询异常订单失败:', err.message);
     return { success: false, error: err.message, orders: [], total: 0 };
   }
-});
+}
+
+ipcMain.handle('query-abnormal-orders', async (event, params) => queryAbnormalOrders(params));
 
 // 处理异常订单（单条/批量）
 // idAndbillTypes 格式: "{id}_{billType}_{exceptionCode}"，多条用逗号拼接
@@ -7253,7 +7404,7 @@ async function resumeSoException(csrfToken, soExceptionNos, errType, disposeType
   return JSON.parse(text);
 }
 
-ipcMain.handle('handle-abnormal-order', async (event, { orders }) => {
+async function handleAbnormalOrders(orders) {
   try {
     const csrfToken = storeGet('csrfToken', '');
     if (!csrfToken) {
@@ -7320,26 +7471,248 @@ ipcMain.handle('handle-abnormal-order', async (event, { orders }) => {
     const totalProcessed = results.reduce((sum, r) => sum + r.count, 0);
     const successCount = results.filter(r => r.success).reduce((sum, r) => sum + r.count, 0);
 
+    if (results.length === 0) {
+      return {
+        success: false,
+        all_succeeded: false,
+        processed_count: 0,
+        error: '未识别到可安全处理的异常订单来源'
+      };
+    }
+
     if (allSuccess) {
       const msg = results.map(r => r.msg).join('；');
       console.log(`异常订单处理成功: ${totalProcessed} 条`);
-      return { success: true, message: msg || `共 ${totalProcessed} 条处理成功` };
+      return {
+        success: true,
+        all_succeeded: true,
+        processed_count: totalProcessed,
+        message: msg || `共 ${totalProcessed} 条处理成功`
+      };
     } else if (successCount > 0) {
       const failMsgs = results.filter(r => !r.success).map(r => `${r.source}${r.count}条失败: ${r.msg}`);
-      return { success: true, message: `${successCount}条成功，${failMsgs.join('；')}` };
+      return {
+        success: true,
+        all_succeeded: false,
+        processed_count: successCount,
+        message: `${successCount}条成功，${failMsgs.join('；')}`
+      };
     } else {
       const failMsgs = results.map(r => `${r.source}: ${r.msg}`);
-      return { success: false, error: failMsgs.join('；') };
+      return { success: false, all_succeeded: false, processed_count: 0, error: failMsgs.join('；') };
     }
   } catch (err) {
     console.error('异常订单处理异常:', err.message);
-    return { success: false, error: err.message };
+    return { success: false, all_succeeded: false, processed_count: 0, error: err.message };
   }
-});
+}
+
+ipcMain.handle('handle-abnormal-order', async (event, { orders } = {}) => handleAbnormalOrders(orders));
+
+function normalizeCommandOrderLocator(locator) {
+  if (!locator || typeof locator !== 'object' || Array.isArray(locator)) {
+    throw new Error('中央 order_ref_id 未返回有效的本机订单定位信息');
+  }
+  const platformOrderNo = String(locator.platform_order_no || '').trim();
+  const orderYear = String(locator.order_year || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(platformOrderNo)) {
+    throw new Error('中央 order_ref_id 对应的 platform_order_no 格式无效');
+  }
+  if (!/^20\d{2}$/.test(orderYear)) {
+    throw new Error('中央 order_ref_id 对应的 order_year 格式无效');
+  }
+  return { platform_order_no: platformOrderNo, order_year: orderYear };
+}
+
+function isSameCommandOrder(order, orderNo) {
+  const expected = String(orderNo || '').trim().toUpperCase();
+  return [
+    order && order.billNo,
+    order && order.sellerBillNo,
+    order && order.platform_order_no,
+    order && order.logistics_order_no
+  ]
+    .some(value => String(value || '').trim().toUpperCase() === expected);
+}
+
+async function queryExceptionRecordsForCommand(locator) {
+  const normalized = normalizeCommandOrderLocator(locator);
+  // 人工页面已将非 CSL/CDB 编号同时提交给 billexception.sellerBillNo 和
+  // soExceptionCentre.spSoNo；其列表“订单号”列也展示这两个字段。因此店小二
+  // platform_order_no 可按商家/平台订单号语义接入这两个固定查询字段。
+  const result = await queryAbnormalOrders({
+    orderNo: normalized.platform_order_no,
+    year: normalized.order_year,
+    source: '',
+    page: 1,
+    pageSize: 100
+  }, { requireAllSources: true });
+  if (!result || result.success !== true) {
+    throw new Error(result && result.error ? String(result.error) : '异常订单查询失败');
+  }
+
+  const records = (Array.isArray(result.orders) ? result.orders : [])
+    .filter(order => isSameCommandOrder(order, normalized.platform_order_no))
+    .map(order => ({
+      source: order._source === '异常中心'
+        ? 'billexception'
+        : order._source === '异常订单中心'
+        ? 'soExceptionCentre'
+        : 'unknown',
+      internal_id: order.id,
+      internal_bill_type: order.billType || '',
+      internal_exception_code: order.exceptionCode || '',
+      internal_so_no: order._soNo || '',
+      internal_error_type: order._errTypeNo || '',
+      platform_order_no: order.sellerBillNo || '',
+      logistics_order_no: order.billNo || '',
+      exception_type: order.exceptionCodeStr || '',
+      exception_description: order.exceptionDesc || '',
+      handler_action: order.handlerAction || '',
+      exception_time: order.createTime || ''
+    }))
+    .filter(order => order.source !== 'unknown');
+  return { records, queried_at: new Date().toISOString() };
+}
+
+async function resolveExceptionRecordsForCommand(locator, records) {
+  const normalized = normalizeCommandOrderLocator(locator);
+  if (!Array.isArray(records) || records.length === 0 || records.length > 100) {
+    throw new Error('本机执行前异常记录快照无效');
+  }
+  if (records.some(order => !isSameCommandOrder(order, normalized.platform_order_no))) {
+    throw new Error('本机执行前异常记录与中央订单映射不一致');
+  }
+  const executableRecords = records.map(order => {
+    if (order.source === 'billexception') {
+      return {
+        id: order.internal_id,
+        billNo: order.logistics_order_no,
+        sellerBillNo: order.platform_order_no,
+        billType: order.internal_bill_type,
+        exceptionCode: order.internal_exception_code,
+        _source: '异常中心'
+      };
+    }
+    if (order.source === 'soExceptionCentre') {
+      return {
+        id: order.internal_id,
+        billNo: order.logistics_order_no,
+        sellerBillNo: order.platform_order_no,
+        exceptionCode: order.internal_error_type,
+        _source: '异常订单中心',
+        _soNo: order.internal_so_no,
+        _errTypeNo: order.internal_error_type
+      };
+    }
+    throw new Error('本机异常记录来源无效');
+  });
+  const result = await handleAbnormalOrders(executableRecords);
+  return {
+    all_succeeded: result && result.all_succeeded === true,
+    processed_count: Number.isInteger(result && result.processed_count) ? result.processed_count : 0,
+    message: result && (result.message || result.error) ? String(result.message || result.error) : ''
+  };
+}
 
 // ========== IPC: 订阅系统 ==========
 
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+ipcMain.handle('get-machine-code', async () => {
+  if (orderCommandRuntime) {
+    return {
+      success: true,
+      generated: true,
+      machine_code: orderCommandRuntime.machineCode,
+      source: MACHINE_CODE_SOURCE
+    };
+  }
+  if (orderCommandRuntimeError) {
+    return { success: false, generated: false, machine_code: '', error: orderCommandRuntimeError };
+  }
+  return {
+    success: true,
+    generated: false,
+    machine_code: '',
+    source: MACHINE_CODE_SOURCE
+  };
+});
+
+ipcMain.handle('generate-machine-code', async (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWindow || mainWindow.isDestroyed() || senderWindow !== mainWindow) {
+    return { success: false, generated: false, error: '当前页面无权生成机器码' };
+  }
+  if (!orderCommandAccountIdentity) {
+    return { success: false, generated: false, error: '当前云仓助手账号不可用，请重新登录' };
+  }
+  if (orderCommandRuntime) {
+    return {
+      success: true,
+      generated: true,
+      machine_code: orderCommandRuntime.machineCode,
+      source: MACHINE_CODE_SOURCE
+    };
+  }
+  if (machineCodeGenerationPromise) return machineCodeGenerationPromise;
+
+  machineCodeGenerationPromise = Promise.resolve().then(() => {
+    const runtime = initializeOrderCommandRuntime(orderCommandAccountIdentity, { generate: true });
+    if (!runtime) throw new Error('机器码生成失败');
+    return {
+      success: true,
+      generated: true,
+      machine_code: runtime.machineCode,
+      source: MACHINE_CODE_SOURCE
+    };
+  }).catch(error => {
+    orderCommandRuntime = null;
+    orderCommandRuntimeError = error.message;
+    console.error('[机器码] 生成失败:', error.message);
+    return { success: false, generated: false, machine_code: '', error: error.message };
+  }).finally(() => {
+    machineCodeGenerationPromise = null;
+  });
+  return machineCodeGenerationPromise;
+});
+
+ipcMain.handle('get-order-command-status', async () => {
+  if (!orderCommandRuntime) {
+    if (!orderCommandRuntimeError) {
+      return { success: true, ...getMachineCodePendingStatus() };
+    }
+    return {
+      success: false,
+      online: false,
+      transport: {
+        enabled: false,
+        state: 'disabled',
+        reason: 'local_runtime_unavailable'
+      },
+      capabilities: [],
+      error: orderCommandRuntimeError || '订单执行端暂不可用'
+    };
+  }
+  const workerStatus = orderControlPlaneWorker ? orderControlPlaneWorker.getStatus() : null;
+  const runtimeStatus = orderCommandRuntime.getStatus();
+  return {
+    success: true,
+    ...runtimeStatus,
+    online: workerStatus ? workerStatus.online : false,
+    transport: workerStatus
+      ? {
+          enabled: workerStatus.running,
+          state: workerStatus.state,
+          reason: workerStatus.last_failure_reason
+        }
+      : runtimeStatus.transport,
+    control_plane: orderControlPlaneClient
+      ? orderControlPlaneClient.getStatus()
+      : { configured: false, authenticated: false },
+    worker: workerStatus
+  };
+});
 
 ipcMain.handle('check-subscription', async (event, { jdUsername, departmentId, merchantName, departmentName }) => {
   return checkSubscription(jdUsername, departmentId, merchantName, departmentName);
@@ -7413,6 +7786,7 @@ ipcMain.handle('payment-success-enter', async () => {
     const subResult = await checkSubscription(jdUsername, departmentId, merchantName, departmentName);
     if (subResult.status === 'active' || subResult.status === 'trial') {
       currentSessionToken = subResult.session_token;
+      currentUsername = jdUsername;
       storeSet('subscriptionInfo', {
         status: subResult.status,
         tier: subResult.tier || 'standard',
@@ -7429,6 +7803,7 @@ ipcMain.handle('payment-success-enter', async () => {
         subscriptionWindow.close();
         subscriptionWindow = null;
       }
+      activateOrderCommandRuntime(jdUsername);
       createMainWindow();
       startHeartbeat();
       return { success: true };

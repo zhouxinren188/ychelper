@@ -46,6 +46,11 @@
         </div>
       </div>
 
+      <div class="nav-section">
+        <div class="nav-section-title">其他</div>
+        <div class="nav-item" data-page="machineCode">机器码</div>
+      </div>
+
       <div class="sidebar-bottom">
         <div class="sidebar-ad" id="adCard">
           <div class="sidebar-ad-tag">推荐</div>
@@ -677,6 +682,61 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- 本机机器码页面 -->
+      <div class="page" id="page-machineCode">
+        <div class="page-header">
+          <span class="page-icon page-icon-machine" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <rect x="4" y="5" width="16" height="14" rx="2" />
+              <path d="M8 9h8M8 13h5M8 17h3" />
+            </svg>
+          </span>
+          <span class="page-title">机器码</span>
+        </div>
+
+        <div class="machine-code-content">
+          <section class="machine-code-card" aria-labelledby="machineCodeHeading">
+            <div class="machine-code-eyebrow">本机设备标识</div>
+            <h2 id="machineCodeHeading">云仓助手机器码</h2>
+            <p class="machine-code-description">
+              机器码由当前云仓助手账号与本机共同确定，复制后可绑定到对应“店小二网店管家”主账号体系，主账号及其已授权子账号的云仓订单任务都可定向到这里，可实现云仓异常单查询、处理、订单打印、出库功能。
+            </p>
+            <div class="machine-code-empty-state" id="machineCodeEmptyState" hidden>
+              <p>当前云仓助手账号尚未生成机器码。如需绑定“店小二网店管家”主账号及其子账号，请点击下方按钮生成。</p>
+              <button type="button" class="btn btn-primary machine-code-generate" id="machineCodeGenerateBtn">生成机器码</button>
+            </div>
+            <div id="machineCodeGeneratedState" hidden>
+              <div class="machine-code-value-row">
+                <code id="machineCodeValue" class="machine-code-value" aria-live="polite"></code>
+                <button type="button" class="btn btn-primary machine-code-copy" id="machineCodeCopyBtn">复制机器码</button>
+              </div>
+            </div>
+            <div class="machine-code-copy-feedback" id="machineCodeCopyFeedback" aria-live="polite"></div>
+            <div class="machine-code-notice">
+              机器码仅在您点击“生成机器码”后创建。生成时会将本机主板信息、Windows 稳定设备信息与当前云仓助手账号在本地进行单向哈希，并按账号隔离保存。原始设备信息及账号原文不会写入机器码记录或上传。相同设备的不同账号、相同账号的不同设备都会得到不同机器码。
+            </div>
+          </section>
+
+          <section class="machine-code-card machine-code-status-card" aria-labelledby="machineStatusHeading">
+            <h2 id="machineStatusHeading">订单执行端状态</h2>
+            <dl class="machine-code-status-list">
+              <div>
+                <dt>云仓助手服务连接</dt>
+                <dd id="machineTransportStatus">待检查</dd>
+              </div>
+              <div>
+                <dt>业务能力</dt>
+                <dd id="machineCapabilitySummary">待检查</dd>
+              </div>
+            </dl>
+            <ul class="machine-capability-list" id="machineCapabilityList"></ul>
+            <p class="machine-code-status-tip">
+              机器码生成后，云仓助手登录期间会自动连接云仓助手服务器等待指令。店小二只通过服务器查询本机是否在线并发送固定指令；异常查询与处理已接入，其余三项业务能力仍未开放。
+            </p>
+          </section>
         </div>
       </div>
 
