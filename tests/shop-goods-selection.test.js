@@ -3,15 +3,19 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
+const { JSDOM } = require('jsdom');
 const {
   collectUniqueSkuValues,
   groupGoodsByProduct,
+  removeGoodsByTarget,
   selectGoodsPerProduct
 } = require('../src/js/shopGoodsSelection');
 
 const root = path.join(__dirname, '..');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
 
 const firstNPosition = indexHtml.indexOf('value="前N个"');
 const randomNPosition = indexHtml.indexOf('value="N个"');
@@ -34,6 +38,18 @@ assert.match(renderer, /sm-status-badge is-on-sale/,
   '售卖中商品必须显示状态徽标');
 assert.match(renderer, /sm-status-badge is-off-shelf/,
   '已下架商品必须显示状态徽标');
+assert.match(indexHtml, /id="smGoodsCtxMenu"/,
+  '商品列表必须提供独立的右键操作菜单');
+assert.match(renderer, /addEventListener\('contextmenu', handleSmGoodsContextMenu\)/,
+  '商品列表必须绑定 SPU/SKU 右键菜单事件');
+assert.match(indexHtml, /id="smCtxToggleSelection"/,
+  '商品右键菜单必须提供勾选与取消勾选操作');
+assert.match(renderer, /target\.isChecked \? '取消勾选' : '勾选'/,
+  '右键菜单必须根据当前行勾选状态切换操作文案');
+assert.match(styles, /\.sm-action-row\s*\{[^}]*justify-content:\s*center;/s,
+  '快速打标查询操作按钮组必须居中对齐');
+assert.match(styles, /\.sm-goods-ctx-menu \.ctx-menu-item:hover/,
+  '商品右键菜单必须提供清晰的悬停反馈');
 const selectedSkuFunction = renderer.slice(
   renderer.indexOf('function getSelectedSmSkus()'),
   renderer.indexOf('// ========== 导出 TXT ==========')
@@ -109,5 +125,113 @@ assert.deepStrictEqual(
   selectGoodsPerProduct(missingCodes, '第1个').map(item => item.sku),
   ['X1', 'X2']
 );
+
+const removableGoods = [
+  { productCode: 'A', sku: 'A1' },
+  { productCode: 'A', sku: 'A2' },
+  { productCode: 'B', sku: 'B1' }
+];
+assert.deepStrictEqual(
+  removeGoodsByTarget(removableGoods, { type: 'spu', item: removableGoods[0] }).map(item => item.sku),
+  ['B1'],
+  '删除 SPU 时必须删除该商品下的全部 SKU'
+);
+assert.deepStrictEqual(
+  removeGoodsByTarget(removableGoods, { type: 'sku', item: removableGoods[0] }).map(item => item.sku),
+  ['A2', 'B1'],
+  '删除 SKU 时只能删除当前 SKU'
+);
+assert.deepStrictEqual(
+  removeGoodsByTarget(removableGoods, { type: 'spu', item: { productCode: ' A ' } }).map(item => item.sku),
+  ['B1'],
+  '删除 SPU 时必须规范化商品编码两侧空格'
+);
+const invalidRemovalResult = removeGoodsByTarget(removableGoods, { type: 'unknown', item: removableGoods[0] });
+assert.deepStrictEqual(invalidRemovalResult, removableGoods, '无效删除目标不得改变商品内容');
+assert.notStrictEqual(invalidRemovalResult, removableGoods, '无效删除目标也必须返回独立数组');
+assert.deepStrictEqual(removableGoods.map(item => item.sku), ['A1', 'A2', 'B1'],
+  '删除筛选不得原地修改原商品数组');
+
+const contextMenuDom = new JSDOM(`
+  <div id="smGoodsCtxMenu" style="display:none">
+    <button id="smCtxToggleSelection">勾选</button>
+    <button id="smCtxDelete">删除</button>
+  </div>
+  <span id="smSelectedCount"></span>
+  <input id="smSelectAll" type="checkbox" />
+  <table><tbody id="smGoodsTableBody">
+    <tr class="sm-spu-row" data-group-key="A" data-item-idx="0">
+      <td><input class="sm-spu-check" type="checkbox" /></td>
+    </tr>
+    <tr class="sm-sku-row" data-group-key="A" data-item-idx="0">
+      <td><input class="sm-goods-check" type="checkbox" /></td>
+    </tr>
+    <tr class="sm-sku-row" data-group-key="A" data-item-idx="1">
+      <td><input class="sm-goods-check" type="checkbox" /></td>
+    </tr>
+  </tbody></table>
+`);
+const contextDocument = contextMenuDom.window.document;
+const contextMenuTestScope = {
+  window: contextMenuDom.window,
+  document: contextDocument,
+  smGoodsCtxMenu: contextDocument.querySelector('#smGoodsCtxMenu'),
+  smCtxToggleSelection: contextDocument.querySelector('#smCtxToggleSelection'),
+  smCtxDelete: contextDocument.querySelector('#smCtxDelete'),
+  smGoodsTableBody: contextDocument.querySelector('#smGoodsTableBody'),
+  smSelectedCount: contextDocument.querySelector('#smSelectedCount'),
+  smGoodsContextTarget: null,
+  smQueryRunning: false,
+  smGoods: removableGoods,
+  smFilteredGoods: removableGoods,
+  showToast: () => {},
+  $: selector => contextDocument.querySelector(selector)
+};
+contextMenuTestScope.getSmSkuRowsForGroup = groupKey =>
+  Array.from(contextMenuTestScope.smGoodsTableBody.querySelectorAll('.sm-sku-row'))
+    .filter(row => row.dataset.groupKey === groupKey);
+const contextMenuFunctions = renderer.slice(
+  renderer.indexOf('function hideSmGoodsContextMenu()'),
+  renderer.indexOf('function deleteSmGoodsContextTarget()')
+);
+const selectionSyncFunction = renderer.slice(
+  renderer.indexOf('function syncSmSelectionCheckboxes()'),
+  renderer.indexOf('function applySmQtyFilter()')
+);
+vm.runInNewContext(`${contextMenuFunctions}\n${selectionSyncFunction}`, contextMenuTestScope);
+
+const contextSpuRow = contextDocument.querySelector('.sm-spu-row');
+const contextSkuRows = Array.from(contextDocument.querySelectorAll('.sm-sku-row'));
+const contextSkuChecks = contextSkuRows.map(row => row.querySelector('.sm-goods-check'));
+const contextSpuCheck = contextSpuRow.querySelector('.sm-spu-check');
+
+contextSkuChecks[0].checked = true;
+contextSkuChecks[1].checked = false;
+contextMenuTestScope.syncSmSelectionCheckboxes();
+assert.strictEqual(contextSpuCheck.indeterminate, true, '部分 SKU 勾选时 SPU 必须处于半选状态');
+const createContextMenuEvent = target => ({
+  target,
+  clientX: 12,
+  clientY: 18,
+  preventDefault() {}
+});
+contextMenuTestScope.handleSmGoodsContextMenu(createContextMenuEvent(contextSpuRow));
+assert.strictEqual(contextMenuTestScope.smCtxToggleSelection.textContent, '勾选',
+  'SPU 半选时右键菜单必须显示勾选');
+contextMenuTestScope.toggleSmGoodsContextSelection();
+assert.deepStrictEqual(contextSkuChecks.map(checkbox => checkbox.checked), [true, true],
+  'SPU 右键勾选必须勾选整组 SKU');
+
+contextMenuTestScope.handleSmGoodsContextMenu(createContextMenuEvent(contextSpuRow));
+assert.strictEqual(contextMenuTestScope.smCtxToggleSelection.textContent, '取消勾选',
+  'SPU 全选时右键菜单必须显示取消勾选');
+contextMenuTestScope.toggleSmGoodsContextSelection();
+assert.deepStrictEqual(contextSkuChecks.map(checkbox => checkbox.checked), [false, false],
+  'SPU 右键取消勾选必须取消整组 SKU');
+
+contextMenuTestScope.handleSmGoodsContextMenu(createContextMenuEvent(contextSkuRows[0]));
+contextMenuTestScope.toggleSmGoodsContextSelection();
+assert.deepStrictEqual(contextSkuChecks.map(checkbox => checkbox.checked), [true, false],
+  'SKU 右键勾选只能改变当前 SKU');
 
 console.log('店铺商品“每个SPU取SKU”筛选测试通过');

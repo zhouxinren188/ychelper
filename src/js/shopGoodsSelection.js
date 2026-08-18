@@ -95,5 +95,27 @@
     return skus;
   }
 
-  return { collectUniqueSkuValues, groupGoodsByProduct, selectGoodsPerProduct };
+  function removeGoodsByTarget(goods, target = {}) {
+    const source = Array.isArray(goods) ? goods : [];
+    const targetItem = target.item;
+    if (!targetItem || (target.type !== 'spu' && target.type !== 'sku')) {
+      return source.slice();
+    }
+
+    if (target.type === 'spu') {
+      const productCode = String(targetItem.productCode || '').trim();
+      if (productCode) {
+        return source.filter(item => String(item && item.productCode || '').trim() !== productCode);
+      }
+      return source.filter(item => item !== targetItem);
+    }
+
+    const sku = String(targetItem.sku || '').trim();
+    return source.filter(item => {
+      if (item === targetItem) return false;
+      return !sku || String(item && item.sku || '').trim() !== sku;
+    });
+  }
+
+  return { collectUniqueSkuValues, groupGoodsByProduct, removeGoodsByTarget, selectGoodsPerProduct };
 });

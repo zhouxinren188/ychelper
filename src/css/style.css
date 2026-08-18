@@ -897,6 +897,39 @@ body {
   margin: 2px 0;
 }
 
+.sm-goods-ctx-menu {
+  min-width: 184px;
+  padding: 5px;
+  border: 1px solid #e6ebf0;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(31, 45, 61, 0.16), 0 2px 8px rgba(31, 45, 61, 0.08);
+}
+
+.sm-goods-ctx-menu .ctx-menu-item {
+  width: 100%;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.sm-goods-ctx-menu .ctx-menu-item:hover,
+.sm-goods-ctx-menu .ctx-menu-item:focus-visible {
+  background: #f5f7f9;
+}
+
+.sm-goods-ctx-menu .ctx-menu-danger:hover,
+.sm-goods-ctx-menu .ctx-menu-danger:focus-visible {
+  background: #fdf0ef;
+}
+
+.sm-goods-ctx-menu .ctx-menu-item:focus-visible {
+  outline: 2px solid rgba(217, 119, 32, 0.2);
+  outline-offset: -2px;
+}
+
 /* 模式列表 */
 .mode-list {
   display: flex;
@@ -2496,6 +2529,11 @@ body {
   background: #f1f6fb;
 }
 
+.sm-product-table tbody .sm-spu-row.is-context-target td,
+.sm-product-table tbody .sm-sku-row.is-context-target td {
+  background: #fff4f2;
+}
+
 .sm-product-table tbody .sm-spu-row.is-unselected,
 .sm-product-table tbody .sm-sku-row.is-unselected {
   opacity: 0.52;
@@ -3101,6 +3139,7 @@ body {
 .sm-action-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   margin-bottom: 8px;
   flex-shrink: 0;
   overflow-x: auto;

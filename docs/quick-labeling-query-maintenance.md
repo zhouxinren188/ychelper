@@ -1,7 +1,7 @@
 # 快速打标查询功能维护说明
 
 > 适用基线：从 `v1.0.78` 主线创建的 `feature/quick-labeling` 分支
-> 最后复查：2026-08-11
+> 最后复查：2026-08-18
 > 范围：快速打标中的店铺会话、商品查询、SKU 展开、价格/数量筛选、进度、表格选择、TXT 导出及发送到打标/下标
 
 ## 1. 阅读顺序
@@ -26,6 +26,8 @@
 - “单品 SKU”必须按每个 SPU 单独执行全部、首个、末个、最低价、最高价、前 N 个、随机 N 个；价格筛选必须先执行。某 SPU 价格筛选后不足 N 个时保留全部剩余项，不重复补足。
 - 查询过程需要页数、SPU/SKU 进度和预计剩余时间。
 - 查询结果要能按 SPU 展开、全选或整组勾选，并导出 TXT、发送到打标或下标。
+- 商品列表需要在不重复占用“商品编码”“SKU 编号”列的前提下，提高信息层级和可读性；查询操作按钮需要居中呈现。
+- 查询结果需要支持本地右键管理：按 SPU/SKU 动态勾选或取消勾选，并能从当前结果删除整组 SPU 或单个 SKU。
 - 店铺账号需要独立 Cookie 分区、重启恢复、在线状态检测和账号切换保护。
 
 ## 3. 原因分析
@@ -119,6 +121,7 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 - 商品列表使用独立的现代分组表格：不单独占列重复显示商品编码和 SKU 编号；SPU 主行在标题下显示 `SPU：编码 · 共 N 个 SKU`，SKU 子行显示包含规格选项的 SKU 标题，并在副标题中显示 `SKU：编号`；“状态”列位于“操作日期”前，并在主行和子行显示售卖中/已下架徽标；样式调整不得改变主行/子行勾选语义。
 - 实际导出/发送只读取 `.sm-sku-row .sm-goods-check`。
 - SPU 组勾选和全选支持 `indeterminate` 半选状态。
+- 商品行右键菜单会根据当前行状态显示“勾选”或“取消勾选”：SPU 行控制整组 SKU，半选按未全选处理并显示“勾选”，SKU 行只控制当前 SKU；菜单也支持从当前结果中删除，右键 SPU 删除该商品的全部 SKU，右键 SKU 只删除当前 SKU。删除只更新本地查询结果，不调用京东接口，并保留其他行的勾选与展开状态。
 - 最终 SKU 列表按原顺序去空、去重，作为最后一道防线。
 - 失败、异常和空结果都会清空结果并禁用导出/发送按钮。
 
@@ -128,14 +131,14 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 | --- | --- | --- |
 | `main.js` | 店铺账号/会话、页面环境、签名、SFF 请求、结果组合、IPC | 账号绑定与查询锁、登录失效识别、商品标题/状态映射、价格过滤调用、无效 SKU/价格归一化 |
 | `preload.js` | 安全暴露 IPC | 已有 `shopQueryGoods`、进度、导出等接口；本轮未改接口名 |
-| `src/index.html` | 快速打标界面 | 时间、价格、状态、单品 SKU、按钮组、进度和现代分组商品表结构 |
-| `src/js/renderer.js` | 页面状态、查询参数、进度、表格、导出/发送 | 查询忙状态、价格校验、账号 ID、失败清理、SPU 整组勾选、商品状态徽标、最终去重 |
+| `src/index.html` | 快速打标界面 | 时间、价格、状态、单品 SKU、按钮组、进度、现代分组商品表结构和商品右键操作菜单 |
+| `src/js/renderer.js` | 页面状态、查询参数、进度、表格、导出/发送 | 查询忙状态、价格校验、账号 ID、失败清理、SPU 整组勾选、商品状态徽标、右键勾选/删除、删除后状态恢复和最终去重 |
 | `src/js/shopGoodsQuery.js` | 可复用的请求/响应纯逻辑 | 严格价格范围、实际分页大小、商品标题/状态归一化、SFF 登录失效判断 |
-| `src/js/shopGoodsSelection.js` | 每 SPU 取值 | 保持所有取值模式；增加最终 SKU 去空去重 |
+| `src/js/shopGoodsSelection.js` | 每 SPU 取值与本地删除 | 保持所有取值模式和最终 SKU 去空去重；提供可单测的 SPU/SKU 删除过滤 |
 | `src/js/shopSessionState.js` | 登录页/身份接口分类 | 当前未改，仍是店铺状态检测基础 |
 | `src/js/shopExportFile.js` | TXT 文件名 | 当前未改，默认桌面，店铺名+时间范围+SKU 数量 |
 | `tests/shop-goods-query.test.js` | 请求、分页、价格、错误分类 | 增加价格边界、无价格排除、服务端下调 pageSize、登录失效分类 |
-| `tests/shop-goods-selection.test.js` | 每 SPU 选择和 UI 契约 | 增加主行/子行选择契约、重复索引去重 |
+| `tests/shop-goods-selection.test.js` | 每 SPU 选择和 UI 契约 | 覆盖主行/子行选择契约、重复索引去重、右键菜单入口及 SPU/SKU 删除边界 |
 
 ## 6. 当前数据流
 
@@ -168,25 +171,27 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 
 ### 7.1 自动检查
 
-已执行：
+本分支本轮执行：
 
 ```powershell
-node --check main.js
 node --check src/js/renderer.js
-node --check src/js/shopGoodsQuery.js
 node --check src/js/shopGoodsSelection.js
-npm test
+node tests/shop-goods-selection.test.js
+node tests/shop-goods-query.test.js
+node tests/ipc-contract.test.js
+# 以及 tests/ 下所有不依赖 dist/app.asar 的现有测试
 git diff --check
 ```
 
 结果：
 
 - 所有语法检查通过。
-- `npm test` 全部通过。
-- 快速打标定向用例通过：日期/状态请求、Cookie 白名单、分页顺序、300ms 配置、30 秒 SKU 超时、价格范围、服务端分页下调、每 SPU 七种取值模式、随机不足 N、前 N、重复 SKU 去重、导出文件名、会话分类、权限和 IPC 契约。
+- 快速打标定向用例通过：查询参数与分页、每 SPU 取值、重复 SKU 去重、右键菜单静态契约、SPU/SKU 删除过滤和 IPC 契约。
+- `tests/` 下不依赖打包产物的 12 个测试文件全部通过。
 - `git diff --check` 通过，无空白错误。
+- 当前仓库 `npm test` 脚本仍引用未纳入版本库的根目录 `test-date-query.js` 和 `test-sku-expand.js`，会在第一项报 `MODULE_NOT_FOUND`；`tests/automation-access.test.js`、`tests/login-account-flow.test.js` 还需要已有的 `dist/win-unpacked/resources/app.asar`。本轮没有发布授权，因此未为测试生成安装包。维护者不能把这两个基线环境问题误判为本轮功能回归。
 
-注意：根目录 `test-date-query.js` 和 `test-sku-expand.js` 是历史页面注入方案的复制逻辑测试，仍在全量测试中，但**不能代表当前活跃请求链路**；判断当前功能应以 `tests/shop-goods-query.test.js` 和 `tests/shop-goods-selection.test.js` 为主。
+注意：判断当前快速打标活跃链路应以 `tests/shop-goods-query.test.js` 和 `tests/shop-goods-selection.test.js` 为主；若以后修复全量测试入口，应先确认历史复制逻辑测试是否仍有保留价值，不要让它重新约束已经停用的页面注入方案。
 
 ### 7.2 历史真实运行日志证据
 
@@ -226,6 +231,7 @@ git diff --check
 7. **无请求取消**：当前关闭页面或退出应用只能终止任务，没有面向用户的“取消查询”按钮。
 8. **历史代码干扰**：`src/js/shop-preload.js`、`src/js/chrome-shop-query.js` 以及 `main.js` 中页面点击/XHR 拦截相关函数是旧方案，目前没有被活跃链路加载。不得因为它们存在就误以为当前查询依赖反指纹、弹窗隐藏或 XHR 篡改，也不得未经重新评估直接启用。
 9. **权限**：界面允许所有用户进入，但实际查询、管理、导出和发送只允许有效试用用户或有效高级版用户；渲染层和主进程都有校验。
+10. **本地删除无撤销栈**：右键删除只修改当前内存结果，不会调用京东接口；误删后需要重新查询恢复。SPU 删除按原始查询结果移除该商品的全部 SKU，即使当前“单品 SKU”筛选只显示其中一部分。
 
 ## 9. 维护规则
 
@@ -239,6 +245,7 @@ git diff --check
 8. 京东响应字段变化时先把数据转换抽成可单测纯函数，再改 UI；不要继续在 `main.js` 堆叠不可测试分支。
 9. 修改 `main.js`、`preload.js` 或 `src/js/shopGoodsQuery.js` 后，如以后获得发布授权，按 `AGENTS.md` 必须发布新的三段完整安装包，不得只做热更新。`shopGoodsQuery.js` 虽位于 `src/`，但由主进程直接 `require`。
 10. 开发分支不等于发布授权；未明确要求发布时不得改版本号、构建或上传更新。
+11. 右键删除必须继续同时更新 `smGoods` 与 `smFilteredGoods`，并保留剩余 SKU 的勾选状态和 SPU 展开状态；右键勾选只能作用于当前表格结果，不能触发查询或改变价格/单 SPU 筛选顺序。
 
 ## 10. 建议的分支工作流
 

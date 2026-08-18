@@ -2590,6 +2590,7 @@ let smQueryProgressHideTimer = null;
 let smQueryEstimateStartedAt = 0;
 let smDateRangePickerController = null;
 let smQueryRunning = false;
+let smGoodsContextTarget = null;
 
 // DOM 引用
 const smShopSelect = $('#smShopSelect');
@@ -2607,6 +2608,9 @@ const smQueryProgressLabel = $('#smQueryProgressLabel');
 const smQueryProgressCount = $('#smQueryProgressCount');
 const smQueryProgressEta = $('#smQueryProgressEta');
 const smQueryProgressFill = $('#smQueryProgressFill');
+const smGoodsCtxMenu = $('#smGoodsCtxMenu');
+const smCtxToggleSelection = $('#smCtxToggleSelection');
+const smCtxDelete = $('#smCtxDelete');
 let smShopAccountStateMap = {};
 let smShopDropdownCheckVersion = 0;
 
@@ -2940,7 +2944,22 @@ function initSmEventListeners() {
         syncSmSelectionCheckboxes();
       }
     });
+    smGoodsTableBody.addEventListener('contextmenu', handleSmGoodsContextMenu);
   }
+
+  if (smCtxToggleSelection) smCtxToggleSelection.addEventListener('click', toggleSmGoodsContextSelection);
+  if (smCtxDelete) smCtxDelete.addEventListener('click', deleteSmGoodsContextTarget);
+  document.addEventListener('click', hideSmGoodsContextMenu);
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('#smGoodsTableBody') && !e.target.closest('#smGoodsCtxMenu')) {
+      hideSmGoodsContextMenu();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideSmGoodsContextMenu();
+  });
+  window.addEventListener('blur', hideSmGoodsContextMenu);
+  window.addEventListener('resize', hideSmGoodsContextMenu);
 
   // 商品状态选项切换时保存
   document.querySelectorAll('input[name="smGoodsStatus"]').forEach(radio => {
@@ -3579,7 +3598,136 @@ function getSmStatusBadgeMarkup(status) {
   return '<span class="sm-status-badge is-unknown"><span class="sm-status-dot" aria-hidden="true"></span>未知</span>';
 }
 
-function renderSmGoodsTable() {
+function hideSmGoodsContextMenu() {
+  if (smGoodsCtxMenu) smGoodsCtxMenu.style.display = 'none';
+  if (smGoodsTableBody) {
+    smGoodsTableBody.querySelectorAll('.is-context-target').forEach(row => {
+      row.classList.remove('is-context-target');
+    });
+  }
+  smGoodsContextTarget = null;
+}
+
+function showSmGoodsContextMenu(x, y, target, row) {
+  if (!smGoodsCtxMenu || !smCtxToggleSelection || !smCtxDelete) return;
+  hideSmGoodsContextMenu();
+  smGoodsContextTarget = target;
+  row.classList.add('is-context-target');
+  smCtxToggleSelection.textContent = target.isChecked ? '取消勾选' : '勾选';
+  smCtxDelete.textContent = target.type === 'spu'
+    ? `删除该商品（含 ${target.skuCount} 个 SKU）`
+    : '删除当前 SKU';
+  smGoodsCtxMenu.style.left = '0px';
+  smGoodsCtxMenu.style.top = '0px';
+  smGoodsCtxMenu.style.display = 'block';
+  const rect = smGoodsCtxMenu.getBoundingClientRect();
+  const maxX = Math.max(4, window.innerWidth - rect.width - 4);
+  const maxY = Math.max(4, window.innerHeight - rect.height - 4);
+  smGoodsCtxMenu.style.left = `${Math.max(4, Math.min(x, maxX))}px`;
+  smGoodsCtxMenu.style.top = `${Math.max(4, Math.min(y, maxY))}px`;
+  smCtxToggleSelection.focus({ preventScroll: true });
+}
+
+function handleSmGoodsContextMenu(event) {
+  const row = event.target.closest('.sm-spu-row, .sm-sku-row');
+  if (!row || !smGoodsTableBody.contains(row)) return;
+  event.preventDefault();
+  if (smQueryRunning) {
+    hideSmGoodsContextMenu();
+    showToast('商品查询进行中，暂时不能操作列表商品');
+    return;
+  }
+
+  const itemIndex = Number.parseInt(row.dataset.itemIdx, 10);
+  const item = smFilteredGoods[itemIndex];
+  if (!item) return;
+  const type = row.classList.contains('sm-spu-row') ? 'spu' : 'sku';
+  const productCode = String(item.productCode || '').trim();
+  const checkbox = type === 'spu'
+    ? row.querySelector('.sm-spu-check')
+    : row.querySelector('.sm-goods-check');
+  const isChecked = Boolean(checkbox && checkbox.checked && !checkbox.indeterminate);
+  const skuCount = type === 'spu'
+    ? (productCode
+        ? smGoods.filter(goodsItem => String(goodsItem && goodsItem.productCode || '').trim() === productCode).length
+        : 1)
+    : 1;
+  showSmGoodsContextMenu(event.clientX, event.clientY, {
+    type,
+    item,
+    itemIndex,
+    groupKey: String(row.dataset.groupKey || ''),
+    isChecked,
+    skuCount
+  }, row);
+}
+
+function captureSmGoodsTableState() {
+  const selectedItems = new Set();
+  smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check:checked').forEach(checkbox => {
+    const index = Number.parseInt(checkbox.dataset.idx, 10);
+    const item = smFilteredGoods[index];
+    if (item) selectedItems.add(item);
+  });
+  const expandedGroupKeys = new Set(
+    Array.from(smGoodsTableBody.querySelectorAll('.sm-spu-row.is-expanded'))
+      .map(row => String(row.dataset.groupKey || ''))
+  );
+  return { selectedItems, expandedGroupKeys };
+}
+
+function toggleSmGoodsContextSelection() {
+  const target = smGoodsContextTarget;
+  if (!target) {
+    hideSmGoodsContextMenu();
+    return;
+  }
+
+  const shouldCheck = !target.isChecked;
+  if (target.type === 'spu') {
+    getSmSkuRowsForGroup(target.groupKey).forEach(skuRow => {
+      const checkbox = skuRow.querySelector('.sm-goods-check');
+      if (checkbox) checkbox.checked = shouldCheck;
+    });
+  } else {
+    const row = Array.from(smGoodsTableBody.querySelectorAll('.sm-sku-row'))
+      .find(skuRow => Number.parseInt(skuRow.dataset.itemIdx, 10) === target.itemIndex);
+    const checkbox = row?.querySelector('.sm-goods-check');
+    if (checkbox) checkbox.checked = shouldCheck;
+  }
+
+  hideSmGoodsContextMenu();
+  syncSmSelectionCheckboxes();
+}
+
+function deleteSmGoodsContextTarget() {
+  const target = smGoodsContextTarget;
+  if (!target || !window.shopGoodsSelection?.removeGoodsByTarget) {
+    hideSmGoodsContextMenu();
+    return;
+  }
+
+  const tableState = captureSmGoodsTableState();
+  const previousGoodsCount = smGoods.length;
+  smGoods = window.shopGoodsSelection.removeGoodsByTarget(smGoods, target);
+  smFilteredGoods = window.shopGoodsSelection.removeGoodsByTarget(smFilteredGoods, target);
+  const removedCount = Math.max(0, previousGoodsCount - smGoods.length);
+  const removedSku = String(target.item.sku || '').trim();
+  hideSmGoodsContextMenu();
+  renderSmGoodsTable(tableState);
+
+  if (target.type === 'spu') {
+    const productCode = String(target.item.productCode || '').trim() || '无编码商品';
+    addSmLog('info', `已从列表删除 SPU ${productCode}，共 ${removedCount} 个 SKU`);
+    showToast(`已删除该商品的 ${removedCount} 个 SKU`);
+  } else {
+    addSmLog('info', `已从列表删除 SKU ${removedSku || '无编号'}`);
+    showToast('已删除当前 SKU');
+  }
+}
+
+function renderSmGoodsTable(options = {}) {
+  hideSmGoodsContextMenu();
   if (smFilteredGoods.length === 0) {
     smGoodsTableBody.innerHTML = `
       <tr class="wms-empty-row sm-empty-row">
@@ -3651,6 +3799,7 @@ function renderSmGoodsTable() {
     mainTr.className = 'sm-spu-row';
     mainTr.dataset.spu = group.productCode;
     mainTr.dataset.groupKey = group.groupKey;
+    mainTr.dataset.itemIdx = String(firstItem.originalIdx);
     mainTr.setAttribute('aria-expanded', 'false');
     mainTr.innerHTML = `
       <td><span class="sm-check-wrap"><input type="checkbox" class="sm-spu-check" aria-label="选择该商品的全部SKU" checked /></span></td>
@@ -3679,6 +3828,7 @@ function renderSmGoodsTable() {
       subTr.style.display = 'none';
       subTr.dataset.spuSku = group.productCode;
       subTr.dataset.groupKey = group.groupKey;
+      subTr.dataset.itemIdx = String(item.originalIdx);
       subTr.innerHTML = `
         <td><span class="sm-check-wrap"><input type="checkbox" class="sm-goods-check" data-idx="${item.originalIdx}" aria-label="选择SKU ${escapeHtml(item.sku || '')}" checked /></span></td>
         <td><span class="sm-sku-index">${spuSeq}.${subIdx + 1}</span></td>
@@ -3726,6 +3876,22 @@ function renderSmGoodsTable() {
 
   const selectAll = $('#smSelectAll');
   if (selectAll) selectAll.checked = true;
+  if (options.selectedItems instanceof Set) {
+    smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check').forEach(checkbox => {
+      const index = Number.parseInt(checkbox.dataset.idx, 10);
+      checkbox.checked = options.selectedItems.has(smFilteredGoods[index]);
+    });
+  }
+  if (options.expandedGroupKeys instanceof Set) {
+    smGoodsTableBody.querySelectorAll('.sm-spu-row').forEach(row => {
+      const isExpanded = options.expandedGroupKeys.has(String(row.dataset.groupKey || ''));
+      row.classList.toggle('is-expanded', isExpanded);
+      row.setAttribute('aria-expanded', String(isExpanded));
+      getSmSkuRowsForGroup(row.dataset.groupKey).forEach(skuRow => {
+        skuRow.style.display = isExpanded ? '' : 'none';
+      });
+    });
+  }
   syncSmSelectionCheckboxes();
   setSmResultActionsEnabled(true);
 }
