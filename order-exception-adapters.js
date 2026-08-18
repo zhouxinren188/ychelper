@@ -110,7 +110,8 @@ function buildPublicExceptionRecords(records) {
   return records.map(record => ({
     source: normalizePublicExceptionSource(record && record.source),
     exception_type_masked: maskPublicExceptionText(record && record.exception_type),
-    reason_masked: maskPublicExceptionText(record && record.exception_description)
+    reason_masked: maskPublicExceptionText(record && record.exception_description),
+    solution_masked: maskPublicExceptionText(record && record.handler_action)
   }));
 }
 
@@ -159,6 +160,7 @@ function createExceptionOrderAdapters(services = {}) {
         }
         const summary = summarizeSnapshot(snapshot, exceptionSnapshotRef);
         return {
+          state: summary.exception_count > 0 ? 'exception_found' : 'no_exception',
           exception_snapshot_ref: summary.exception_snapshot_ref,
           exception_count: summary.exception_count,
           queried_at: summary.queried_at,

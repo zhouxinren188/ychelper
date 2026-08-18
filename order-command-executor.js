@@ -498,9 +498,23 @@ class OrderCommandExecutor {
         executionResult = await adapter.execute(cloneJson(validated.params), cloneJson(task), context);
       } catch (error) {
         const uncertain = validated.definition.mode === 'write';
+        const merchantSessionExpired = !uncertain &&
+          error && error.code === 'merchant_session_expired';
+        const exceptionQueryTimedOut = !uncertain &&
+          error && error.code === 'exception_query_timeout';
         const failed = this._buildResponse(task, uncertain ? 'review_required' : 'failed', {
-          reason: uncertain ? 'execution_result_unknown' : 'execution_failed',
-          message: uncertain
+          reason: uncertain
+            ? 'execution_result_unknown'
+            : merchantSessionExpired
+            ? 'merchant_session_expired'
+            : exceptionQueryTimedOut
+            ? 'exception_query_timeout'
+            : 'execution_failed',
+          message: merchantSessionExpired
+            ? '云仓助手商家登录已失效，请在绑定机器码的云仓助手重新登录后再试'
+            : exceptionQueryTimedOut
+            ? '云仓异常订单查询超时，请稍后重试'
+            : uncertain
             ? `写操作调用异常，实际结果未知，禁止自动重试: ${error.message}`
             : error.message,
           executed: uncertain,
@@ -524,9 +538,17 @@ class OrderCommandExecutor {
           });
           return this._persistTerminal(task, fingerprint, leaseLost);
         }
+        const successMessage = task.command === 'exception.order.check' && executionResult
+          ? executionResult.state === 'exception_found'
+            ? '查询到异常订单'
+            : executionResult.state === 'no_exception'
+            ? '暂无异常订单'
+            : ''
+          : '';
         const success = this._buildResponse(task, 'succeeded', {
           reason: 'query_completed',
           message: '只读查询已完成',
+          ...(successMessage ? { message: successMessage } : {}),
           result: executionResult,
           executed: true,
           businessConfirmed: true

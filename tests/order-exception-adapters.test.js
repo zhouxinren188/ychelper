@@ -112,7 +112,8 @@ assert.throws(() => createExceptionOrderAdapters({}), /queryExceptionRecords/);
           source: 'billexception',
           internal_id: 'must-not-leak',
           exception_type: '联系电话 13812345678',
-          exception_description: '详情 https://internal.example/order/123456789'
+          exception_description: '详情 https://internal.example/order/123456789',
+          handler_action: '请拨打 13812345678 处理'
         },
         { source: 'soExceptionCentre', internal_id: 'must-not-leak' }
       ],
@@ -123,25 +124,116 @@ assert.throws(() => createExceptionOrderAdapters({}), /queryExceptionRecords/);
   const checkTask = makeTask('exception.order.check', 'check');
   const checkResult = await checkHarness.executor.executeTask(checkTask);
   assert.strictEqual(checkResult.status, 'succeeded');
+  assert.strictEqual(checkResult.reason, 'query_completed');
+  assert.strictEqual(checkResult.message, '查询到异常订单');
+  assert.strictEqual(checkResult.result.state, 'exception_found');
   assert.strictEqual(checkResult.result.exception_count, 2);
   assert.match(checkResult.result.exception_snapshot_ref, /^exsnap-[a-f0-9]{32}$/);
   assert.strictEqual(checkResult.result.exceptions.length, 2);
   assert.deepStrictEqual(Object.keys(checkResult.result.exceptions[0]).sort(), [
     'exception_type_masked',
     'reason_masked',
+    'solution_masked',
     'source'
   ]);
   assert.strictEqual(checkResult.result.exceptions[0].source, 'billexception');
   assert.strictEqual(checkResult.result.exceptions[0].exception_type_masked, '联系电话 138****5678');
   assert.strictEqual(checkResult.result.exceptions[0].reason_masked, '详情 [链接已隐藏]');
+  assert.strictEqual(checkResult.result.exceptions[0].solution_masked.includes('138****5678'), true);
+  assert.strictEqual(checkResult.result.exceptions[1].solution_masked, '');
   assert.deepStrictEqual(Object.keys(checkResult.result).sort(), [
     'exception_count',
     'exception_snapshot_ref',
     'exceptions',
-    'queried_at'
+    'queried_at',
+    'state'
   ]);
   assert.strictEqual(JSON.stringify(checkResult).includes('must-not-leak'), false);
   assert.deepStrictEqual(queriedLocators, [{ platform_order_no: ORDER_NO, order_year: 2026 }]);
+
+  for (const source of ['billexception', 'soExceptionCentre']) {
+    const singleSourceHarness = createHarness({
+      queryExceptionRecords: async () => ({
+        records: [{
+          source,
+          internal_id: 'single-source-local-only',
+          exception_description: '真实异常原因',
+          handler_action: source === 'billexception' ? '真实处理方案' : ''
+        }],
+        queried_at: '2026-08-12T12:00:00.000Z'
+      })
+    });
+    const singleSource = await singleSourceHarness.executor.executeTask(
+      makeTask('exception.order.check', `single-${source}`)
+    );
+    assert.strictEqual(singleSource.status, 'succeeded');
+    assert.strictEqual(singleSource.message, '查询到异常订单');
+    assert.strictEqual(singleSource.result.state, 'exception_found');
+    assert.strictEqual(singleSource.result.exception_count, 1);
+    assert.strictEqual(singleSource.result.exceptions[0].source, source);
+    assert.strictEqual(singleSource.result.exceptions[0].reason_masked, '真实异常原因');
+    assert.strictEqual(
+      singleSource.result.exceptions[0].solution_masked,
+      source === 'billexception' ? '真实处理方案' : ''
+    );
+  }
+
+  const sensitiveSolutionHarness = createHarness({
+    queryExceptionRecords: async () => ({
+      records: [{
+        source: 'billexception',
+        internal_id: 'sensitive-solution-local-only',
+        exception_description: '普通异常原因',
+        handler_action: 'cookie=must-not-leak'
+      }],
+      queried_at: '2026-08-12T12:00:00.000Z'
+    })
+  });
+  const sensitiveSolution = await sensitiveSolutionHarness.executor.executeTask(
+    makeTask('exception.order.check', 'sensitive-solution')
+  );
+  assert.strictEqual(sensitiveSolution.result.exceptions[0].solution_masked, '[REDACTED]');
+  assert.strictEqual(JSON.stringify(sensitiveSolution).includes('must-not-leak'), false);
+
+  const noExceptionHarness = createHarness();
+  const noException = await noExceptionHarness.executor.executeTask(
+    makeTask('exception.order.check', 'none')
+  );
+  assert.strictEqual(noException.status, 'succeeded');
+  assert.strictEqual(noException.reason, 'query_completed');
+  assert.strictEqual(noException.message, '暂无异常订单');
+  assert.deepStrictEqual({ ...noException.result }, {
+    state: 'no_exception',
+    exception_snapshot_ref: '',
+    exception_count: 0,
+    queried_at: '2026-08-12T12:00:00.000Z',
+    exceptions: []
+  });
+
+  const expiredHarness = createHarness({
+    queryExceptionRecords: async () => {
+      const error = new Error('upstream detail must not escape');
+      error.code = 'merchant_session_expired';
+      throw error;
+    }
+  });
+  const expired = await expiredHarness.executor.executeTask(
+    makeTask('exception.order.check', 'expired')
+  );
+  assert.strictEqual(expired.status, 'failed');
+  assert.strictEqual(expired.reason, 'merchant_session_expired');
+  assert.strictEqual(expired.message, '云仓助手商家登录已失效，请在绑定机器码的云仓助手重新登录后再试');
+  assert.strictEqual(JSON.stringify(expired).includes('upstream detail'), false);
+
+  const generalFailureHarness = createHarness({
+    queryExceptionRecords: async () => { throw new SyntaxError('bad upstream JSON'); }
+  });
+  const generalFailure = await generalFailureHarness.executor.executeTask(
+    makeTask('exception.order.check', 'bad-json')
+  );
+  assert.strictEqual(generalFailure.status, 'failed');
+  assert.strictEqual(generalFailure.reason, 'execution_failed');
+  assert.notStrictEqual(generalFailure.reason, 'merchant_session_expired');
 
   let pending = true;
   let resolveCalls = 0;

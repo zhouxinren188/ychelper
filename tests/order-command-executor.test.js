@@ -173,6 +173,59 @@ async function run() {
   assert.strictEqual(readDuplicate.delivery.executed, true);
   assert.strictEqual(readExecutions, 1);
 
+  const foundExecutor = createExecutor(createPersistence());
+  foundExecutor.registerAdapter('exception.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => ({ state: 'exception_found', exception_count: 1 })
+  });
+  const foundResult = await foundExecutor.executeTask(makeTask('exception.order.check'));
+  assert.strictEqual(foundResult.status, 'succeeded');
+  assert.strictEqual(foundResult.reason, 'query_completed');
+  assert.strictEqual(foundResult.message, '查询到异常订单');
+
+  const noExceptionExecutor = createExecutor(createPersistence());
+  noExceptionExecutor.registerAdapter('exception.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => ({ state: 'no_exception', exception_count: 0 })
+  });
+  const noExceptionResult = await noExceptionExecutor.executeTask(makeTask('exception.order.check'));
+  assert.strictEqual(noExceptionResult.status, 'succeeded');
+  assert.strictEqual(noExceptionResult.reason, 'query_completed');
+  assert.strictEqual(noExceptionResult.message, '暂无异常订单');
+
+  const expiredSessionExecutor = createExecutor(createPersistence());
+  expiredSessionExecutor.registerAdapter('exception.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => {
+      const error = new Error('sensitive upstream detail');
+      error.code = 'merchant_session_expired';
+      throw error;
+    }
+  });
+  const expiredSessionResult = await expiredSessionExecutor.executeTask(makeTask('exception.order.check'));
+  assert.strictEqual(expiredSessionResult.status, 'failed');
+  assert.strictEqual(expiredSessionResult.reason, 'merchant_session_expired');
+  assert.strictEqual(
+    expiredSessionResult.message,
+    '云仓助手商家登录已失效，请在绑定机器码的云仓助手重新登录后再试'
+  );
+  assert.strictEqual(JSON.stringify(expiredSessionResult).includes('sensitive upstream detail'), false);
+
+  const timedOutExecutor = createExecutor(createPersistence());
+  timedOutExecutor.registerAdapter('exception.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => {
+      const error = new Error('sensitive timeout detail');
+      error.code = 'exception_query_timeout';
+      throw error;
+    }
+  });
+  const timedOutResult = await timedOutExecutor.executeTask(makeTask('exception.order.check'));
+  assert.strictEqual(timedOutResult.status, 'failed');
+  assert.strictEqual(timedOutResult.reason, 'exception_query_timeout');
+  assert.strictEqual(timedOutResult.message, '云仓异常订单查询超时，请稍后重试');
+  assert.strictEqual(JSON.stringify(timedOutResult).includes('sensitive timeout detail'), false);
+
   const printPersistence = createPersistence();
   const printExecutor = createExecutor(printPersistence);
   let printExecutions = 0;

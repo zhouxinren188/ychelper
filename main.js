@@ -22,6 +22,8 @@ const { ExceptionSnapshotStore } = require('./order-exception-snapshot-store');
 const {
   assertRequiredExceptionSources,
   fetchJsonWithTimeout,
+  measureExceptionSource,
+  retryTimedOutExceptionQuery,
   resolveAbnormalQueryContext
 } = require('./abnormal-query-support');
 const { OrderControlPlaneClient } = require('./order-control-plane-client');
@@ -7087,7 +7089,7 @@ async function fetchBillExceptionList({ csrfToken, sellerNo, deptNo, deptName, b
 
   const url = `https://o.jdl.com/billexception/queryBillExceptionListNew.do?rand=${Math.random()}`;
   const merchantSession = getMerchantSession();
-  return fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
+  return retryTimedOutExceptionQuery(() => fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -7096,7 +7098,7 @@ async function fetchBillExceptionList({ csrfToken, sellerNo, deptNo, deptName, b
       'Referer': 'https://o.jdl.com/billexception/gotoBillExceptionPage.do'
     },
     body: params.toString()
-  });
+  }));
 }
 
 // 查询异常订单中心列表（soExceptionCentre）
@@ -7149,7 +7151,7 @@ async function fetchSoExceptionList({ csrfToken, soNo, spSoNo, soYear, page, pag
 
   const url = `https://o.jdl.com/soExceptionCentre/querySoExceptionList.do?rand=${Math.random()}`;
   const merchantSession = getMerchantSession();
-  return fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
+  return retryTimedOutExceptionQuery(() => fetchJsonWithTimeout(merchantSession.fetch.bind(merchantSession), url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -7158,7 +7160,7 @@ async function fetchSoExceptionList({ csrfToken, soNo, spSoNo, soYear, page, pag
       'Referer': 'https://o.jdl.com/soExceptionCentre/gotoSoExceptionQuery.do'
     },
     body: params.toString()
-  });
+  }));
 }
 
 // 时间归一化：毫秒时间戳或格式化字符串 → 毫秒数
@@ -7255,7 +7257,7 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
         shopName: item.shopName || '',
         exceptionCodeStr: item.errType || '',
         exceptionDesc: item.errReason || '',
-        handlerAction: '',
+        handlerAction: item.handlerAction || '',
         createTime: item.pauseTime || '',
         exceptionCode: item.errTypeNo || '',
         exceptionStatus: item.errStatus === '异常' ? 1 : 2,
@@ -7307,16 +7309,25 @@ async function queryAbnormalOrders({ merchantName, deptName, orderNo, shopName, 
 
     } else {
       // 全部：并发查两个 API
+      const concurrentStartedAt = Date.now();
+      const recordSourceTiming = measurement => {
+        console.log(
+          `[异常订单测速] source=${measurement.source}, ` +
+          `duration_ms=${measurement.duration_ms}, outcome=${measurement.outcome}, count=${measurement.count}`
+        );
+      };
       const [billExResult, soExResult] = await Promise.allSettled([
-        fetchBillExceptionList({
+        measureExceptionSource('billexception', () => fetchBillExceptionList({
           csrfToken, sellerNo, deptNo: '', deptName: billExceptionDeptValue,
           billNo, sellerBillNo, exceptionStatus: '1',
           soYear, soSource: '', page: qPage, pageSize: qPageSize
-        }),
-        fetchSoExceptionList({
+        }), { onComplete: recordSourceTiming }),
+        measureExceptionSource('soExceptionCentre', () => fetchSoExceptionList({
           csrfToken, soNo, spSoNo, soYear, page: qPage, pageSize: qPageSize
-        })
+        }), { onComplete: recordSourceTiming })
       ]);
+      const concurrentDurationMs = Math.max(0, Date.now() - concurrentStartedAt);
+      console.log(`[异常订单测速] phase=parallel_complete, duration_ms=${concurrentDurationMs}`);
       assertRequiredExceptionSources([billExResult, soExResult], options.requireAllSources);
 
       let billExOrders = [];
