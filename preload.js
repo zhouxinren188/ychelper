@@ -107,6 +107,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   generateMachineCode: () => ipcRenderer.invoke('generate-machine-code'),
   getOrderCommandStatus: () => ipcRenderer.invoke('get-order-command-status'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  retrySessionEntry: () => ipcRenderer.invoke('retry-session-entry'),
   paymentSuccessEnter: () => ipcRenderer.invoke('payment-success-enter'),
   onSessionKicked: (callback) => ipcRenderer.on('session-kicked', () => callback()),
   onSubscriptionExpired: (callback) => ipcRenderer.on('subscription-expired', () => callback()),

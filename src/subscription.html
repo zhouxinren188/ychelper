@@ -58,6 +58,20 @@
       color: #27ae60;
     }
 
+    .capacity-alert {
+      display: none;
+      margin-bottom: 16px;
+      padding: 13px 15px;
+      border: 1px solid #f2c98c;
+      border-radius: 8px;
+      background: #fff8ed;
+      color: #7a4a10;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .capacity-alert.visible { display: block; }
+    .capacity-alert strong { color: #d66c00; }
+
     /* 版本选择 */
     .tier-selector {
       display: flex;
@@ -84,6 +98,13 @@
       border-color: #e67e22;
       background: #fff8f0;
       box-shadow: 0 4px 12px rgba(230, 126, 34, 0.2);
+    }
+    .tier-card.disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+      transform: none;
+      box-shadow: none;
+      background: #f7f7f7;
     }
     .tier-card .tier-name {
       font-size: 15px;
@@ -291,6 +312,21 @@
       background: #ccc;
       cursor: not-allowed;
     }
+    .retry-entry-btn {
+      display: none;
+      width: 100%;
+      height: 40px;
+      margin: -6px 0 16px;
+      border: 1px solid #e67e22;
+      border-radius: 6px;
+      background: #fff;
+      color: #d96d00;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .retry-entry-btn.visible { display: block; }
+    .retry-entry-btn:disabled { opacity: 0.55; cursor: wait; }
 
     /* 二维码区域 */
     .qr-section {
@@ -464,6 +500,8 @@
       <div class="sub-status expired" id="subStatus">使用时长已到期</div>
     </div>
 
+    <div class="capacity-alert" id="capacityAlert"></div>
+
     <!-- 版本选择 -->
     <div class="tier-selector" id="tierSelector">
       <div class="tier-card selected" data-tier="basic">
@@ -573,6 +611,7 @@
 
     <!-- 支付按钮 -->
     <button class="pay-btn" id="payBtn">微信扫码支付</button>
+    <button class="retry-entry-btn" id="retryEntryBtn">重新检测在线名额</button>
 
     <!-- 二维码区域 -->
     <div class="qr-section" id="qrSection">
@@ -633,11 +672,14 @@
       premium:  { monthly: 498, quarterly: 1488, yearly: 5888 }
     };
     const tierNames = { basic: '基础版', standard: '标准版', premium: '高级版' };
+    const tierOrder = ['basic', 'standard', 'premium'];
+    const tierCapacity = { basic: 1, standard: 2, premium: 5 };
     const planNames = { monthly: '月度', quarterly: '季度', yearly: '年度' };
 
     // 版本选择
     document.querySelectorAll('.tier-card').forEach(card => {
       card.addEventListener('click', () => {
+        if (card.classList.contains('disabled')) return;
         document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentTier = card.dataset.tier;
@@ -701,6 +743,8 @@
       }
 
       const statusEl = $('#subStatus');
+      const isCapacityLimit = subInfo.entry_reason === 'concurrent_session_limit' ||
+        subInfo.session_reason === 'concurrent_session_limit';
       if (subInfo.status === 'expired') {
         statusEl.textContent = '使用时长已到期，请续费';
         statusEl.className = 'sub-status expired';
@@ -709,8 +753,10 @@
         statusEl.className = 'sub-status trial';
       } else {
         const tierLabel = tierNames[subInfo.tier] || '';
-        statusEl.textContent = tierLabel ? `${tierLabel} 订阅有效` : '订阅有效';
-        statusEl.className = 'sub-status active';
+        statusEl.textContent = isCapacityLimit
+          ? '在线设备已达上限'
+          : (tierLabel ? `${tierLabel} 订阅有效` : '订阅有效');
+        statusEl.className = isCapacityLimit ? 'sub-status trial' : 'sub-status active';
       }
 
       // 邀请码
@@ -726,7 +772,7 @@
 
       // 如果用户已有订阅版本（付费用户），默认选中该版本
       // 试用用户不自动选中，避免默认跳到标准版导致用户误付
-      if (subInfo.tier && subInfo.status !== 'trial') {
+      if (subInfo.tier && subInfo.status !== 'trial' && !isCapacityLimit) {
         const targetTier = subInfo.tier;
         if (targetTier !== currentTier) {
           currentTier = targetTier;
@@ -736,7 +782,85 @@
           updatePeriodPrices();
         }
       }
+
+      const capacityAlert = $('#capacityAlert');
+      const retryEntryBtn = $('#retryEntryBtn');
+      const payBtn = $('#payBtn');
+      document.querySelectorAll('.tier-card').forEach(card => card.classList.remove('disabled'));
+
+      if (isCapacityLimit) {
+        const onlineCount = Math.max(0, Number(subInfo.online_count) || 0);
+        const maxSessions = Math.max(1, Number(subInfo.max_sessions) || 1);
+        const currentTierIndex = Math.max(0, tierOrder.indexOf(subInfo.tier || 'basic'));
+        const recommendedTier = subInfo.recommended_tier || '';
+        capacityAlert.innerHTML = `当前事业部在线设备已达上限（<strong>${onlineCount}/${maxSessions}</strong>）。` +
+          '为避免中断其他设备正在执行的操作，本次登录未进入。您可以让其他设备退出后重新检测，或升级版本增加在线名额。';
+        capacityAlert.classList.add('visible');
+        retryEntryBtn.classList.add('visible');
+
+        document.querySelectorAll('.tier-card').forEach(card => {
+          const tier = card.dataset.tier;
+          const tierIndex = tierOrder.indexOf(tier);
+          const cannotUpgrade = tierIndex <= currentTierIndex || (tierCapacity[tier] || 0) <= onlineCount;
+          card.classList.toggle('disabled', cannotUpgrade);
+          card.classList.remove('selected');
+        });
+
+        const recommendedCard = recommendedTier
+          ? document.querySelector(`.tier-card[data-tier="${recommendedTier}"]`)
+          : null;
+        if (recommendedCard && !recommendedCard.classList.contains('disabled')) {
+          recommendedCard.classList.add('selected');
+          currentTier = recommendedTier;
+          payBtn.disabled = false;
+          payBtn.textContent = `升级至${tierNames[recommendedTier]}并增加在线名额`;
+          updatePeriodPrices();
+        } else {
+          currentTier = subInfo.tier || 'premium';
+          payBtn.disabled = true;
+          payBtn.textContent = '当前已无更高在线版本，请先释放其他设备';
+        }
+      } else {
+        capacityAlert.classList.remove('visible');
+        retryEntryBtn.classList.remove('visible');
+        if (!currentOrderNo) {
+          payBtn.disabled = false;
+          payBtn.textContent = '微信扫码支付';
+        }
+      }
     }
+
+    async function attemptSessionEntry(apiName) {
+      const button = apiName === 'retrySessionEntry' ? $('#retryEntryBtn') : $('#successEnterBtn');
+      button.disabled = true;
+      button.textContent = '正在检测在线名额...';
+      try {
+        const result = await window.electronAPI[apiName]();
+        if (result && result.success) {
+          window.electronAPI.close();
+          return true;
+        }
+
+        if (result && result.reason === 'concurrent_session_limit') {
+          subInfo = { ...subInfo, ...result, entry_reason: 'concurrent_session_limit' };
+          updateUI();
+          $('#successDesc').textContent = '升级已生效，但在线名额仍已占满。请关闭其他设备后重新检测。';
+        } else {
+          $('#successDesc').textContent = (result && result.error) || '暂时无法检测在线名额，请稍后重试。';
+        }
+        return false;
+      } catch (err) {
+        $('#successDesc').textContent = '检测失败：' + err.message;
+        return false;
+      } finally {
+        button.disabled = false;
+        button.textContent = apiName === 'retrySessionEntry' ? '重新检测在线名额' : '重新检测';
+      }
+    }
+
+    $('#retryEntryBtn').addEventListener('click', () => {
+      attemptSessionEntry('retrySessionEntry');
+    });
 
     // 复制邀请码
     $('#copyInviteBtn').addEventListener('click', () => {
@@ -897,21 +1021,14 @@
 
       const tierName = tierNames[currentTier] || currentTier;
       const planName = planNames[currentPlan] || currentPlan;
-      $('#successDesc').textContent = `${tierName} ${planName}套餐已激活，感谢您的支持！`;
+      $('#successDesc').textContent = `${tierName} ${planName}套餐已激活，正在重新检测在线名额...`;
       $('#successOverlay').classList.add('visible');
+      attemptSessionEntry('paymentSuccessEnter');
     }
 
     // 进入软件
     $('#successEnterBtn').addEventListener('click', async () => {
-      $('#successEnterBtn').disabled = true;
-      $('#successEnterBtn').textContent = '正在进入...';
-      try {
-        await window.electronAPI.paymentSuccessEnter();
-      } catch (err) {
-        alert('进入失败: ' + err.message);
-        $('#successEnterBtn').disabled = false;
-        $('#successEnterBtn').textContent = '进入软件';
-      }
+      await attemptSessionEntry('paymentSuccessEnter');
     });
 
     // 页面关闭时清理

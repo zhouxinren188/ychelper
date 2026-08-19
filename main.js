@@ -217,6 +217,133 @@ async function checkSubscription(jdUsername, departmentId, merchantName, departm
   });
 }
 
+const SESSION_LIMIT_BY_TIER = { basic: 1, standard: 2, premium: 5 };
+const SESSION_TIER_ORDER = ['basic', 'standard', 'premium'];
+
+function buildSubscriptionInfo(subResult, context = {}) {
+  const tier = subResult.tier || 'basic';
+  const subscriptionStatus = subResult.subscription_status || subResult.status;
+  const reportedMax = Number(subResult.max_sessions);
+  const maxSessions = Number.isFinite(reportedMax) && reportedMax > 0
+    ? reportedMax
+    : (SESSION_LIMIT_BY_TIER[tier] || 1);
+  const reportedOnline = Number(subResult.online_count);
+  const onlineCount = Number.isFinite(reportedOnline) && reportedOnline >= 0
+    ? reportedOnline
+    : (!subResult.session_token && (subscriptionStatus === 'active' || subscriptionStatus === 'trial') ? maxSessions : 0);
+  let recommendedTier = subResult.recommended_tier || '';
+  if (!recommendedTier) {
+    const currentIndex = Math.max(0, SESSION_TIER_ORDER.indexOf(tier));
+    recommendedTier = SESSION_TIER_ORDER.slice(currentIndex + 1)
+      .find(candidate => (SESSION_LIMIT_BY_TIER[candidate] || 0) > onlineCount) || '';
+  }
+
+  return {
+    status: subscriptionStatus,
+    tier,
+    tier_label: subResult.tier_label || '',
+    invite_code: subResult.invite_code || '',
+    days_remaining: subResult.days_remaining,
+    subscription_end: subResult.subscription_end,
+    trial_end: subResult.trial_end,
+    is_first_payment: Boolean(subResult.is_first_payment),
+    department_id: subResult.department_id || context.departmentId || '',
+    department_name: subResult.department_name || context.departmentName || '',
+    online_count: onlineCount,
+    max_sessions: maxSessions,
+    session_reason: subResult.session_reason || '',
+    recommended_tier: recommendedTier
+  };
+}
+
+function isSubscriptionSessionGranted(subResult) {
+  const subscriptionStatus = subResult && (subResult.subscription_status || subResult.status);
+  return Boolean(
+    subResult &&
+    (subscriptionStatus === 'active' || subscriptionStatus === 'trial') &&
+    subResult.session_granted !== false &&
+    subResult.session_token
+  );
+}
+
+function activateGrantedSubscriptionSession(subResult, context) {
+  if (!isSubscriptionSessionGranted(subResult)) return false;
+
+  const jdUsername = context.jdUsername;
+  currentSessionToken = subResult.session_token;
+  currentUsername = jdUsername;
+  storeSet('subscriptionInfo', buildSubscriptionInfo(subResult, context));
+  activateOrderCommandRuntime(jdUsername);
+  createMainWindow();
+  startHeartbeat();
+  return true;
+}
+
+function showConcurrentSessionLimit(subResult, context) {
+  const info = buildSubscriptionInfo(subResult, context);
+  storeSet('subscriptionInfo', info);
+  createSubscriptionWindow({
+    ...info,
+    jd_username: context.jdUsername,
+    entry_reason: 'concurrent_session_limit'
+  });
+  return info;
+}
+
+async function retryCurrentSessionEntry() {
+  const jdUsername = currentUsername || storeGet('credentials', {}).username || '';
+  const userData = storeGet('userData', {});
+  const context = {
+    jdUsername,
+    departmentId: userData.selectedDeptId || userData.departmentId || '',
+    merchantName: userData.merchantName || '',
+    departmentName: userData.selectedDeptName || userData.departmentName || ''
+  };
+  const subResult = await checkSubscription(
+    context.jdUsername,
+    context.departmentId,
+    context.merchantName,
+    context.departmentName
+  );
+
+  if (activateGrantedSubscriptionSession(subResult, context)) {
+    return { success: true };
+  }
+
+  const subscriptionStatus = subResult.subscription_status || subResult.status;
+  if ((subscriptionStatus === 'active' || subscriptionStatus === 'trial') &&
+      !subResult.session_token &&
+      (subResult.session_reason === 'concurrent_session_limit' || subResult.status === 'session_limit')) {
+    const info = showConcurrentSessionLimit(subResult, context);
+    return {
+      success: false,
+      reason: 'concurrent_session_limit',
+      ...info
+    };
+  }
+
+  return { success: false, reason: 'subscription_inactive', error: '订阅状态不可用' };
+}
+
+async function releaseCurrentSubscriptionSession() {
+  const token = currentSessionToken;
+  if (!token) return;
+  currentSessionToken = null;
+  stopHeartbeat();
+
+  let timer = null;
+  try {
+    await Promise.race([
+      callApi('POST', '/api/auth/logout', { session_token: token }),
+      new Promise(resolve => { timer = setTimeout(resolve, 1500); })
+    ]);
+  } catch (err) {
+    console.warn('主动释放在线名额失败，将由心跳租约自动回收:', err.message);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function assertAutomationAccess() {
   const subscription = storeGet('subscriptionInfo', {});
   if (canUseAutomation(subscription)) return;
@@ -265,7 +392,7 @@ function startHeartbeat() {
     } catch (err) {
       console.error('心跳失败:', err.message);
     }
-  }, 60 * 1000);
+  }, 30 * 1000);
 }
 
 // 停止心跳
@@ -279,6 +406,9 @@ function stopHeartbeat() {
 // 创建订阅/付费窗口
 function createSubscriptionWindow(subInfo) {
   if (subscriptionWindow) {
+    if (!subscriptionWindow.isDestroyed()) {
+      subscriptionWindow.webContents.send('subscription-info', subInfo);
+    }
     subscriptionWindow.focus();
     return;
   }
@@ -303,6 +433,8 @@ function createSubscriptionWindow(subInfo) {
 
   subscriptionWindow.on('closed', () => {
     subscriptionWindow = null;
+    // 登录阶段只有订阅窗口可见。用户关闭它即视为取消登录，避免应用只剩隐藏的京东页面进程。
+    if (!mainWindow && !loginWindow && !appIsQuitting) app.quit();
   });
 }
 
@@ -1248,25 +1380,14 @@ async function checkLoginStatus(url) {
       const subResult = await checkSubscription(jdUsername, departmentId, merchantName, departmentName);
       console.log('订阅状态:', subResult.status, '剩余天数:', subResult.days_remaining);
 
-      if (subResult.status === 'active' || subResult.status === 'trial') {
-        // 订阅有效，进入主窗口
-        currentSessionToken = subResult.session_token;
-        storeSet('subscriptionInfo', {
-          status: subResult.status,
-          tier: subResult.tier || 'basic',
-          invite_code: subResult.invite_code,
-          days_remaining: subResult.days_remaining,
-          subscription_end: subResult.subscription_end,
-          trial_end: subResult.trial_end,
-          is_first_payment: subResult.is_first_payment,
-          department_id: departmentId,
-          department_name: departmentName
-        });
+      const subscriptionStatus = subResult.subscription_status || subResult.status;
+      if (subscriptionStatus === 'active' || subscriptionStatus === 'trial') {
+        const sessionContext = { jdUsername, departmentId, merchantName, departmentName };
         isCheckingSubscription = false;
         isLoggingIn = false;
-        activateOrderCommandRuntime(jdUsername);
-        createMainWindow();
-        startHeartbeat();
+        if (!activateGrantedSubscriptionSession(subResult, sessionContext)) {
+          showConcurrentSessionLimit(subResult, sessionContext);
+        }
       } else {
         // 订阅过期，进入付费窗口
         isCheckingSubscription = false;
@@ -2671,7 +2792,8 @@ ipcMain.on('window-close', (event) => {
 });
 
 // 渲染进程确认退出
-ipcMain.on('confirm-close', () => {
+ipcMain.on('confirm-close', async () => {
+  await releaseCurrentSubscriptionSession();
   if (pendingUpdateAction === 'autoUpdater') {
     // 非静默安装，显示 NSIS 安装进度界面，安装后自动重启
     autoUpdater.quitAndInstall(false, true);
@@ -7809,43 +7931,20 @@ ipcMain.handle('get-device-id', async () => {
   return getDeviceId();
 });
 
+ipcMain.handle('retry-session-entry', async () => {
+  try {
+    return await retryCurrentSessionEntry();
+  } catch (err) {
+    return { success: false, reason: 'network_error', error: err.message };
+  }
+});
+
 // 付费成功后重新检查订阅并进入主窗口
 ipcMain.handle('payment-success-enter', async () => {
-  const jdUsername = storeGet('credentials', {}).username || '';
-  const userData = storeGet('userData', {});
-  const departmentId = userData.selectedDeptId || userData.departmentId || '';
-  const merchantName = userData.merchantName || '';
-  const departmentName = userData.selectedDeptName || '';
-
   try {
-    const subResult = await checkSubscription(jdUsername, departmentId, merchantName, departmentName);
-    if (subResult.status === 'active' || subResult.status === 'trial') {
-      currentSessionToken = subResult.session_token;
-      currentUsername = jdUsername;
-      storeSet('subscriptionInfo', {
-        status: subResult.status,
-        tier: subResult.tier || 'standard',
-        invite_code: subResult.invite_code,
-        days_remaining: subResult.days_remaining,
-        subscription_end: subResult.subscription_end,
-        trial_end: subResult.trial_end,
-        is_first_payment: subResult.is_first_payment,
-        department_id: departmentId,
-        department_name: userData.selectedDeptName || ''
-      });
-
-      if (subscriptionWindow) {
-        subscriptionWindow.close();
-        subscriptionWindow = null;
-      }
-      activateOrderCommandRuntime(jdUsername);
-      createMainWindow();
-      startHeartbeat();
-      return { success: true };
-    }
-    return { success: false, error: '订阅状态未更新' };
+    return await retryCurrentSessionEntry();
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, reason: 'network_error', error: err.message };
   }
 });
 
