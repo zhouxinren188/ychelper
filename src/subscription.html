@@ -24,23 +24,9 @@
       color: #666;
       -webkit-app-region: drag;
     }
-    .subscription-titlebar-brand {
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding-left: 10px;
-      font-size: 11px;
-    }
-    .subscription-titlebar-brand img {
-      width: 15px;
-      height: 15px;
-      flex: 0 0 auto;
-    }
-    .subscription-titlebar-title {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .subscription-titlebar-drag {
+      flex: 1;
+      height: 100%;
     }
     .subscription-window-controls {
       height: 100%;
@@ -564,10 +550,7 @@
 </head>
 <body>
   <header class="subscription-titlebar" id="subscriptionTitlebar">
-    <div class="subscription-titlebar-brand">
-      <img src="icon.ico" alt="" draggable="false">
-      <span class="subscription-titlebar-title">云仓助手 · 订阅</span>
-    </div>
+    <div class="subscription-titlebar-drag" aria-hidden="true"></div>
     <div class="subscription-window-controls">
       <button class="subscription-window-button" id="subscriptionMinimize" type="button"
         aria-label="最小化" title="最小化">&#8722;</button>

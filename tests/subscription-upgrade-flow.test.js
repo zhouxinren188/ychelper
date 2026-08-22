@@ -104,6 +104,10 @@ async function createPage(orderResult, quoteResult = null) {
     '订阅页自绘标题栏应使用收紧后的28px高度');
   assert.match(html, /\.subscription-titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag/,
     '自绘标题栏必须支持拖动窗口');
+  assert.ok(!document.querySelector('.subscription-titlebar-brand'),
+    '订阅窗口标题栏应与主软件一致，不再显示仿原生图标和标题');
+  assert.ok(document.querySelector('.subscription-titlebar-drag'),
+    '订阅窗口标题栏左侧应保留空白拖动区域');
   assert.match(html, /\.subscription-window-controls\s*\{[\s\S]*?-webkit-app-region:\s*no-drag/,
     '窗口控制按钮区域不能吞掉点击事件');
   document.querySelector('#subscriptionMinimize').click();
