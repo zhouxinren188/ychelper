@@ -124,6 +124,10 @@ async function createPage(orderResult, quoteResult = null) {
     '订阅窗口外层必须像主界面一样固定标题栏并禁止整窗滚动');
   assert.match(html, /\.subscription-main\s*\{[\s\S]*?overflow-y:\s*auto/,
     '只有标题栏下方的订阅内容区域允许滚动');
+  assert.match(html, /\.subscription-main\s*\{[\s\S]*?scrollbar-width:\s*none/,
+    '订阅内容应保留滚动能力但隐藏可见滚动条');
+  assert.match(html, /\.subscription-main::\-webkit-scrollbar\s*\{[\s\S]*?width:\s*0/,
+    'Electron Chromium 中不应显示右侧滚动条');
   document.querySelector('#subscriptionClose').click();
   assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 0, closeCount: 1 });
   assert.match(titlebarStyleSource, /\.titlebar\s*\{[\s\S]*?height:\s*28px/,
