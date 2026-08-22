@@ -24,17 +24,6 @@
   -webkit-app-region: no-drag;
 }
 
-.window-title {
-  min-width: 0;
-  padding-left: 10px;
-  overflow: hidden;
-  color: #555;
-  font-size: 12px;
-  font-weight: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .department-name {
   color: #e67e22;
   font-size: 13px;

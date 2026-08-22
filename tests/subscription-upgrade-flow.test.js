@@ -102,8 +102,11 @@ async function createPage(orderResult, quoteResult = null) {
   assert.ok(document.querySelector('#subscriptionTitlebar'), '订阅页应提供自绘标题栏');
   assert.ok(document.querySelector('#subscriptionTitlebar.titlebar'),
     '订阅窗口必须直接复用主界面的标题栏结构');
-  assert.strictEqual(document.querySelector('#subscriptionTitlebar .window-title').textContent,
-    '云仓助手 - 订阅', '订阅窗口标题不能省略');
+  assert.strictEqual(
+    document.querySelector('#subscriptionTitlebar .titlebar-right .department-name').textContent,
+    '云仓助手 - 订阅',
+    '订阅窗口标题必须复用主界面右侧信息位置且不能省略'
+  );
   assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-left'));
   assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-right .window-controls'));
   assert.ok(document.querySelector('#subscriptionMinimize.win-btn'));
