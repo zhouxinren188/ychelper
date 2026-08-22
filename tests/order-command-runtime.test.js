@@ -95,6 +95,13 @@ assert.match(htmlSource, /相同设备的不同账号、相同账号的不同设
 assert.match(htmlSource, /主账号及其已授权子账号的云仓订单任务都可定向到这里/);
 assert.match(rendererSource, /navigator\.clipboard\.writeText\(currentMachineCode\)/);
 assert.match(rendererSource, /window\.electronAPI\.generateMachineCode\(\)/);
+assert.match(
+  htmlSource,
+  /<script src="js\/machineStatusRefresh\.js"><\/script>\s*<script src="js\/renderer\.js"><\/script>/,
+  '机器码状态刷新模块必须先于 renderer.js 加载'
+);
+assert.match(rendererSource, /createMachineStatusRefreshController\(/);
+assert.match(rendererSource, /document\.addEventListener\('visibilitychange', syncStatusRefresh\)/);
 assert.doesNotMatch(rendererSource, /machineEnrollmentCode|enrollOrderExecutor/);
 assert.match(contractSource, /绑定单位是“店小二网店管家主账号体系”/);
 assert.match(contractSource, /同一主账号及其已授权子账号可以共同使用/);

@@ -223,6 +223,24 @@ async function initMachineCodeModule() {
     });
   };
 
+  const machinePageEl = $('#page-machineCode');
+  const statusRefresh = window.MachineStatusRefresh.createMachineStatusRefreshController({
+    intervalMs: window.MachineStatusRefresh.DEFAULT_REFRESH_INTERVAL_MS,
+    getStatus: () => window.electronAPI.getOrderCommandStatus(),
+    renderStatus: renderExecutionStatus,
+    renderError: error => renderExecutionStatus({
+      success: false,
+      error: error && error.message ? error.message : '状态读取失败'
+    }),
+    isActive: () => document.visibilityState !== 'hidden' && machinePageEl.classList.contains('active')
+  });
+  const syncStatusRefresh = () => {
+    statusRefresh.sync();
+  };
+  $$('.nav-item').forEach(item => item.addEventListener('click', syncStatusRefresh));
+  document.addEventListener('visibilitychange', syncStatusRefresh);
+  window.addEventListener('beforeunload', () => statusRefresh.dispose(), { once: true });
+
   const copyMachineCode = async () => {
     if (!currentMachineCode) return;
     try {
@@ -262,7 +280,7 @@ async function initMachineCodeModule() {
       showGeneratedState(machineResult.machine_code);
       feedbackEl.textContent = '机器码已生成并安全保存在本机';
       feedbackEl.className = 'machine-code-copy-feedback success';
-      renderExecutionStatus(await window.electronAPI.getOrderCommandStatus());
+      await statusRefresh.refreshNow();
     } catch (error) {
       showPendingState();
       feedbackEl.textContent = `生成失败：${error.message}`;
@@ -288,6 +306,7 @@ async function initMachineCodeModule() {
       showPendingState();
     }
     renderExecutionStatus(statusResult);
+    await statusRefresh.sync();
   } catch (error) {
     showPendingState();
     generateBtn.disabled = true;
