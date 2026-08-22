@@ -63,6 +63,10 @@ async function createPage(retryResult) {
   });
 
   const document = page.dom.window.document;
+  assert.strictEqual(document.querySelector('.sub-header h1'), null);
+  assert.strictEqual(document.querySelector('#subUser'), null);
+  assert.strictEqual(document.querySelector('#subDept').textContent, '事业部: 测试事业部');
+  assert.match(document.querySelector('#subStatus').textContent, /在线设备已达上限/);
   assert.strictEqual(document.querySelector('#capacityAlert').classList.contains('visible'), true);
   assert.match(document.querySelector('#capacityAlert').textContent, /1\/1/);
   assert.strictEqual(document.querySelector('[data-tier="basic"]').classList.contains('disabled'), true);

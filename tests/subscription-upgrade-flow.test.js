@@ -90,11 +90,18 @@ async function createPage(orderResult, quoteResult = null) {
     subscription_plan: 'yearly',
     subscription_end: '2026-10-01T00:00:00.000Z',
     jd_username: 'masked-user',
+    department_name: '测试事业部',
     department_id: 'masked-dept',
     is_first_payment: false
   });
 
   const document = page.dom.window.document;
+  assert.strictEqual(document.querySelector('.sub-header h1'), null,
+    '订阅内容区不应重复显示“云仓助手”');
+  assert.strictEqual(document.querySelector('#subUser'), null,
+    '订阅内容区不应显示账号');
+  assert.strictEqual(document.querySelector('#subDept').textContent, '事业部: 测试事业部');
+  assert.ok(document.querySelector('#subStatus'), '订阅状态必须保留');
   const subscriptionWindowBlock = mainSource.match(/subscriptionWindow = new BrowserWindow\(\{([\s\S]*?)\n  \}\);/);
   assert.ok(subscriptionWindowBlock, '应能定位订阅窗口配置');
   assert.match(subscriptionWindowBlock[1], /frame:\s*false/,

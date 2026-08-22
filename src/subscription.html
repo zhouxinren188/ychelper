@@ -32,31 +32,21 @@
     .sub-container {
       max-width: 480px;
       margin: 0 auto;
-      padding: 24px 20px;
+      padding: 16px 20px 24px;
     }
 
-    /* 顶部标题 */
+    /* 顶部订阅信息 */
     .sub-header {
       text-align: center;
-      margin-bottom: 20px;
-    }
-    .sub-header h1 {
-      font-size: 20px;
-      color: #333;
-      margin-bottom: 4px;
-    }
-    .sub-header .sub-user {
-      font-size: 13px;
-      color: #999;
+      margin-bottom: 16px;
     }
     .sub-header .sub-dept {
-      font-size: 12px;
-      color: #bbb;
-      margin-top: 2px;
+      font-size: 13px;
+      color: #888;
     }
     .sub-header .sub-status {
       display: inline-block;
-      margin-top: 8px;
+      margin-top: 6px;
       padding: 4px 14px;
       border-radius: 12px;
       font-size: 12px;
@@ -529,10 +519,8 @@
   </header>
   <main class="subscription-main" id="subscriptionMain">
     <div class="sub-container">
-    <!-- 顶部 -->
+    <!-- 顶部订阅信息 -->
     <div class="sub-header">
-      <h1>云仓助手</h1>
-      <div class="sub-user" id="subUser"></div>
       <div class="sub-dept" id="subDept"></div>
       <div class="sub-status expired" id="subStatus">使用时长已到期</div>
     </div>
@@ -997,12 +985,7 @@
     function updateUI() {
       if (!subInfo) return;
 
-      $('#subUser').textContent = `账号: ${subInfo.jd_username || ''}`;
-
-      // 事业部名称
-      if (subInfo.department_name) {
-        $('#subDept').textContent = `事业部: ${subInfo.department_name}`;
-      }
+      $('#subDept').textContent = `事业部: ${subInfo.department_name || '--'}`;
 
       const statusEl = $('#subStatus');
       const isCapacityLimit = subInfo.entry_reason === 'concurrent_session_limit' ||
