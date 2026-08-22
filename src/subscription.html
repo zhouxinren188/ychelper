@@ -72,6 +72,20 @@
     .capacity-alert.visible { display: block; }
     .capacity-alert strong { color: #d66c00; }
 
+    .upgrade-note {
+      display: none;
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-left: 3px solid #e67e22;
+      border-radius: 6px;
+      background: #fff8f0;
+      color: #6b4a26;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+    .upgrade-note.visible { display: block; }
+    .upgrade-note strong { color: #d66c00; }
+
     /* 版本选择 */
     .tier-selector {
       display: flex;
@@ -189,6 +203,13 @@
       border-color: #e67e22;
       background: #fff8f0;
       box-shadow: 0 4px 12px rgba(230, 126, 34, 0.2);
+    }
+    .period-card.disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+      transform: none;
+      box-shadow: none;
+      background: #f7f7f7;
     }
     .period-card .period-name {
       font-size: 14px;
@@ -501,6 +522,7 @@
     </div>
 
     <div class="capacity-alert" id="capacityAlert"></div>
+    <div class="upgrade-note" id="upgradeNote"></div>
 
     <!-- 版本选择 -->
     <div class="tier-selector" id="tierSelector">
@@ -587,15 +609,15 @@
     <!-- 抵扣信息 -->
     <div class="discount-info" id="discountInfo">
       <div class="discount-row">
-        <span>原价</span>
+        <span id="originalPriceLabel">原价</span>
         <span id="originalPrice">0元</span>
       </div>
       <div class="discount-row discount">
-        <span>当前版本剩余抵扣</span>
+        <span id="discountPriceLabel">当前版本剩余抵扣</span>
         <span id="discountPrice">-0元</span>
       </div>
       <div class="discount-row final">
-        <span>实付金额</span>
+        <span id="finalPriceLabel">实付金额</span>
         <span id="finalPrice">0元</span>
       </div>
     </div>
@@ -663,6 +685,7 @@
     let currentTier = 'basic';
     let currentPlan = 'monthly';
     let currentOrderNo = null;
+    let currentOrderType = 'purchase';
     let pollTimer = null;
     let subInfo = null;
 
@@ -676,6 +699,71 @@
     const tierCapacity = { basic: 1, standard: 2, premium: 5 };
     const planNames = { monthly: '月度', quarterly: '季度', yearly: '年度' };
 
+    function isActivePaidSubscription() {
+      return subInfo?.status === 'active';
+    }
+
+    function isUpgradeSelection() {
+      if (!isActivePaidSubscription()) return false;
+      return tierOrder.indexOf(currentTier) > tierOrder.indexOf(subInfo.tier || 'basic');
+    }
+
+    function selectPlan(plan) {
+      currentPlan = Object.prototype.hasOwnProperty.call(planNames, plan) ? plan : 'yearly';
+      document.querySelectorAll('.period-card').forEach(card => {
+        card.classList.toggle('selected', card.dataset.plan === currentPlan);
+      });
+    }
+
+    function formatCents(value) {
+      const cents = Number(value);
+      if (!Number.isFinite(cents)) return '0';
+      const yuan = cents / 100;
+      return Number.isInteger(yuan) ? String(yuan) : yuan.toFixed(2);
+    }
+
+    function updatePurchaseMode() {
+      const active = isActivePaidSubscription();
+      const upgrade = isUpgradeSelection();
+      const capacityLimit = subInfo?.entry_reason === 'concurrent_session_limit' ||
+        subInfo?.session_reason === 'concurrent_session_limit';
+      const upgradeNote = $('#upgradeNote');
+      const payBtn = $('#payBtn');
+
+      if (active) {
+        selectPlan(subInfo.subscription_plan || 'yearly');
+      }
+      document.querySelectorAll('.period-card').forEach(card => {
+        card.classList.toggle('disabled', active);
+      });
+
+      if (active) {
+        const currentTierIndex = Math.max(0, tierOrder.indexOf(subInfo.tier || 'basic'));
+        document.querySelectorAll('.tier-card').forEach(card => {
+          if (tierOrder.indexOf(card.dataset.tier) < currentTierIndex) card.classList.add('disabled');
+        });
+
+        const endText = subInfo.subscription_end
+          ? new Date(subInfo.subscription_end).toLocaleString('zh-CN', { hour12: false })
+          : '当前订阅到期日';
+        if (upgrade) {
+          upgradeNote.innerHTML = `升级将按当前<strong>${planNames[currentPlan]}</strong>计费周期，` +
+            `只收取从现在到 <strong>${endText}</strong> 的版本差价；支付后原到期时间不变。`;
+          if (!currentOrderNo) payBtn.textContent = `计算并升级至${tierNames[currentTier]}`;
+        } else {
+          upgradeNote.innerHTML = `当前有效订阅按<strong>${planNames[currentPlan]}</strong>计费。` +
+            '有效期内续费沿用该周期，并从原到期时间继续顺延。';
+          if (!currentOrderNo && !(capacityLimit && payBtn.disabled)) payBtn.textContent = '续费当前套餐';
+        }
+        upgradeNote.classList.add('visible');
+      } else {
+        upgradeNote.classList.remove('visible');
+        if (!currentOrderNo) payBtn.textContent = '微信扫码支付';
+      }
+
+      updatePeriodPrices();
+    }
+
     // 版本选择
     document.querySelectorAll('.tier-card').forEach(card => {
       card.addEventListener('click', () => {
@@ -683,13 +771,14 @@
         document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentTier = card.dataset.tier;
-        updatePeriodPrices();
+        updatePurchaseMode();
       });
     });
 
     // 周期选择
     document.querySelectorAll('.period-card').forEach(card => {
       card.addEventListener('click', () => {
+        if (card.classList.contains('disabled')) return;
         document.querySelectorAll('.period-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentPlan = card.dataset.plan;
@@ -719,7 +808,11 @@
       }
     }
 
-    function showDiscountInfo(original, discount, final) {
+    function showDiscountInfo(original, discount, final, orderType) {
+      const isUpgrade = orderType === 'upgrade';
+      $('#originalPriceLabel').textContent = isUpgrade ? '目标版本剩余时长价值' : '原价';
+      $('#discountPriceLabel').textContent = isUpgrade ? '当前版本剩余时长抵扣' : '优惠抵扣';
+      $('#finalPriceLabel').textContent = isUpgrade ? '本次升级补差价' : '实付金额';
       $('#originalPrice').textContent = `${original}元`;
       $('#discountPrice').textContent = `-${discount}元`;
       $('#finalPrice').textContent = `${final}元`;
@@ -828,6 +921,8 @@
           payBtn.textContent = '微信扫码支付';
         }
       }
+
+      updatePurchaseMode();
     }
 
     async function attemptSessionEntry(apiName) {
@@ -903,12 +998,13 @@
         if (result.error) {
           alert(result.error);
           payBtn.disabled = false;
-          payBtn.textContent = '微信扫码支付';
+          updatePurchaseMode();
           return;
         }
 
         if (result.code_url) {
           currentOrderNo = result.order_no;
+          currentOrderType = result.order_type || 'purchase';
 
           // 校验服务端返回的tier与用户选择是否一致
           if (result.tier && result.tier !== currentTier) {
@@ -919,16 +1015,21 @@
             });
             updatePeriodPrices();
           }
+          if (result.plan && Object.prototype.hasOwnProperty.call(planNames, result.plan)) {
+            selectPlan(result.plan);
+          }
 
           const pm = priceMatrix || {};
           const tierPrices = pm[currentTier] || {};
           const fallbackPrice = typeof tierPrices[currentPlan] === 'number' ? tierPrices[currentPlan] : 0;
-          const originalYuan = result.original_amount != null ? Math.floor(result.original_amount / 100) : fallbackPrice;
-          const discountYuan = result.discount_amount != null ? Math.floor(result.discount_amount / 100) : 0;
-          const finalYuan = originalYuan - discountYuan;
+          const originalYuan = result.original_amount != null ? formatCents(result.original_amount) : String(fallbackPrice);
+          const discountYuan = result.discount_amount != null ? formatCents(result.discount_amount) : '0';
+          const finalYuan = result.amount != null
+            ? formatCents(result.amount)
+            : formatCents(Math.round((Number(originalYuan) - Number(discountYuan)) * 100));
 
-          if (discountYuan > 0) {
-            showDiscountInfo(originalYuan, discountYuan, finalYuan);
+          if (Number(discountYuan) > 0 || currentOrderType === 'upgrade') {
+            showDiscountInfo(originalYuan, discountYuan, finalYuan, currentOrderType);
           }
 
           showQRCode(result.code_url, finalYuan);
@@ -936,12 +1037,12 @@
         } else {
           alert('创建订单失败，请重试');
           payBtn.disabled = false;
-          payBtn.textContent = '微信扫码支付';
+          updatePurchaseMode();
         }
       } catch (err) {
         alert('网络错误: ' + err.message);
         payBtn.disabled = false;
-        payBtn.textContent = '微信扫码支付';
+        updatePurchaseMode();
       }
     });
 
@@ -968,6 +1069,7 @@
     $('#qrCancel').addEventListener('click', () => {
       stopPolling();
       currentOrderNo = null;
+      currentOrderType = 'purchase';
       $('#qrSection').classList.remove('visible');
       $('#discountInfo').classList.remove('visible');
 
@@ -980,6 +1082,7 @@
       $('#payBtn').style.display = 'block';
       $('#payBtn').disabled = false;
       $('#payBtn').textContent = '微信扫码支付';
+      updateUI();
     });
 
     // 轮询订单状态
@@ -1000,6 +1103,10 @@
           if (result.status === 'paid') {
             stopPolling();
             onPaymentSuccess();
+          } else if (result.status === 'paid_review') {
+            stopPolling();
+            $('#qrStatus').textContent = result.message || '支付已完成，订阅状态变化，需人工复核';
+            $('#qrStatus').className = 'qr-status error';
           }
         } catch (err) {
           // 忽略网络错误，继续轮询
@@ -1021,7 +1128,9 @@
 
       const tierName = tierNames[currentTier] || currentTier;
       const planName = planNames[currentPlan] || currentPlan;
-      $('#successDesc').textContent = `${tierName} ${planName}套餐已激活，正在重新检测在线名额...`;
+      $('#successDesc').textContent = currentOrderType === 'upgrade'
+        ? `${tierName}升级已生效，原到期时间不变，正在重新检测在线名额...`
+        : `${tierName} ${planName}套餐已激活，正在重新检测在线名额...`;
       $('#successOverlay').classList.add('visible');
       attemptSessionEntry('paymentSuccessEnter');
     }

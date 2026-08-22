@@ -249,6 +249,7 @@ function buildSubscriptionInfo(subResult, context = {}) {
     invite_code: subResult.invite_code || '',
     days_remaining: subResult.days_remaining,
     subscription_end: subResult.subscription_end,
+    subscription_plan: subResult.subscription_plan || 'yearly',
     trial_end: subResult.trial_end,
     is_first_payment: Boolean(subResult.is_first_payment),
     department_id: subResult.department_id || context.departmentId || '',
@@ -373,7 +374,8 @@ function startHeartbeat() {
           status: result.status,
           tier: result.tier || subInfo.tier || 'basic',
           days_remaining: result.days_remaining,
-          subscription_end: result.subscription_end
+          subscription_end: result.subscription_end,
+          subscription_plan: result.subscription_plan || subInfo.subscription_plan || 'yearly'
         };
         storeSet('subscriptionInfo', updatedSubInfo);
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1405,6 +1407,7 @@ async function checkLoginStatus(url) {
           invite_code: subResult.invite_code,
           days_remaining: subResult.days_remaining,
           subscription_end: subResult.subscription_end,
+          subscription_plan: subResult.subscription_plan || 'yearly',
           trial_end: subResult.trial_end,
           is_first_payment: subResult.is_first_payment,
           department_id: subResult.department_id || departmentId,
@@ -1415,6 +1418,9 @@ async function checkLoginStatus(url) {
           status: subResult.status,
           tier: subResult.tier || 'basic',
           invite_code: subResult.invite_code,
+          days_remaining: subResult.days_remaining,
+          subscription_end: subResult.subscription_end,
+          subscription_plan: subResult.subscription_plan || 'yearly',
           is_first_payment: subResult.is_first_payment,
           department_id: subResult.department_id || departmentId,
           department_name: subResult.department_name || departmentName
@@ -7959,6 +7965,9 @@ ipcMain.handle('open-subscription', async () => {
     status: subInfo.status || 'expired',
     tier: subInfo.tier || 'basic',
     invite_code: subInfo.invite_code || '',
+    days_remaining: subInfo.days_remaining,
+    subscription_end: subInfo.subscription_end || null,
+    subscription_plan: subInfo.subscription_plan || 'yearly',
     is_first_payment: subInfo.is_first_payment || false,
     department_id: subInfo.department_id || '',
     department_name: subInfo.department_name || ''
