@@ -33,7 +33,7 @@ async function createPage(orderResult, quoteResult = null) {
               amount: orderResult.amount,
               original_amount: orderResult.original_amount,
               discount_amount: orderResult.discount_amount,
-              plan: payload.plan,
+              plan: 'yearly',
               tier: payload.tier,
               order_type: 'upgrade'
             };
@@ -56,7 +56,7 @@ async function createPage(orderResult, quoteResult = null) {
     amount: 5001,
     original_amount: 9901,
     discount_amount: 4900,
-    plan: 'monthly',
+    plan: 'yearly',
     tier: 'standard',
     order_type: 'upgrade'
   });
@@ -72,11 +72,15 @@ async function createPage(orderResult, quoteResult = null) {
 
   const document = page.dom.window.document;
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true);
-  document.querySelector('[data-plan="monthly"]').click();
-  assert.strictEqual(document.querySelector('[data-plan="monthly"]').classList.contains('selected'), true);
+  assert.strictEqual(document.querySelector('#periodSelector').style.display, 'flex');
 
   document.querySelector('[data-tier="standard"]').click();
-  assert.match(document.querySelector('#upgradeNote').textContent, /月度标准/);
+  assert.strictEqual(document.querySelector('#periodSelector').style.display, 'none');
+  document.querySelector('[data-plan="monthly"]').click();
+  assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true,
+    '升级状态即使触发隐藏卡片事件也不能改变当前订阅周期');
+  assert.match(document.querySelector('#upgradeNote').textContent, /当前订阅的年度计费标准/);
+  assert.match(document.querySelector('#upgradeNote').textContent, /升级无需选择周期/);
   assert.match(document.querySelector('#upgradeNote').textContent, /只收取从现在到/);
   assert.match(document.querySelector('#upgradeNote').textContent, /原到期时间不变/);
   assert.match(document.querySelector('#payBtn').textContent, /计算升级至标准版的差价/);
@@ -84,6 +88,7 @@ async function createPage(orderResult, quoteResult = null) {
   document.querySelector('#payBtn').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.strictEqual(page.quotePayloads.length, 1);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(page.quotePayloads[0], 'plan'), false);
   assert.strictEqual(page.paymentPayloads.length, 0, '首次点击只计算差价，不能创建微信支付单');
   assert.match(document.querySelector('#payBtn').textContent, /50\.01/);
   assert.strictEqual(document.querySelector('#originalPrice').textContent, '99.01元');
@@ -93,7 +98,7 @@ async function createPage(orderResult, quoteResult = null) {
   document.querySelector('#payBtn').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.strictEqual(page.paymentPayloads.length, 1);
-  assert.strictEqual(page.paymentPayloads[0].plan, 'monthly');
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(page.paymentPayloads[0], 'plan'), false);
   assert.strictEqual(page.paymentPayloads[0].tier, 'standard');
   assert.strictEqual(document.querySelector('#originalPrice').textContent, '99.01元');
   assert.strictEqual(document.querySelector('#discountPrice').textContent, '-49元');
@@ -113,6 +118,10 @@ async function createPage(orderResult, quoteResult = null) {
   assert.strictEqual(legacyDocument.querySelector('[data-plan="monthly"]').classList.contains('selected'), true);
   legacyDocument.querySelector('[data-plan="quarterly"]').click();
   assert.strictEqual(legacyDocument.querySelector('[data-plan="quarterly"]').classList.contains('selected'), true);
+  legacyDocument.querySelector('[data-tier="standard"]').click();
+  assert.strictEqual(legacyDocument.querySelector('#periodSelector').style.display, 'none');
+  assert.strictEqual(legacyDocument.querySelector('[data-plan="yearly"]').classList.contains('selected'), true,
+    '历史订阅缺少周期元数据时必须与服务器一致回退年度计价');
   legacyPage.dom.window.close();
 
   const quoteErrorPage = await createPage({}, { error: '报价暂不可用' });

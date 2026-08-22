@@ -7952,15 +7952,14 @@ ipcMain.handle('create-payment-order', async (event, paramsJson) => {
 });
 
 ipcMain.handle('quote-subscription-upgrade', async (event, paramsJson) => {
-  const { jdUsername, tier, plan, departmentId } = JSON.parse(paramsJson);
+  const { jdUsername, tier, departmentId } = JSON.parse(paramsJson);
   const startedAt = Date.now();
-  console.log(`[支付] 计算升级差价开始: tier=${tier || ''}, plan=${plan || ''}`);
+  console.log(`[支付] 计算升级差价开始: tier=${tier || ''}, plan=active-subscription`);
   try {
     const result = await callApi('POST', '/api/payment/quote-upgrade', {
       jd_username: jdUsername,
       department_id: departmentId || '',
-      tier,
-      plan
+      tier
     }, 10000);
     console.log(`[支付] 计算升级差价完成: durationMs=${Date.now() - startedAt}, success=${Boolean(result && !result.error)}`);
     return result;

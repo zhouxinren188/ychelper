@@ -702,6 +702,11 @@
       return tierOrder.indexOf(currentTier) > tierOrder.indexOf(subInfo.tier || 'basic');
     }
 
+    function getActiveBillingPlan() {
+      const plan = subInfo?.subscription_plan;
+      return Object.prototype.hasOwnProperty.call(planNames, plan) ? plan : 'yearly';
+    }
+
     function selectPlan(plan) {
       currentPlan = Object.prototype.hasOwnProperty.call(planNames, plan) ? plan : 'yearly';
       document.querySelectorAll('.period-card').forEach(card => {
@@ -736,6 +741,10 @@
         subInfo?.session_reason === 'concurrent_session_limit';
       const upgradeNote = $('#upgradeNote');
       const payBtn = $('#payBtn');
+      const periodSelector = $('#periodSelector');
+
+      if (upgrade) selectPlan(getActiveBillingPlan());
+      periodSelector.style.display = upgrade ? 'none' : 'flex';
 
       document.querySelectorAll('.period-card').forEach(card => {
         card.classList.remove('disabled');
@@ -751,8 +760,8 @@
           ? new Date(subInfo.subscription_end).toLocaleString('zh-CN', { hour12: false })
           : '当前订阅到期日';
         if (upgrade) {
-          upgradeNote.innerHTML = `本次选择按<strong>${planNames[currentPlan]}</strong>标准计算，` +
-            `只收取从现在到 <strong>${endText}</strong> 的版本差价；支付后原到期时间不变。`;
+          upgradeNote.innerHTML = `系统已自动沿用当前订阅的<strong>${planNames[currentPlan]}</strong>计费标准，` +
+            `只收取从现在到 <strong>${endText}</strong> 的版本差价；升级无需选择周期，支付后原到期时间不变。`;
           if (!currentOrderNo) {
             payBtn.textContent = hasCurrentUpgradeQuote()
               ? `支付${formatCents(currentUpgradeQuote.amount)}元并升级至${tierNames[currentTier]}`
@@ -787,6 +796,7 @@
     // 周期选择
     document.querySelectorAll('.period-card').forEach(card => {
       card.addEventListener('click', () => {
+        if (isUpgradeSelection()) return;
         document.querySelectorAll('.period-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentPlan = card.dataset.plan;
@@ -995,15 +1005,16 @@
         const jdUsername = subInfo?.jd_username || '';
         const inviteCode = $('#inviteCodeInput').value.trim();
 
+        const upgradeSelection = isUpgradeSelection();
         const payload = {
           jdUsername,
           departmentId: subInfo?.department_id || '',
           tier: currentTier,
-          plan: currentPlan,
           inviteCode: inviteCode || null
         };
+        if (!upgradeSelection) payload.plan = currentPlan;
 
-        if (isUpgradeSelection() && !hasCurrentUpgradeQuote()) {
+        if (upgradeSelection && !hasCurrentUpgradeQuote()) {
           if (typeof window.electronAPI.quoteSubscriptionUpgrade !== 'function') {
             throw new Error('升级报价接口未初始化，请重启应用');
           }
@@ -1024,12 +1035,14 @@
           const discountAmount = Number(quote.discount_amount);
           const validQuote = quote.order_type === 'upgrade' &&
             quote.tier === currentTier &&
-            quote.plan === currentPlan &&
+            quote.plan === getActiveBillingPlan() &&
             [amount, originalAmount, discountAmount].every(Number.isSafeInteger) &&
             amount > 0 && originalAmount - discountAmount === amount;
           if (!validQuote) {
             throw new Error('服务器返回的升级报价校验失败');
           }
+
+          selectPlan(quote.plan);
 
           currentUpgradeQuote = {
             selectionKey: getUpgradeSelectionKey(),
