@@ -5,6 +5,7 @@ const { JSDOM } = require('jsdom');
 
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'src', 'subscription.html'), 'utf8');
+const styleSource = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
 const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 
@@ -19,6 +20,8 @@ async function waitFor(predicate, message, timeoutMs = 500) {
 
 async function createPage(orderResult, quoteResult = null) {
   let subscriptionListener = null;
+  let minimizeCount = 0;
+  let closeCount = 0;
   const paymentPayloads = [];
   const quotePayloads = [];
   const alerts = [];
@@ -32,7 +35,8 @@ async function createPage(orderResult, quoteResult = null) {
           onSubscriptionInfo(callback) { subscriptionListener = callback; },
           retrySessionEntry: async () => ({ success: false }),
           paymentSuccessEnter: async () => ({ success: false }),
-          close() {},
+          minimize() { minimizeCount += 1; },
+          close() { closeCount += 1; },
           createPaymentOrder: async (payload) => {
             paymentPayloads.push(payload);
             return orderResult;
@@ -58,7 +62,14 @@ async function createPage(orderResult, quoteResult = null) {
     }
   });
   await new Promise(resolve => dom.window.addEventListener('load', resolve, { once: true }));
-  return { dom, sendSubscriptionInfo: subscriptionListener, paymentPayloads, quotePayloads, alerts };
+  return {
+    dom,
+    sendSubscriptionInfo: subscriptionListener,
+    paymentPayloads,
+    quotePayloads,
+    alerts,
+    getWindowActionCounts: () => ({ minimizeCount, closeCount })
+  };
 }
 
 (async () => {
@@ -84,6 +95,24 @@ async function createPage(orderResult, quoteResult = null) {
   });
 
   const document = page.dom.window.document;
+  const subscriptionWindowBlock = mainSource.match(/subscriptionWindow = new BrowserWindow\(\{([\s\S]*?)\n  \}\);/);
+  assert.ok(subscriptionWindowBlock, '应能定位订阅窗口配置');
+  assert.match(subscriptionWindowBlock[1], /frame:\s*false/,
+    '订阅窗口必须关闭原生标题栏');
+  assert.ok(document.querySelector('#subscriptionTitlebar'), '订阅页应提供自绘标题栏');
+  assert.match(html, /\.subscription-titlebar\s*\{[\s\S]*?height:\s*28px/,
+    '订阅页自绘标题栏应使用收紧后的28px高度');
+  assert.match(html, /\.subscription-titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag/,
+    '自绘标题栏必须支持拖动窗口');
+  assert.match(html, /\.subscription-window-controls\s*\{[\s\S]*?-webkit-app-region:\s*no-drag/,
+    '窗口控制按钮区域不能吞掉点击事件');
+  document.querySelector('#subscriptionMinimize').click();
+  document.querySelector('#subscriptionClose').click();
+  assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 1, closeCount: 1 });
+  assert.match(styleSource, /\.titlebar\s*\{[\s\S]*?height:\s*28px/,
+    '主窗口自绘标题栏也应使用收紧后的28px高度');
+  assert.match(styleSource, /\.win-btn\s*\{[\s\S]*?height:\s*28px/,
+    '主窗口控制按钮高度必须与标题栏一致');
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true);
   assert.strictEqual(document.querySelector('#periodSelector').style.display, 'flex');
 

@@ -424,6 +424,9 @@ function createSubscriptionWindow(subInfo) {
     width: 520,
     height: 920,
     resizable: false,
+    frame: false,
+    hasShadow: true,
+    backgroundColor: '#f5f5f5',
     icon: path.join(__dirname, 'src', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

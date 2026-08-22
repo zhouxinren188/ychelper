@@ -12,6 +12,64 @@
       overflow-y: auto;
     }
 
+    .subscription-titlebar {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      color: #666;
+      -webkit-app-region: drag;
+    }
+    .subscription-titlebar-brand {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-left: 10px;
+      font-size: 11px;
+    }
+    .subscription-titlebar-brand img {
+      width: 15px;
+      height: 15px;
+      flex: 0 0 auto;
+    }
+    .subscription-titlebar-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .subscription-window-controls {
+      height: 100%;
+      display: flex;
+      -webkit-app-region: no-drag;
+    }
+    .subscription-window-button {
+      width: 40px;
+      height: 100%;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: #666;
+      font-family: "Segoe UI Symbol", sans-serif;
+      font-size: 17px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .subscription-window-button:hover,
+    .subscription-window-button:focus-visible {
+      background: rgba(0, 0, 0, 0.06);
+      color: #222;
+    }
+    .subscription-window-button.close:hover,
+    .subscription-window-button.close:focus-visible {
+      background: #e81123;
+      color: #fff;
+    }
+
     .sub-container {
       max-width: 480px;
       margin: 0 auto;
@@ -505,6 +563,18 @@
   </style>
 </head>
 <body>
+  <header class="subscription-titlebar" id="subscriptionTitlebar">
+    <div class="subscription-titlebar-brand">
+      <img src="icon.ico" alt="" draggable="false">
+      <span class="subscription-titlebar-title">云仓助手 · 订阅</span>
+    </div>
+    <div class="subscription-window-controls">
+      <button class="subscription-window-button" id="subscriptionMinimize" type="button"
+        aria-label="最小化" title="最小化">&#8722;</button>
+      <button class="subscription-window-button close" id="subscriptionClose" type="button"
+        aria-label="关闭" title="关闭">&times;</button>
+    </div>
+  </header>
   <div class="sub-container">
     <!-- 顶部 -->
     <div class="sub-header">
@@ -675,6 +745,9 @@
 
     // ========== 页面逻辑 ==========
     const $ = (sel) => document.querySelector(sel);
+    $('#subscriptionMinimize').addEventListener('click', () => window.electronAPI.minimize());
+    $('#subscriptionClose').addEventListener('click', () => window.electronAPI.close());
+
     let currentTier = 'basic';
     let currentPlan = 'monthly';
     let currentOrderNo = null;
