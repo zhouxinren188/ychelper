@@ -94,10 +94,8 @@ async function createPage(orderResult, quoteResult = null) {
   document.querySelector('[data-plan="monthly"]').click();
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true,
     '升级状态下即使触发隐藏卡片事件也不能改变当前订阅周期');
-  assert.match(document.querySelector('#upgradeNote').textContent, /当前订阅的年度计费标准/);
-  assert.match(document.querySelector('#upgradeNote').textContent, /本次按14天计价/);
-  assert.match(document.querySelector('#upgradeNote').textContent, /升级无需选择周期/);
-  assert.match(document.querySelector('#upgradeNote').textContent, /原到期时间不变/);
+  assert.match(document.querySelector('#upgradeNote').textContent, /按年度标准和剩余14天补差/);
+  assert.match(document.querySelector('#upgradeNote').textContent, /到期时间不变/);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(page.quotePayloads[0], 'plan'), false,
     '升级周期必须由服务器根据真实订阅决定');
   assert.strictEqual(page.paymentPayloads.length, 0, '自动报价不能创建微信支付单');
@@ -145,8 +143,7 @@ async function createPage(orderResult, quoteResult = null) {
     '服务器返回的真实月度订阅必须覆盖陈旧或缺失的本地周期');
   assert.strictEqual(missingPlanDocument.querySelector('[data-plan="yearly"]').classList.contains('selected'), false,
     '本地周期缺失时禁止擅自回退年度');
-  assert.match(missingPlanDocument.querySelector('#upgradeNote').textContent, /当前订阅的月度计费标准/);
-  assert.match(missingPlanDocument.querySelector('#upgradeNote').textContent, /本次按14天计价/);
+  assert.match(missingPlanDocument.querySelector('#upgradeNote').textContent, /按月度标准和剩余14天补差/);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(missingPlanPage.quotePayloads[0], 'plan'), false);
   missingPlanPage.dom.window.close();
 

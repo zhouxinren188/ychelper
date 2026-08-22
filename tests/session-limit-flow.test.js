@@ -69,6 +69,12 @@ async function createPage(retryResult) {
   assert.strictEqual(document.querySelector('[data-tier="standard"]').classList.contains('selected'), true);
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.match(document.querySelector('#payBtn').textContent, /升级至标准版/);
+  assert.strictEqual(document.querySelector('#upgradeNote').classList.contains('visible'), false,
+    '在线名额已满时升级说明应合并到名额提示中，不能显示两个重复说明框');
+  assert.match(document.querySelector('#capacityAlert').textContent, /在线设备已满（1\/1）/);
+  assert.match(document.querySelector('#capacityAlert').textContent, /升级至标准版可增加名额/);
+  assert.match(document.querySelector('#capacityAlert').textContent, /按月度标准和剩余15天补差/);
+  assert.match(document.querySelector('#capacityAlert').textContent, /到期时间不变/);
   assert.strictEqual(document.querySelector('#retryEntryBtn').classList.contains('visible'), true);
 
   document.querySelector('#retryEntryBtn').click();

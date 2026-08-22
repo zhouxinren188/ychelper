@@ -830,6 +830,7 @@
       const capacityLimit = subInfo?.entry_reason === 'concurrent_session_limit' ||
         subInfo?.session_reason === 'concurrent_session_limit';
       const upgradeNote = $('#upgradeNote');
+      const capacityAlert = $('#capacityAlert');
       const payBtn = $('#payBtn');
       const periodSelector = $('#periodSelector');
 
@@ -852,12 +853,22 @@
           : '当前订阅到期日';
         if (upgrade) {
           const quotePlan = currentUpgradeQuote?.plan || activePlan;
-          const planText = quotePlan ? `的<strong>${planNames[quotePlan]}</strong>计费标准` : '计费周期';
-          const daysText = currentUpgradeQuote?.billableDays
-            ? `，本次按<strong>${currentUpgradeQuote.billableDays}天</strong>计价`
-            : '';
-          upgradeNote.innerHTML = `系统将自动沿用当前订阅${planText}${daysText}，` +
-            `只收取从现在到 <strong>${endText}</strong> 的版本差价；升级无需选择周期，支付后原到期时间不变。`;
+          const billingText = quotePlan
+            ? `<strong>${planNames[quotePlan]}</strong>标准`
+            : '当前订阅周期';
+          const remainingText = currentUpgradeQuote?.billableDays
+            ? `剩余<strong>${currentUpgradeQuote.billableDays}天</strong>`
+            : `到 <strong>${endText}</strong> 的剩余时间`;
+          const upgradeSummary = `按${billingText}和${remainingText}补差，支付后到期时间不变。`;
+          if (capacityLimit) {
+            const onlineCount = Math.max(0, Number(subInfo?.online_count) || 0);
+            const maxSessions = Math.max(1, Number(subInfo?.max_sessions) || 1);
+            capacityAlert.innerHTML = `在线设备已满（<strong>${onlineCount}/${maxSessions}</strong>），` +
+              `本次未进入，以免顶掉其他设备。升级至<strong>${tierNames[currentTier]}</strong>可增加名额；${upgradeSummary}`;
+            upgradeNote.classList.remove('visible');
+          } else {
+            upgradeNote.innerHTML = upgradeSummary;
+          }
           if (!currentOrderNo) {
             if (hasCurrentUpgradeQuote()) {
               payBtn.disabled = false;
@@ -870,12 +881,12 @@
               payBtn.textContent = upgradeQuoteError ? '重新计算升级差价' : '正在计算升级差价...';
             }
           }
-        } else {
+        } else if (!capacityLimit) {
           upgradeNote.innerHTML = `本次选择续费<strong>${planNames[currentPlan]}</strong>套餐，` +
             '支付后从原到期时间继续顺延。';
           if (!currentOrderNo && !(capacityLimit && payBtn.disabled)) payBtn.textContent = '续费当前套餐';
         }
-        upgradeNote.classList.add('visible');
+        upgradeNote.classList.toggle('visible', !capacityLimit);
       } else {
         upgradeNote.classList.remove('visible');
         if (!currentOrderNo) payBtn.textContent = '微信扫码支付';
@@ -1018,8 +1029,8 @@
         const maxSessions = Math.max(1, Number(subInfo.max_sessions) || 1);
         const currentTierIndex = Math.max(0, tierOrder.indexOf(subInfo.tier || 'basic'));
         const recommendedTier = subInfo.recommended_tier || '';
-        capacityAlert.innerHTML = `当前事业部在线设备已达上限（<strong>${onlineCount}/${maxSessions}</strong>）。` +
-          '为避免中断其他设备正在执行的操作，本次登录未进入。您可以让其他设备退出后重新检测，或升级版本增加在线名额。';
+        capacityAlert.innerHTML = `在线设备已满（<strong>${onlineCount}/${maxSessions}</strong>），` +
+          '本次未进入，以免顶掉其他设备。请让其他设备退出后重试，或升级版本增加名额。';
         capacityAlert.classList.add('visible');
         retryEntryBtn.classList.add('visible');
 
