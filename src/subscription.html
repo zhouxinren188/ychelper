@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>云仓助手 - 订阅</title>
+  <link rel="stylesheet" href="css/window-titlebar.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -16,44 +17,6 @@
       position: sticky;
       top: 0;
       z-index: 1000;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #fff;
-      color: #666;
-      -webkit-app-region: drag;
-    }
-    .subscription-titlebar-drag {
-      flex: 1;
-      height: 100%;
-    }
-    .subscription-window-controls {
-      height: 100%;
-      display: flex;
-      -webkit-app-region: no-drag;
-    }
-    .subscription-window-button {
-      width: 40px;
-      height: 100%;
-      border: 0;
-      outline: 0;
-      background: transparent;
-      color: #666;
-      font-family: "Segoe UI Symbol", sans-serif;
-      font-size: 17px;
-      line-height: 1;
-      cursor: pointer;
-    }
-    .subscription-window-button:hover,
-    .subscription-window-button:focus-visible {
-      background: rgba(0, 0, 0, 0.06);
-      color: #222;
-    }
-    .subscription-window-button.close:hover,
-    .subscription-window-button.close:focus-visible {
-      background: #e81123;
-      color: #fff;
     }
 
     .sub-container {
@@ -549,13 +512,17 @@
   </style>
 </head>
 <body>
-  <header class="subscription-titlebar" id="subscriptionTitlebar">
-    <div class="subscription-titlebar-drag" aria-hidden="true"></div>
-    <div class="subscription-window-controls">
-      <button class="subscription-window-button" id="subscriptionMinimize" type="button"
+  <header class="titlebar subscription-titlebar" id="subscriptionTitlebar">
+    <div class="titlebar-left">
+      <span class="window-title">云仓助手 - 订阅</span>
+    </div>
+    <div class="titlebar-right">
+      <div class="window-controls">
+      <button class="win-btn" id="subscriptionMinimize" type="button"
         aria-label="最小化" title="最小化">&#8722;</button>
-      <button class="subscription-window-button close" id="subscriptionClose" type="button"
+      <button class="win-btn close-btn" id="subscriptionClose" type="button"
         aria-label="关闭" title="关闭">&times;</button>
+      </div>
     </div>
   </header>
   <div class="sub-container">

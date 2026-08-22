@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 
 const root = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'src', 'subscription.html'), 'utf8');
-const styleSource = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
+const titlebarStyleSource = fs.readFileSync(path.join(root, 'src', 'css', 'window-titlebar.css'), 'utf8');
 const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 
@@ -100,23 +100,25 @@ async function createPage(orderResult, quoteResult = null) {
   assert.match(subscriptionWindowBlock[1], /frame:\s*false/,
     '订阅窗口必须关闭原生标题栏');
   assert.ok(document.querySelector('#subscriptionTitlebar'), '订阅页应提供自绘标题栏');
-  assert.match(html, /\.subscription-titlebar\s*\{[\s\S]*?height:\s*28px/,
-    '订阅页自绘标题栏应使用收紧后的28px高度');
-  assert.match(html, /\.subscription-titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag/,
-    '自绘标题栏必须支持拖动窗口');
-  assert.ok(!document.querySelector('.subscription-titlebar-brand'),
-    '订阅窗口标题栏应与主软件一致，不再显示仿原生图标和标题');
-  assert.ok(document.querySelector('.subscription-titlebar-drag'),
-    '订阅窗口标题栏左侧应保留空白拖动区域');
-  assert.match(html, /\.subscription-window-controls\s*\{[\s\S]*?-webkit-app-region:\s*no-drag/,
-    '窗口控制按钮区域不能吞掉点击事件');
+  assert.ok(document.querySelector('#subscriptionTitlebar.titlebar'),
+    '订阅窗口必须直接复用主界面的标题栏结构');
+  assert.strictEqual(document.querySelector('#subscriptionTitlebar .window-title').textContent,
+    '云仓助手 - 订阅', '订阅窗口标题不能省略');
+  assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-left'));
+  assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-right .window-controls'));
+  assert.ok(document.querySelector('#subscriptionMinimize.win-btn'));
+  assert.ok(document.querySelector('#subscriptionClose.win-btn.close-btn'));
   document.querySelector('#subscriptionMinimize').click();
   document.querySelector('#subscriptionClose').click();
   assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 1, closeCount: 1 });
-  assert.match(styleSource, /\.titlebar\s*\{[\s\S]*?height:\s*28px/,
-    '主窗口自绘标题栏也应使用收紧后的28px高度');
-  assert.match(styleSource, /\.win-btn\s*\{[\s\S]*?height:\s*28px/,
-    '主窗口控制按钮高度必须与标题栏一致');
+  assert.match(titlebarStyleSource, /\.titlebar\s*\{[\s\S]*?height:\s*28px/,
+    '主窗口和订阅窗口应共用收紧后的28px标题栏');
+  assert.match(titlebarStyleSource, /\.titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag/,
+    '共享标题栏必须支持拖动窗口');
+  assert.match(titlebarStyleSource, /\.titlebar-right\s*\{[\s\S]*?-webkit-app-region:\s*no-drag/,
+    '共享窗口控制区域不能吞掉点击事件');
+  assert.match(titlebarStyleSource, /\.win-btn\s*\{[\s\S]*?height:\s*28px/,
+    '共享窗口控制按钮高度必须与标题栏一致');
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true);
   assert.strictEqual(document.querySelector('#periodSelector').style.display, 'flex');
 
