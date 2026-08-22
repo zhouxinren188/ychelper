@@ -1,4 +1,4 @@
-# 店小二调用云仓助手服务契约（第一阶段）
+# 店小二调用云仓助手服务契约
 
 ## 1. 职责
 
@@ -28,23 +28,19 @@
 
 ## 3. 当前开放能力
 
-协议保留五个固定命令，但第一阶段只开放前两项：
+协议保留五个固定命令，当前开放前三项：
 
 | 命令 | 状态 | 说明 |
 | --- | --- | --- |
 | `exception.order.check` | 已开放 | 同时查询 `billexception` 和 `soExceptionCentre` |
 | `exception.order.resolve` | 已开放 | 处理最近一次查询确认的全部异常快照 |
-| `warehouse.order.check` | 禁用 | 实际接口尚未确认 |
+| `warehouse.order.check` | 已开放 | 查询当前 WMS 仓库出库订单列表并精确匹配店小二订单号 |
 | `warehouse.order.print` | 禁用 | 实际接口尚未确认 |
 | `warehouse.order.outbound` | 禁用 | 实际接口尚未确认 |
 
 ## 4. 店小二调用接口
 
-接口根路径固定为 `/api/cloud-warehouse/v1`。店小二服务端请求携带由云仓助手签发的固定合作方 API Key：
-
-```http
-X-Cloud-Warehouse-Api-Key: <仅保存在双方服务器的凭据>
-```
+接口根路径固定为 `/api/cloud-warehouse/v1`。当前联调阶段使用 `machine_code` 同时作为访问凭据和设备路由标识；必须使用受信任 CA 校验通过的固定 HTTPS 地址，机器码不得写入公开日志。桌面执行端的登录会话 Token 仍只用于 `/executor/v1/*`，店小二不得接触。
 
 ### 4.1 查询机器码在线状态
 
@@ -59,7 +55,10 @@ GET /api/cloud-warehouse/v1/machines/YC-7F3K-92MX/status
   "state": "idle",
   "capabilities": {
     "exception.order.check": true,
-    "exception.order.resolve": true
+    "exception.order.resolve": true,
+    "warehouse.order.check": true,
+    "warehouse.order.print": false,
+    "warehouse.order.outbound": false
   },
   "active_request_id": null,
   "checked_at": "2026-08-13T10:00:00.000Z"
@@ -88,7 +87,7 @@ Content-Type: application/json
 - `request_id`：由店小二为本次具体请求生成；网络重试保持不变，另一次操作必须使用新值。
 - `machine_code`：决定由哪台云仓助手处理。
 - `order_no + order_year`：决定查询或处理哪张订单。
-- 当前只允许两个异常命令，其他命令返回 `capability_unavailable`。
+- 当前允许异常查询、异常处理和云仓订单查询；打印、出库命令仍返回 `capability_unavailable`。
 - 同一 `request_id` 携带不同内容时返回 `request_id_collision`。
 
 通常接口等待桌面端执行并直接返回完整结果。执行时间超过 HTTP 等待窗口时返回 `202`，店小二使用下一接口查询结果。
@@ -127,7 +126,47 @@ GET /api/cloud-warehouse/v1/commands/dxr-20260813-000001
 
 处理前桌面端重新查询并比较异常集合；集合变化则拒绝。处理后再次完整查询两个异常中心，只有两边都成功且已无异常时返回 `succeeded / waiting_arrival`。部分成功、状态矛盾或结果不确定统一返回 `review_required`，禁止自动重复写操作。
 
-## 6. 桌面端内部接口
+## 6. 云仓订单查询
+
+`warehouse.order.check` 仍只接收中央服务生成的 `order_no + order_year`，桌面端使用本机当前 WMS 登录会话和已进入仓库的仓库编号查询，Cookie、Token、仓库编号和内部 WMS 字段不上传中央服务。
+
+店小二订单号只与 WMS 返回的 `merchantOrderNo` 精确比较；不得改用 WMS 内部 `orderNo` 或 `shipmentOrderNo`。命中时优先返回 `extendFields.thirdPartyFirstWayBillNo`，为空时回退顶层 `waybillNo`。
+
+命中回执：
+
+```json
+{
+  "status": "succeeded",
+  "reason": "query_completed",
+  "message": "订单存在",
+  "result": {
+    "state": "arrived",
+    "exists": true,
+    "waybill_no": "JDV029243091652",
+    "queried_at": "ISO时间"
+  }
+}
+```
+
+完成全部必要分页但未命中时回执：
+
+```json
+{
+  "status": "succeeded",
+  "reason": "query_completed",
+  "message": "无此订单",
+  "result": {
+    "state": "waiting_arrival",
+    "exists": false,
+    "waybill_no": "",
+    "queried_at": "ISO时间"
+  }
+}
+```
+
+WMS 会话失效、网络失败、响应结构异常或未完成全部必要分页时必须失败，禁止降级成“无此订单”。该命令只读，不触发打印、出库或任何订单写操作。同一 `request_id` 重试复用幂等回执；需要重新查询必须使用新的 `request_id`。
+
+## 7. 桌面端内部接口
 
 这些接口只供云仓助手桌面端调用，店小二不调用：
 
@@ -152,11 +191,11 @@ GET /api/cloud-warehouse/v1/commands/dxr-20260813-000001
 
 异常处理任务的 `params` 由服务器额外加入本次快照引用。
 
-## 7. 安全边界
+## 8. 安全边界
 
 - 桌面端只接受 `target.machine_code` 与本机完全一致的任务。
 - 只允许固定命令和固定参数；不存在代码、脚本、Shell、动态 URL、模块路径或可执行文件入口。
 - Cookie、京东账号、Authorization、Token、密码和接口凭据不进入任务、结果或日志。
-- 店小二 API Key 只保存在双方服务器，不出现在桌面端。
+- 当前店小二接口不使用合作方 API Key；机器码按访问凭据保护。桌面执行端 Token 不得交给店小二。
 - 桌面端保留本地持久幂等收据、订单写锁、写前复验、写后复验和审计。
 - 服务器按 `request_id` 持久化指令和结果；重试不会产生新的业务写操作。

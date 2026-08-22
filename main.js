@@ -18,6 +18,10 @@ const {
 } = require('./machine-code');
 const { getMachineCodePendingStatus, OrderCommandRuntime } = require('./order-command-runtime');
 const { registerExceptionOrderAdapters } = require('./order-exception-adapters');
+const {
+  queryWarehouseOrder: queryWarehouseOrderFromWms,
+  registerWarehouseOrderCheckAdapter
+} = require('./warehouse-order-adapter');
 const { ExceptionSnapshotStore } = require('./order-exception-snapshot-store');
 const {
   assertRequiredExceptionSources,
@@ -672,6 +676,9 @@ function initializeOrderCommandRuntime(accountIdentity, { generate = false } = {
         return exceptionSnapshotStore.assertRecordsMatch(ref, records, options);
       },
       claimExceptionSnapshot: (ref, options) => exceptionSnapshotStore.claim(ref, options)
+    });
+    registerWarehouseOrderCheckAdapter(orderCommandRuntime.executor, {
+      queryWarehouseOrder: queryWarehouseOrderForCommand
     });
   }
   if (orderControlPlaneClient) {
@@ -6832,11 +6839,12 @@ ipcMain.handle('get-wms-login-status', async () => {
 });
 
 // WMS API 通用 HMAC 签名请求
-async function wmsApiCall(apiPath, body) {
+async function wmsApiCall(apiPath, body, options = {}) {
   const bodyStr = JSON.stringify(body);
   const HMAC_KEY = 'wms6';
   const HMAC_USERNAME = 'wms6';
-  const LOP_DN = 'w6-stream.jdl.cn';
+  const lopDn = String(options.lopDn || 'w6-stream.jdl.cn');
+  const bpLopDn = String(options.bpLopDn || '');
 
   const md5Content = crypto.createHash('md5').update(bodyStr).digest('hex');
   const xDate = new Date().toUTCString();
@@ -6861,28 +6869,32 @@ async function wmsApiCall(apiPath, body) {
 
   const apiUrl = `https://api-w6.jdl.com${apiPath}`;
   let response;
+  let text;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
   try {
+    const headers = {
+      'Content-Type': 'application/json;charset=UTF-8',
+      'Accept': 'application/json, text/plain, */*',
+      'Authorization': `hmac username="${HMAC_USERNAME}", algorithm="hmac-sha1", headers="X-Date md5-content", signature="${authSig}"`,
+      'X-Date': xDate,
+      'md5-content': md5Content,
+      'timestamp': timestamp,
+      'signature': standaloneSig,
+      'algorithm': 'HMacSHA1',
+      'Token': token,
+      'LOP-DN': lopDn,
+      'Referer': 'https://unionwms.jdl.com/',
+      'Origin': 'https://unionwms.jdl.com'
+    };
+    if (bpLopDn) headers['BP-LOP-DN'] = bpLopDn;
     response = await wmsSession.fetch(apiUrl, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'Accept': 'application/json, text/plain, */*',
-        'Authorization': `hmac username="${HMAC_USERNAME}", algorithm="hmac-sha1", headers="X-Date md5-content", signature="${authSig}"`,
-        'X-Date': xDate,
-        'md5-content': md5Content,
-        'timestamp': timestamp,
-        'signature': standaloneSig,
-        'algorithm': 'HMacSHA1',
-        'Token': token,
-        'LOP-DN': LOP_DN,
-        'Referer': 'https://unionwms.jdl.com/',
-        'Origin': 'https://unionwms.jdl.com'
-      },
+      headers,
       body: bodyStr
     });
+    text = await response.text();
   } catch (err) {
     const message = err?.name === 'AbortError' ? 'WMS 请求超时，请稍后重试' : `WMS 网络请求失败: ${err.message}`;
     throw createWmsApiError('network', message);
@@ -6890,13 +6902,6 @@ async function wmsApiCall(apiPath, body) {
     clearTimeout(timeoutId);
   }
 
-  let text;
-  try {
-    text = await response.text();
-  } catch (err) {
-    throw createWmsApiError('network', `WMS 响应读取失败: ${err.message}`, response.status);
-  }
-  console.log(`WMS API [${apiPath}] [${response.status}]:`, text.substring(0, 500));
   let data;
   try {
     data = JSON.parse(text);
@@ -6912,7 +6917,40 @@ async function wmsApiCall(apiPath, body) {
   if (response.status < 200 || response.status >= 300) {
     throw createWmsApiError('service', classification.message, response.status, data);
   }
+  console.log(`WMS API [${apiPath}] [${response.status}] success=${data && data.success === true}`);
   return data;
+}
+
+async function queryWarehouseOrderForCommand({ orderNo, orderYear }) {
+  if (wmsRestorePromise) await wmsRestorePromise;
+  if (!wmsLoggedIn) {
+    const error = new Error('WMS 登录状态已失效');
+    error.code = 'warehouse_session_expired';
+    throw error;
+  }
+  if (!activeWmsWarehouseNo) {
+    const error = new Error('当前 WMS 仓库编号不可用，请重新进入仓库');
+    error.code = 'warehouse_context_unavailable';
+    throw error;
+  }
+
+  try {
+    return await queryWarehouseOrderFromWms({
+      orderNo,
+      orderYear,
+      warehouseNo: activeWmsWarehouseNo,
+      fetchPage: (payload, request) => wmsApiCall(request.apiPath, payload, {
+        lopDn: request.lopDn,
+        bpLopDn: request.bpLopDn
+      })
+    });
+  } catch (error) {
+    if (error && error.wmsFailureType === 'auth') {
+      await clearInvalidWmsSessionAndOpenLogin(getActiveWmsAccount());
+      error.code = 'warehouse_session_expired';
+    }
+    throw error;
+  }
 }
 
 async function queryWmsOrders(warehouseNo, { allowUnverified = false } = {}) {

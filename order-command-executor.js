@@ -502,6 +502,8 @@ class OrderCommandExecutor {
           error && error.code === 'merchant_session_expired';
         const exceptionQueryTimedOut = !uncertain &&
           error && error.code === 'exception_query_timeout';
+        const warehouseSessionExpired = !uncertain &&
+          error && error.code === 'warehouse_session_expired';
         const failed = this._buildResponse(task, uncertain ? 'review_required' : 'failed', {
           reason: uncertain
             ? 'execution_result_unknown'
@@ -509,11 +511,15 @@ class OrderCommandExecutor {
             ? 'merchant_session_expired'
             : exceptionQueryTimedOut
             ? 'exception_query_timeout'
+            : warehouseSessionExpired
+            ? 'warehouse_session_expired'
             : 'execution_failed',
           message: merchantSessionExpired
             ? '云仓助手商家登录已失效，请在绑定机器码的云仓助手重新登录后再试'
             : exceptionQueryTimedOut
             ? '云仓异常订单查询超时，请稍后重试'
+            : warehouseSessionExpired
+            ? '云仓助手 WMS 登录已失效，请在绑定机器码的云仓助手重新登录并进入仓库后再试'
             : uncertain
             ? `写操作调用异常，实际结果未知，禁止自动重试: ${error.message}`
             : error.message,
@@ -543,6 +549,12 @@ class OrderCommandExecutor {
             ? '查询到异常订单'
             : executionResult.state === 'no_exception'
             ? '暂无异常订单'
+            : ''
+          : task.command === 'warehouse.order.check' && executionResult
+          ? executionResult.exists === true
+            ? '订单存在'
+            : executionResult.exists === false
+            ? '无此订单'
             : ''
           : '';
         const success = this._buildResponse(task, 'succeeded', {

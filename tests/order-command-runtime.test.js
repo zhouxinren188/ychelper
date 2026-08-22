@@ -41,6 +41,7 @@ for (const runtimeFile of [
   'order-command-executor.js',
   'order-exception-adapters.js',
   'order-exception-snapshot-store.js',
+  'warehouse-order-adapter.js',
   'order-control-plane-protocol.js',
   'order-control-plane-client.js',
   'order-control-plane-runner.js',
@@ -79,6 +80,7 @@ assert.match(mainSource, /data\.orderCommandStates/);
 assert.match(mainSource, /activateOrderCommandRuntime\(jdUsername\)/);
 assert.match(mainSource, /initializeOrderCommandRuntime\(orderCommandAccountIdentity, \{ generate: true \}\)/);
 assert.match(mainSource, /registerExceptionOrderAdapters\(orderCommandRuntime\.executor/);
+assert.match(mainSource, /registerWarehouseOrderCheckAdapter\(orderCommandRuntime\.executor/);
 assert.doesNotMatch(mainSource, /exceptionOrderReferenceResolver/);
 assert.match(mainSource, /new ExceptionSnapshotStore\(/);
 assert.match(mainSource, /data\.exceptionOrderSnapshotStates/);

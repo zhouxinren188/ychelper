@@ -111,6 +111,13 @@ async function run() {
     makeTask('exception.order.check', { target: { device_id: 'old-device' } }),
     'unknown_field'
   );
+  expectProtocolError(
+    makeTask('warehouse.order.check', {
+      order_id: 'order-ref-10001',
+      params: { order_no: 'different-order', order_year: 2026 }
+    }),
+    'order_id_mismatch'
+  );
 
   assert.throws(
     () => createExecutor(createPersistence({ version: 2, receipts: null, locks: {}, audit: [] })),
@@ -192,6 +199,72 @@ async function run() {
   assert.strictEqual(noExceptionResult.status, 'succeeded');
   assert.strictEqual(noExceptionResult.reason, 'query_completed');
   assert.strictEqual(noExceptionResult.message, '暂无异常订单');
+
+  const warehouseFoundExecutor = createExecutor(createPersistence());
+  warehouseFoundExecutor.registerAdapter('warehouse.order.check', {
+    validateParams: params => ({ valid: params.order_no === '3589409013687094' && params.order_year === 2026 }),
+    execute: async () => ({
+      state: 'arrived',
+      exists: true,
+      waybill_no: 'JDV029243091652',
+      queried_at: new Date(NOW).toISOString()
+    })
+  });
+  const warehouseFoundResult = await warehouseFoundExecutor.executeTask(makeTask('warehouse.order.check', {
+    order_id: '3589409013687094',
+    params: { order_no: '3589409013687094', order_year: 2026 }
+  }));
+  assert.strictEqual(warehouseFoundResult.status, 'succeeded');
+  assert.strictEqual(warehouseFoundResult.reason, 'query_completed');
+  assert.strictEqual(warehouseFoundResult.message, '订单存在');
+  assert.strictEqual(warehouseFoundResult.result.state, 'arrived');
+  assert.strictEqual(warehouseFoundResult.result.exists, true);
+  assert.strictEqual(warehouseFoundResult.result.waybill_no, 'JDV029243091652');
+
+  const warehouseMissingExecutor = createExecutor(createPersistence());
+  warehouseMissingExecutor.registerAdapter('warehouse.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => ({
+      state: 'waiting_arrival',
+      exists: false,
+      waybill_no: '',
+      queried_at: new Date(NOW).toISOString()
+    })
+  });
+  const warehouseMissingResult = await warehouseMissingExecutor.executeTask(makeTask('warehouse.order.check', {
+    task_id: 'task-warehouse-order-missing',
+    idempotency_key: 'idem-warehouse-order-missing',
+    order_id: '3589409013687094',
+    params: { order_no: '3589409013687094', order_year: 2026 }
+  }));
+  assert.strictEqual(warehouseMissingResult.status, 'succeeded');
+  assert.strictEqual(warehouseMissingResult.reason, 'query_completed');
+  assert.strictEqual(warehouseMissingResult.message, '无此订单');
+  assert.strictEqual(warehouseMissingResult.result.state, 'waiting_arrival');
+  assert.strictEqual(warehouseMissingResult.result.exists, false);
+
+  const warehouseExpiredExecutor = createExecutor(createPersistence());
+  warehouseExpiredExecutor.registerAdapter('warehouse.order.check', {
+    validateParams: () => ({ valid: true }),
+    execute: async () => {
+      const error = new Error('upstream details must not leak');
+      error.code = 'warehouse_session_expired';
+      throw error;
+    }
+  });
+  const warehouseExpiredResult = await warehouseExpiredExecutor.executeTask(makeTask('warehouse.order.check', {
+    task_id: 'task-warehouse-session-expired',
+    idempotency_key: 'idem-warehouse-session-expired',
+    order_id: '3589409013687094',
+    params: { order_no: '3589409013687094', order_year: 2026 }
+  }));
+  assert.strictEqual(warehouseExpiredResult.status, 'failed');
+  assert.strictEqual(warehouseExpiredResult.reason, 'warehouse_session_expired');
+  assert.strictEqual(
+    warehouseExpiredResult.message,
+    '云仓助手 WMS 登录已失效，请在绑定机器码的云仓助手重新登录并进入仓库后再试'
+  );
+  assert.strictEqual(JSON.stringify(warehouseExpiredResult).includes('upstream details must not leak'), false);
 
   const expiredSessionExecutor = createExecutor(createPersistence());
   expiredSessionExecutor.registerAdapter('exception.order.check', {

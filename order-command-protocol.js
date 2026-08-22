@@ -284,11 +284,10 @@ function validateTaskEnvelope(task, options = {}) {
     throw new OrderCommandProtocolError('params_too_large', 'params 超过 16KB 限制');
   }
   inspectParameterValue(params, 'params', 0);
-  if ((task.command === 'exception.order.check' || task.command === 'exception.order.resolve') &&
-      typeof params.order_no === 'string' && task.order_id !== params.order_no) {
+  if (typeof params.order_no === 'string' && task.order_id !== params.order_no) {
     throw new OrderCommandProtocolError(
       'order_id_mismatch',
-      '异常订单任务的 order_id 必须与 params.order_no 完全一致'
+      '订单任务的 order_id 必须与 params.order_no 完全一致'
     );
   }
 
