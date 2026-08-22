@@ -23,6 +23,15 @@ async function createPage(retryResult) {
           paymentSuccessEnter: async () => retryResult,
           close() { closeCount += 1; },
           createPaymentOrder: async () => ({ error: 'not_used' }),
+          quoteSubscriptionUpgrade: async (payload) => ({
+            amount: 5000,
+            original_amount: 9900,
+            discount_amount: 4900,
+            billable_days: 15,
+            plan: 'monthly',
+            tier: payload.tier,
+            order_type: 'upgrade'
+          }),
           queryPaymentOrder: async () => ({ status: 'pending' }),
           generateQRCode: async () => ''
         }
@@ -58,6 +67,7 @@ async function createPage(retryResult) {
   assert.match(document.querySelector('#capacityAlert').textContent, /1\/1/);
   assert.strictEqual(document.querySelector('[data-tier="basic"]').classList.contains('disabled'), true);
   assert.strictEqual(document.querySelector('[data-tier="standard"]').classList.contains('selected'), true);
+  await new Promise(resolve => setTimeout(resolve, 10));
   assert.match(document.querySelector('#payBtn').textContent, /升级至标准版/);
   assert.strictEqual(document.querySelector('#retryEntryBtn').classList.contains('visible'), true);
 

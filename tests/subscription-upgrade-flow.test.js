@@ -8,10 +8,20 @@ const html = fs.readFileSync(path.join(root, 'src', 'subscription.html'), 'utf8'
 const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 
+async function waitFor(predicate, message, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
 async function createPage(orderResult, quoteResult = null) {
   let subscriptionListener = null;
   const paymentPayloads = [];
   const quotePayloads = [];
+  const alerts = [];
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     url: 'file:///subscription.html',
@@ -29,11 +39,13 @@ async function createPage(orderResult, quoteResult = null) {
           },
           quoteSubscriptionUpgrade: async (payload) => {
             quotePayloads.push(payload);
+            if (typeof quoteResult === 'function') return quoteResult(payload, quotePayloads.length);
             return quoteResult || {
               amount: orderResult.amount,
               original_amount: orderResult.original_amount,
               discount_amount: orderResult.discount_amount,
-              plan: 'yearly',
+              billable_days: 14,
+              plan: orderResult.plan || 'yearly',
               tier: payload.tier,
               order_type: 'upgrade'
             };
@@ -42,11 +54,11 @@ async function createPage(orderResult, quoteResult = null) {
           generateQRCode: async () => 'data:image/png;base64,AA=='
         }
       });
-      window.alert = () => {};
+      window.alert = message => alerts.push(String(message));
     }
   });
   await new Promise(resolve => dom.window.addEventListener('load', resolve, { once: true }));
-  return { dom, sendSubscriptionInfo: subscriptionListener, paymentPayloads, quotePayloads };
+  return { dom, sendSubscriptionInfo: subscriptionListener, paymentPayloads, quotePayloads, alerts };
 }
 
 (async () => {
@@ -56,6 +68,7 @@ async function createPage(orderResult, quoteResult = null) {
     amount: 5001,
     original_amount: 9901,
     discount_amount: 4900,
+    billable_days: 14,
     plan: 'yearly',
     tier: 'standard',
     order_type: 'upgrade'
@@ -76,53 +89,66 @@ async function createPage(orderResult, quoteResult = null) {
 
   document.querySelector('[data-tier="standard"]').click();
   assert.strictEqual(document.querySelector('#periodSelector').style.display, 'none');
+  await waitFor(() => page.quotePayloads.length === 1 && /50\.01/.test(document.querySelector('#payBtn').textContent),
+    '选择升级版本后应自动取得并展示升级报价');
   document.querySelector('[data-plan="monthly"]').click();
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true,
-    '升级状态即使触发隐藏卡片事件也不能改变当前订阅周期');
+    '升级状态下即使触发隐藏卡片事件也不能改变当前订阅周期');
   assert.match(document.querySelector('#upgradeNote').textContent, /当前订阅的年度计费标准/);
+  assert.match(document.querySelector('#upgradeNote').textContent, /本次按14天计价/);
   assert.match(document.querySelector('#upgradeNote').textContent, /升级无需选择周期/);
-  assert.match(document.querySelector('#upgradeNote').textContent, /只收取从现在到/);
   assert.match(document.querySelector('#upgradeNote').textContent, /原到期时间不变/);
-  assert.match(document.querySelector('#payBtn').textContent, /计算升级至标准版的差价/);
-
-  document.querySelector('#payBtn').click();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.strictEqual(page.quotePayloads.length, 1);
-  assert.strictEqual(Object.prototype.hasOwnProperty.call(page.quotePayloads[0], 'plan'), false);
-  assert.strictEqual(page.paymentPayloads.length, 0, '首次点击只计算差价，不能创建微信支付单');
-  assert.match(document.querySelector('#payBtn').textContent, /50\.01/);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(page.quotePayloads[0], 'plan'), false,
+    '升级周期必须由服务器根据真实订阅决定');
+  assert.strictEqual(page.paymentPayloads.length, 0, '自动报价不能创建微信支付单');
   assert.strictEqual(document.querySelector('#originalPrice').textContent, '99.01元');
   assert.strictEqual(document.querySelector('#discountPrice').textContent, '-49元');
   assert.strictEqual(document.querySelector('#finalPrice').textContent, '50.01元');
 
   document.querySelector('#payBtn').click();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.strictEqual(page.paymentPayloads.length, 1);
+  await waitFor(() => page.paymentPayloads.length === 1, '报价完成后一次点击应直接创建支付单');
+  await waitFor(() => /50\.01元/.test(document.querySelector('#qrAmount').textContent),
+    '创建支付单后应显示二维码金额');
   assert.strictEqual(Object.prototype.hasOwnProperty.call(page.paymentPayloads[0], 'plan'), false);
   assert.strictEqual(page.paymentPayloads[0].tier, 'standard');
-  assert.strictEqual(document.querySelector('#originalPrice').textContent, '99.01元');
-  assert.strictEqual(document.querySelector('#discountPrice').textContent, '-49元');
-  assert.strictEqual(document.querySelector('#finalPrice').textContent, '50.01元');
   assert.strictEqual(document.querySelector('#finalPriceLabel').textContent, '本次升级补差价');
   assert.match(document.querySelector('#qrAmount').textContent, /50\.01元/);
   page.dom.window.close();
 
-  const legacyPage = await createPage({ error: 'not_used' });
-  legacyPage.sendSubscriptionInfo({
+  // 旧客户端缓存可能没有 subscription_plan。服务器报价才是权威来源，不能再回退为年度。
+  const missingPlanPage = await createPage({ error: 'not_used' }, {
+    amount: 4464,
+    original_amount: 9240,
+    discount_amount: 4776,
+    billable_days: 14,
+    plan: 'monthly',
+    tier: 'standard',
+    order_type: 'upgrade'
+  });
+  missingPlanPage.sendSubscriptionInfo({
     status: 'active',
     tier: 'basic',
     subscription_plan: '',
-    subscription_end: '2026-10-01T00:00:00.000Z'
+    subscription_end: '2026-09-05T14:13:59.000Z',
+    jd_username: 'masked-user',
+    department_id: 'masked-dept'
   });
-  const legacyDocument = legacyPage.dom.window.document;
-  assert.strictEqual(legacyDocument.querySelector('[data-plan="monthly"]').classList.contains('selected'), true);
-  legacyDocument.querySelector('[data-plan="quarterly"]').click();
-  assert.strictEqual(legacyDocument.querySelector('[data-plan="quarterly"]').classList.contains('selected'), true);
-  legacyDocument.querySelector('[data-tier="standard"]').click();
-  assert.strictEqual(legacyDocument.querySelector('#periodSelector').style.display, 'none');
-  assert.strictEqual(legacyDocument.querySelector('[data-plan="yearly"]').classList.contains('selected'), true,
-    '历史订阅缺少周期元数据时必须与服务器一致回退年度计价');
-  legacyPage.dom.window.close();
+  const missingPlanDocument = missingPlanPage.dom.window.document;
+  missingPlanDocument.querySelector('[data-plan="quarterly"]').click();
+  assert.strictEqual(missingPlanDocument.querySelector('[data-plan="quarterly"]').classList.contains('selected'), true);
+  missingPlanDocument.querySelector('[data-tier="standard"]').click();
+  await waitFor(() => missingPlanPage.quotePayloads.length === 1 &&
+      /44\.64/.test(missingPlanDocument.querySelector('#payBtn').textContent),
+    '缺少本地周期时也应自动接受服务器的月度报价');
+  assert.strictEqual(missingPlanDocument.querySelector('#periodSelector').style.display, 'none');
+  assert.strictEqual(missingPlanDocument.querySelector('[data-plan="monthly"]').classList.contains('selected'), true,
+    '服务器返回的真实月度订阅必须覆盖陈旧或缺失的本地周期');
+  assert.strictEqual(missingPlanDocument.querySelector('[data-plan="yearly"]').classList.contains('selected'), false,
+    '本地周期缺失时禁止擅自回退年度');
+  assert.match(missingPlanDocument.querySelector('#upgradeNote').textContent, /当前订阅的月度计费标准/);
+  assert.match(missingPlanDocument.querySelector('#upgradeNote').textContent, /本次按14天计价/);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(missingPlanPage.quotePayloads[0], 'plan'), false);
+  missingPlanPage.dom.window.close();
 
   const quoteErrorPage = await createPage({}, { error: '报价暂不可用' });
   quoteErrorPage.sendSubscriptionInfo({
@@ -135,12 +161,19 @@ async function createPage(orderResult, quoteResult = null) {
   });
   const quoteErrorDocument = quoteErrorPage.dom.window.document;
   quoteErrorDocument.querySelector('[data-tier="standard"]').click();
+  await waitFor(() => quoteErrorPage.quotePayloads.length === 1 &&
+      /重新计算升级差价/.test(quoteErrorDocument.querySelector('#payBtn').textContent),
+    '自动报价失败后应提供可重试按钮');
+  assert.strictEqual(quoteErrorPage.alerts.length, 0, '自动报价失败不应立即弹窗打断用户');
   quoteErrorDocument.querySelector('#payBtn').click();
-  await new Promise(resolve => setTimeout(resolve, 10));
+  await waitFor(() => quoteErrorPage.quotePayloads.length === 2 &&
+      quoteErrorDocument.querySelector('#payBtn').disabled === false,
+    '点击重试应再次请求报价并在失败后恢复按钮');
   assert.strictEqual(quoteErrorPage.paymentPayloads.length, 0);
   assert.strictEqual(quoteErrorDocument.querySelector('#payBtn').disabled, false,
     '报价失败后必须恢复按钮，不能一直停留在计算中');
-  assert.match(quoteErrorDocument.querySelector('#payBtn').textContent, /计算升级至标准版的差价/);
+  assert.match(quoteErrorDocument.querySelector('#payBtn').textContent, /重新计算升级差价/);
+  assert.strictEqual(quoteErrorPage.alerts.length, 1, '手动重试失败时应显示一次明确错误');
   quoteErrorPage.dom.window.close();
 
   const trialPage = await createPage({ error: 'not_used' });
@@ -149,6 +182,7 @@ async function createPage(orderResult, quoteResult = null) {
   trialDocument.querySelector('[data-plan="quarterly"]').click();
   assert.strictEqual(trialDocument.querySelector('[data-plan="quarterly"]').classList.contains('selected'), true);
   assert.strictEqual(trialDocument.querySelector('#upgradeNote').classList.contains('visible'), false);
+  assert.strictEqual(trialPage.quotePayloads.length, 0, '试用订购不能调用升级报价');
   trialPage.dom.window.close();
 
   assert.match(mainSource, /subscription_plan: subResult\.subscription_plan \|\| ''/);

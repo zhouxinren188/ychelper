@@ -682,6 +682,10 @@
     let pollTimer = null;
     let subInfo = null;
     let currentUpgradeQuote = null;
+    let upgradeQuoteRequestId = 0;
+    let upgradeQuoteLoadingKey = '';
+    let upgradeQuotePromise = null;
+    let upgradeQuoteError = '';
 
     const priceMatrix = {
       basic:    { monthly: 98, quarterly: 298, yearly: 1088 },
@@ -704,7 +708,7 @@
 
     function getActiveBillingPlan() {
       const plan = subInfo?.subscription_plan;
-      return Object.prototype.hasOwnProperty.call(planNames, plan) ? plan : 'yearly';
+      return Object.prototype.hasOwnProperty.call(planNames, plan) ? plan : '';
     }
 
     function selectPlan(plan) {
@@ -722,7 +726,7 @@
     }
 
     function getUpgradeSelectionKey() {
-      return `${currentTier}:${currentPlan}`;
+      return currentTier;
     }
 
     function hasCurrentUpgradeQuote() {
@@ -730,8 +734,94 @@
     }
 
     function clearUpgradeQuote() {
+      upgradeQuoteRequestId += 1;
+      upgradeQuoteLoadingKey = '';
+      upgradeQuotePromise = null;
+      upgradeQuoteError = '';
       currentUpgradeQuote = null;
       $('#discountInfo').classList.remove('visible');
+    }
+
+    async function requestUpgradeQuote(showError = false) {
+      if (!isUpgradeSelection() || currentOrderNo) return null;
+      if (hasCurrentUpgradeQuote()) return currentUpgradeQuote;
+
+      const selectionKey = getUpgradeSelectionKey();
+      if (upgradeQuoteLoadingKey === selectionKey && upgradeQuotePromise) {
+        return upgradeQuotePromise;
+      }
+
+      if (!window.electronAPI || typeof window.electronAPI.quoteSubscriptionUpgrade !== 'function') {
+        upgradeQuoteError = '升级报价接口未初始化，请重启应用';
+        updatePurchaseMode();
+        if (showError) alert(upgradeQuoteError);
+        return null;
+      }
+
+      const requestId = ++upgradeQuoteRequestId;
+      upgradeQuoteLoadingKey = selectionKey;
+      upgradeQuoteError = '';
+      updatePurchaseMode();
+
+      const payload = {
+        jdUsername: subInfo?.jd_username || '',
+        departmentId: subInfo?.department_id || '',
+        tier: currentTier,
+        inviteCode: null
+      };
+
+      upgradeQuotePromise = (async () => {
+        try {
+          const quote = await window.electronAPI.quoteSubscriptionUpgrade(payload);
+          if (requestId !== upgradeQuoteRequestId || selectionKey !== getUpgradeSelectionKey()) return null;
+          if (!quote || typeof quote !== 'object') {
+            throw new Error('服务器返回的升级报价格式异常');
+          }
+          if (quote.error) throw new Error(quote.error);
+
+          const amount = Number(quote.amount);
+          const originalAmount = Number(quote.original_amount);
+          const discountAmount = Number(quote.discount_amount);
+          const billableDays = Number(quote.billable_days);
+          const validQuote = quote.order_type === 'upgrade' &&
+            quote.tier === currentTier &&
+            Object.prototype.hasOwnProperty.call(planNames, quote.plan) &&
+            [amount, originalAmount, discountAmount, billableDays].every(Number.isSafeInteger) &&
+            billableDays > 0 && amount > 0 && originalAmount - discountAmount === amount;
+          if (!validQuote) throw new Error('服务器返回的升级报价校验失败');
+
+          selectPlan(quote.plan);
+          currentUpgradeQuote = {
+            selectionKey,
+            plan: quote.plan,
+            billableDays,
+            amount,
+            originalAmount,
+            discountAmount
+          };
+          showDiscountInfo(
+            formatCents(originalAmount),
+            formatCents(discountAmount),
+            formatCents(amount),
+            'upgrade'
+          );
+          return currentUpgradeQuote;
+        } catch (error) {
+          if (requestId === upgradeQuoteRequestId) {
+            upgradeQuoteError = error.message || '计算升级差价失败';
+            if (showError) alert('计算升级差价失败：' + upgradeQuoteError);
+          }
+          return null;
+        } finally {
+          if (requestId === upgradeQuoteRequestId) {
+            upgradeQuoteLoadingKey = '';
+            upgradeQuotePromise = null;
+            updatePurchaseMode();
+          }
+        }
+      })();
+
+      return upgradeQuotePromise;
     }
 
     function updatePurchaseMode() {
@@ -743,7 +833,8 @@
       const payBtn = $('#payBtn');
       const periodSelector = $('#periodSelector');
 
-      if (upgrade) selectPlan(getActiveBillingPlan());
+      const activePlan = getActiveBillingPlan();
+      if (upgrade && activePlan && !hasCurrentUpgradeQuote()) selectPlan(activePlan);
       periodSelector.style.display = upgrade ? 'none' : 'flex';
 
       document.querySelectorAll('.period-card').forEach(card => {
@@ -760,12 +851,24 @@
           ? new Date(subInfo.subscription_end).toLocaleString('zh-CN', { hour12: false })
           : '当前订阅到期日';
         if (upgrade) {
-          upgradeNote.innerHTML = `系统已自动沿用当前订阅的<strong>${planNames[currentPlan]}</strong>计费标准，` +
+          const quotePlan = currentUpgradeQuote?.plan || activePlan;
+          const planText = quotePlan ? `的<strong>${planNames[quotePlan]}</strong>计费标准` : '计费周期';
+          const daysText = currentUpgradeQuote?.billableDays
+            ? `，本次按<strong>${currentUpgradeQuote.billableDays}天</strong>计价`
+            : '';
+          upgradeNote.innerHTML = `系统将自动沿用当前订阅${planText}${daysText}，` +
             `只收取从现在到 <strong>${endText}</strong> 的版本差价；升级无需选择周期，支付后原到期时间不变。`;
           if (!currentOrderNo) {
-            payBtn.textContent = hasCurrentUpgradeQuote()
-              ? `支付${formatCents(currentUpgradeQuote.amount)}元并升级至${tierNames[currentTier]}`
-              : `计算升级至${tierNames[currentTier]}的差价`;
+            if (hasCurrentUpgradeQuote()) {
+              payBtn.disabled = false;
+              payBtn.textContent = `支付${formatCents(currentUpgradeQuote.amount)}元并升级至${tierNames[currentTier]}`;
+            } else if (upgradeQuoteLoadingKey === getUpgradeSelectionKey()) {
+              payBtn.disabled = true;
+              payBtn.textContent = '正在计算升级差价...';
+            } else {
+              payBtn.disabled = false;
+              payBtn.textContent = upgradeQuoteError ? '重新计算升级差价' : '正在计算升级差价...';
+            }
           }
         } else {
           upgradeNote.innerHTML = `本次选择续费<strong>${planNames[currentPlan]}</strong>套餐，` +
@@ -779,6 +882,11 @@
       }
 
       updatePeriodPrices();
+
+      if (upgrade && !currentOrderNo && !hasCurrentUpgradeQuote() &&
+          !upgradeQuoteLoadingKey && !upgradeQuoteError) {
+        setTimeout(() => { requestUpgradeQuote(false); }, 0);
+      }
     }
 
     // 版本选择
@@ -994,6 +1102,13 @@
     // 支付按钮
     $('#payBtn').addEventListener('click', async () => {
       const payBtn = $('#payBtn');
+      const upgradeSelection = isUpgradeSelection();
+
+      if (upgradeSelection && !hasCurrentUpgradeQuote()) {
+        await requestUpgradeQuote(true);
+        return;
+      }
+
       payBtn.disabled = true;
       payBtn.textContent = '正在创建订单...';
 
@@ -1005,7 +1120,6 @@
         const jdUsername = subInfo?.jd_username || '';
         const inviteCode = $('#inviteCodeInput').value.trim();
 
-        const upgradeSelection = isUpgradeSelection();
         const payload = {
           jdUsername,
           departmentId: subInfo?.department_id || '',
@@ -1013,53 +1127,6 @@
           inviteCode: inviteCode || null
         };
         if (!upgradeSelection) payload.plan = currentPlan;
-
-        if (upgradeSelection && !hasCurrentUpgradeQuote()) {
-          if (typeof window.electronAPI.quoteSubscriptionUpgrade !== 'function') {
-            throw new Error('升级报价接口未初始化，请重启应用');
-          }
-
-          const quote = await window.electronAPI.quoteSubscriptionUpgrade(payload);
-          if (!quote || typeof quote !== 'object') {
-            throw new Error('服务器返回的升级报价格式异常');
-          }
-          if (quote.error) {
-            alert(quote.error);
-            payBtn.disabled = false;
-            updatePurchaseMode();
-            return;
-          }
-
-          const amount = Number(quote.amount);
-          const originalAmount = Number(quote.original_amount);
-          const discountAmount = Number(quote.discount_amount);
-          const validQuote = quote.order_type === 'upgrade' &&
-            quote.tier === currentTier &&
-            quote.plan === getActiveBillingPlan() &&
-            [amount, originalAmount, discountAmount].every(Number.isSafeInteger) &&
-            amount > 0 && originalAmount - discountAmount === amount;
-          if (!validQuote) {
-            throw new Error('服务器返回的升级报价校验失败');
-          }
-
-          selectPlan(quote.plan);
-
-          currentUpgradeQuote = {
-            selectionKey: getUpgradeSelectionKey(),
-            amount,
-            originalAmount,
-            discountAmount
-          };
-          showDiscountInfo(
-            formatCents(originalAmount),
-            formatCents(discountAmount),
-            formatCents(amount),
-            'upgrade'
-          );
-          payBtn.disabled = false;
-          updatePurchaseMode();
-          return;
-        }
 
         const result = await window.electronAPI.createPaymentOrder(payload);
 
