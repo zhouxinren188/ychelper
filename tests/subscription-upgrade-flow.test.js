@@ -100,26 +100,25 @@ async function createPage(orderResult, quoteResult = null) {
   assert.match(subscriptionWindowBlock[1], /frame:\s*false/,
     '订阅窗口必须关闭原生标题栏');
   assert.ok(document.querySelector('#subscriptionTitlebar'), '订阅页应提供自绘标题栏');
-  assert.ok(document.querySelector('#subscriptionTitlebar.titlebar'),
-    '订阅窗口必须直接复用主界面的标题栏结构');
+  assert.ok(document.querySelector('#subscriptionTitlebar.modal-header'),
+    '订阅窗口必须直接复用主界面弹窗标题栏结构');
   assert.strictEqual(
-    document.querySelector('#subscriptionTitlebar .titlebar-right .department-name').textContent,
+    document.querySelector('#subscriptionTitlebar > span').textContent,
     '云仓助手 - 订阅',
-    '订阅窗口标题必须复用主界面右侧信息位置且不能省略'
+    '订阅窗口标题必须保留在弹窗标题栏左侧'
   );
-  assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-left'));
-  assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-right .window-controls'));
-  assert.ok(document.querySelector('#subscriptionMinimize.win-btn'));
-  assert.ok(document.querySelector('#subscriptionClose.win-btn.close-btn'));
+  assert.ok(document.querySelector('#subscriptionClose.modal-close'),
+    '订阅窗口必须复用主界面弹窗关闭按钮');
+  assert.ok(!document.querySelector('#subscriptionMinimize'),
+    '订阅弹窗不应额外保留主窗口式最小化按钮');
   assert.ok(document.querySelector('#subscriptionMain.subscription-main > .sub-container'),
     '订阅内容必须放在标题栏下方的独立滚动区域');
   assert.match(html, /body\s*\{[\s\S]*?height:\s*100vh[\s\S]*?flex-direction:\s*column[\s\S]*?overflow:\s*hidden/,
     '订阅窗口外层必须像主界面一样固定标题栏并禁止整窗滚动');
   assert.match(html, /\.subscription-main\s*\{[\s\S]*?overflow-y:\s*auto/,
     '只有标题栏下方的订阅内容区域允许滚动');
-  document.querySelector('#subscriptionMinimize').click();
   document.querySelector('#subscriptionClose').click();
-  assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 1, closeCount: 1 });
+  assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 0, closeCount: 1 });
   assert.match(titlebarStyleSource, /\.titlebar\s*\{[\s\S]*?height:\s*28px/,
     '主窗口和订阅窗口应共用收紧后的28px标题栏');
   assert.match(titlebarStyleSource, /\.titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag/,

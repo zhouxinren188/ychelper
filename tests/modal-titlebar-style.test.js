@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const styleSource = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'css', 'style.css'),
+  path.join(__dirname, '..', 'src', 'css', 'window-titlebar.css'),
   'utf8'
 );
 

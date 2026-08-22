@@ -19,6 +19,7 @@
 
     .subscription-titlebar {
       z-index: 1000;
+      -webkit-app-region: drag;
     }
 
     .subscription-main {
@@ -521,17 +522,10 @@
   </style>
 </head>
 <body>
-  <header class="titlebar subscription-titlebar" id="subscriptionTitlebar">
-    <div class="titlebar-left"></div>
-    <div class="titlebar-right">
-      <span class="department-name">云仓助手 - 订阅</span>
-      <div class="window-controls">
-      <button class="win-btn" id="subscriptionMinimize" type="button"
-        aria-label="最小化" title="最小化">&#8722;</button>
-      <button class="win-btn close-btn" id="subscriptionClose" type="button"
-        aria-label="关闭" title="关闭">&times;</button>
-      </div>
-    </div>
+  <header class="modal-header subscription-titlebar" id="subscriptionTitlebar">
+    <span>云仓助手 - 订阅</span>
+    <button class="modal-close" id="subscriptionClose" type="button"
+      aria-label="关闭" title="关闭">&times;</button>
   </header>
   <main class="subscription-main" id="subscriptionMain">
     <div class="sub-container">
@@ -705,7 +699,6 @@
 
     // ========== 页面逻辑 ==========
     const $ = (sel) => document.querySelector(sel);
-    $('#subscriptionMinimize').addEventListener('click', () => window.electronAPI.minimize());
     $('#subscriptionClose').addEventListener('click', () => window.electronAPI.close());
 
     let currentTier = 'basic';

@@ -53,3 +53,35 @@
 
 .win-btn:hover { background: rgba(0,0,0,0.06); }
 .win-btn.close-btn:hover { background: #e81123; color: #fff; }
+
+/* 主界面弹窗与独立订阅窗口共用的紧凑标题栏。 */
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 36px;
+  padding: 6px 14px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.modal-close {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  color: #999;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.modal-close:hover { color: #333; }
