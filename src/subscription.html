@@ -10,13 +10,22 @@
       font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
       background: #f5f5f5;
       user-select: none;
-      overflow-y: auto;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
 
     .subscription-titlebar {
-      position: sticky;
-      top: 0;
       z-index: 1000;
+    }
+
+    .subscription-main {
+      flex: 1;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
 
     .sub-container {
@@ -524,7 +533,8 @@
       </div>
     </div>
   </header>
-  <div class="sub-container">
+  <main class="subscription-main" id="subscriptionMain">
+    <div class="sub-container">
     <!-- 顶部 -->
     <div class="sub-header">
       <h1>云仓助手</h1>
@@ -671,7 +681,8 @@
     <div class="sub-footer">
       云仓助手 &copy; 2024 | 如有疑问请联系客服
     </div>
-  </div>
+    </div>
+  </main>
 
   <!-- 支付成功弹窗 -->
   <div class="success-overlay" id="successOverlay">

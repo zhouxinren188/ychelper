@@ -111,6 +111,12 @@ async function createPage(orderResult, quoteResult = null) {
   assert.ok(document.querySelector('#subscriptionTitlebar .titlebar-right .window-controls'));
   assert.ok(document.querySelector('#subscriptionMinimize.win-btn'));
   assert.ok(document.querySelector('#subscriptionClose.win-btn.close-btn'));
+  assert.ok(document.querySelector('#subscriptionMain.subscription-main > .sub-container'),
+    '订阅内容必须放在标题栏下方的独立滚动区域');
+  assert.match(html, /body\s*\{[\s\S]*?height:\s*100vh[\s\S]*?flex-direction:\s*column[\s\S]*?overflow:\s*hidden/,
+    '订阅窗口外层必须像主界面一样固定标题栏并禁止整窗滚动');
+  assert.match(html, /\.subscription-main\s*\{[\s\S]*?overflow-y:\s*auto/,
+    '只有标题栏下方的订阅内容区域允许滚动');
   document.querySelector('#subscriptionMinimize').click();
   document.querySelector('#subscriptionClose').click();
   assert.deepStrictEqual(page.getWindowActionCounts(), { minimizeCount: 1, closeCount: 1 });
