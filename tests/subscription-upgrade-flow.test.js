@@ -43,7 +43,7 @@ async function createPage(orderResult) {
     amount: 5001,
     original_amount: 9901,
     discount_amount: 4900,
-    plan: 'yearly',
+    plan: 'monthly',
     tier: 'standard',
     order_type: 'upgrade'
   });
@@ -59,9 +59,11 @@ async function createPage(orderResult) {
 
   const document = page.dom.window.document;
   assert.strictEqual(document.querySelector('[data-plan="yearly"]').classList.contains('selected'), true);
-  assert.strictEqual(document.querySelector('[data-plan="monthly"]').classList.contains('disabled'), true);
+  document.querySelector('[data-plan="monthly"]').click();
+  assert.strictEqual(document.querySelector('[data-plan="monthly"]').classList.contains('selected'), true);
 
   document.querySelector('[data-tier="standard"]').click();
+  assert.match(document.querySelector('#upgradeNote').textContent, /月度标准/);
   assert.match(document.querySelector('#upgradeNote').textContent, /只收取从现在到/);
   assert.match(document.querySelector('#upgradeNote').textContent, /原到期时间不变/);
   assert.match(document.querySelector('#payBtn').textContent, /计算并升级至标准版/);
@@ -69,7 +71,7 @@ async function createPage(orderResult) {
   document.querySelector('#payBtn').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.strictEqual(page.paymentPayloads.length, 1);
-  assert.strictEqual(page.paymentPayloads[0].plan, 'yearly');
+  assert.strictEqual(page.paymentPayloads[0].plan, 'monthly');
   assert.strictEqual(page.paymentPayloads[0].tier, 'standard');
   assert.strictEqual(document.querySelector('#originalPrice').textContent, '99.01元');
   assert.strictEqual(document.querySelector('#discountPrice').textContent, '-49元');
@@ -77,6 +79,19 @@ async function createPage(orderResult) {
   assert.strictEqual(document.querySelector('#finalPriceLabel').textContent, '本次升级补差价');
   assert.match(document.querySelector('#qrAmount').textContent, /50\.01元/);
   page.dom.window.close();
+
+  const legacyPage = await createPage({ error: 'not_used' });
+  legacyPage.sendSubscriptionInfo({
+    status: 'active',
+    tier: 'basic',
+    subscription_plan: '',
+    subscription_end: '2026-10-01T00:00:00.000Z'
+  });
+  const legacyDocument = legacyPage.dom.window.document;
+  assert.strictEqual(legacyDocument.querySelector('[data-plan="monthly"]').classList.contains('selected'), true);
+  legacyDocument.querySelector('[data-plan="quarterly"]').click();
+  assert.strictEqual(legacyDocument.querySelector('[data-plan="quarterly"]').classList.contains('selected'), true);
+  legacyPage.dom.window.close();
 
   const trialPage = await createPage({ error: 'not_used' });
   trialPage.sendSubscriptionInfo({ status: 'trial', tier: 'basic', is_first_payment: true });
@@ -86,9 +101,9 @@ async function createPage(orderResult) {
   assert.strictEqual(trialDocument.querySelector('#upgradeNote').classList.contains('visible'), false);
   trialPage.dom.window.close();
 
-  assert.match(mainSource, /subscription_plan: subResult\.subscription_plan \|\| 'yearly'/);
+  assert.match(mainSource, /subscription_plan: subResult\.subscription_plan \|\| ''/);
   assert.match(mainSource, /subscription_plan: result\.subscription_plan/);
-  assert.match(mainSource, /subscription_plan: subInfo\.subscription_plan \|\| 'yearly'/);
+  assert.match(mainSource, /subscription_plan: subInfo\.subscription_plan \|\| ''/);
 
   console.log('订阅升级补差价界面流程测试通过');
 })().catch(error => {

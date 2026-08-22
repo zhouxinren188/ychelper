@@ -204,13 +204,6 @@
       background: #fff8f0;
       box-shadow: 0 4px 12px rgba(230, 126, 34, 0.2);
     }
-    .period-card.disabled {
-      cursor: not-allowed;
-      opacity: 0.42;
-      transform: none;
-      box-shadow: none;
-      background: #f7f7f7;
-    }
     .period-card .period-name {
       font-size: 14px;
       font-weight: bold;
@@ -730,11 +723,8 @@
       const upgradeNote = $('#upgradeNote');
       const payBtn = $('#payBtn');
 
-      if (active) {
-        selectPlan(subInfo.subscription_plan || 'yearly');
-      }
       document.querySelectorAll('.period-card').forEach(card => {
-        card.classList.toggle('disabled', active);
+        card.classList.remove('disabled');
       });
 
       if (active) {
@@ -747,12 +737,12 @@
           ? new Date(subInfo.subscription_end).toLocaleString('zh-CN', { hour12: false })
           : '当前订阅到期日';
         if (upgrade) {
-          upgradeNote.innerHTML = `升级将按当前<strong>${planNames[currentPlan]}</strong>计费周期，` +
+          upgradeNote.innerHTML = `本次选择按<strong>${planNames[currentPlan]}</strong>标准计算，` +
             `只收取从现在到 <strong>${endText}</strong> 的版本差价；支付后原到期时间不变。`;
           if (!currentOrderNo) payBtn.textContent = `计算并升级至${tierNames[currentTier]}`;
         } else {
-          upgradeNote.innerHTML = `当前有效订阅按<strong>${planNames[currentPlan]}</strong>计费。` +
-            '有效期内续费沿用该周期，并从原到期时间继续顺延。';
+          upgradeNote.innerHTML = `本次选择续费<strong>${planNames[currentPlan]}</strong>套餐，` +
+            '支付后从原到期时间继续顺延。';
           if (!currentOrderNo && !(capacityLimit && payBtn.disabled)) payBtn.textContent = '续费当前套餐';
         }
         upgradeNote.classList.add('visible');
@@ -778,10 +768,10 @@
     // 周期选择
     document.querySelectorAll('.period-card').forEach(card => {
       card.addEventListener('click', () => {
-        if (card.classList.contains('disabled')) return;
         document.querySelectorAll('.period-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentPlan = card.dataset.plan;
+        updatePurchaseMode();
       });
     });
 
@@ -822,6 +812,9 @@
     // 接收订阅信息
     window.electronAPI.onSubscriptionInfo((info) => {
       subInfo = info;
+      if (subInfo?.status === 'active' && Object.prototype.hasOwnProperty.call(planNames, subInfo.subscription_plan)) {
+        selectPlan(subInfo.subscription_plan);
+      }
       updateUI();
     });
 
