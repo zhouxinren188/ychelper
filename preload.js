@@ -98,6 +98,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createPaymentOrder: (params) => {
     return ipcRenderer.invoke('create-payment-order', JSON.stringify(params));
   },
+  quoteSubscriptionUpgrade: (params) => {
+    return ipcRenderer.invoke('quote-subscription-upgrade', JSON.stringify(params));
+  },
   queryPaymentOrder: (orderNo) => ipcRenderer.invoke('query-payment-order', orderNo),
   generateQRCode: (text) => ipcRenderer.invoke('generate-qrcode', text),
   getSubscriptionInfo: () => ipcRenderer.invoke('get-subscription-info'),

@@ -151,7 +151,7 @@ function signRequest(method, urlPath, body) {
 }
 
 // 调用后端 API
-function callApi(method, urlPath, body) {
+function callApi(method, urlPath, body, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const { timestamp, nonce, signature } = signRequest(method, urlPath, body);
     const fullUrl = `${API_BASE_URL}${urlPath}`;
@@ -175,10 +175,11 @@ function callApi(method, urlPath, body) {
       clearTimeout(timeoutId);
       callback(value);
     };
+    const normalizedTimeoutMs = Math.max(1000, Number(timeoutMs) || 15000);
     const timeoutId = setTimeout(() => {
       try { req.abort(); } catch (_) {}
       finish(reject, new Error('授权服务器请求超时'));
-    }, 15000);
+    }, normalizedTimeoutMs);
     if (body) {
       req.setHeader('Content-Type', 'application/json');
     }
@@ -7932,13 +7933,41 @@ ipcMain.handle('generate-qrcode', async (event, text) => {
 
 ipcMain.handle('create-payment-order', async (event, paramsJson) => {
   const { jdUsername, tier, plan, inviteCode, departmentId } = JSON.parse(paramsJson);
-  return callApi('POST', '/api/payment/create-order', {
-    jd_username: jdUsername,
-    department_id: departmentId || '',
-    tier,
-    plan,
-    invite_code: inviteCode || null
-  });
+  const startedAt = Date.now();
+  console.log(`[支付] 创建订单开始: tier=${tier || ''}, plan=${plan || ''}`);
+  try {
+    const result = await callApi('POST', '/api/payment/create-order', {
+      jd_username: jdUsername,
+      department_id: departmentId || '',
+      tier,
+      plan,
+      invite_code: inviteCode || null
+    }, 15000);
+    console.log(`[支付] 创建订单完成: durationMs=${Date.now() - startedAt}, success=${Boolean(result && result.code_url)}`);
+    return result;
+  } catch (error) {
+    console.error(`[支付] 创建订单失败: durationMs=${Date.now() - startedAt}, reason=${error.message}`);
+    throw error;
+  }
+});
+
+ipcMain.handle('quote-subscription-upgrade', async (event, paramsJson) => {
+  const { jdUsername, tier, plan, departmentId } = JSON.parse(paramsJson);
+  const startedAt = Date.now();
+  console.log(`[支付] 计算升级差价开始: tier=${tier || ''}, plan=${plan || ''}`);
+  try {
+    const result = await callApi('POST', '/api/payment/quote-upgrade', {
+      jd_username: jdUsername,
+      department_id: departmentId || '',
+      tier,
+      plan
+    }, 10000);
+    console.log(`[支付] 计算升级差价完成: durationMs=${Date.now() - startedAt}, success=${Boolean(result && !result.error)}`);
+    return result;
+  } catch (error) {
+    console.error(`[支付] 计算升级差价失败: durationMs=${Date.now() - startedAt}, reason=${error.message}`);
+    throw error;
+  }
 });
 
 ipcMain.handle('query-payment-order', async (event, orderNo) => {

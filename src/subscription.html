@@ -681,6 +681,7 @@
     let currentOrderType = 'purchase';
     let pollTimer = null;
     let subInfo = null;
+    let currentUpgradeQuote = null;
 
     const priceMatrix = {
       basic:    { monthly: 98, quarterly: 298, yearly: 1088 },
@@ -715,6 +716,19 @@
       return Number.isInteger(yuan) ? String(yuan) : yuan.toFixed(2);
     }
 
+    function getUpgradeSelectionKey() {
+      return `${currentTier}:${currentPlan}`;
+    }
+
+    function hasCurrentUpgradeQuote() {
+      return Boolean(currentUpgradeQuote && currentUpgradeQuote.selectionKey === getUpgradeSelectionKey());
+    }
+
+    function clearUpgradeQuote() {
+      currentUpgradeQuote = null;
+      $('#discountInfo').classList.remove('visible');
+    }
+
     function updatePurchaseMode() {
       const active = isActivePaidSubscription();
       const upgrade = isUpgradeSelection();
@@ -739,7 +753,11 @@
         if (upgrade) {
           upgradeNote.innerHTML = `本次选择按<strong>${planNames[currentPlan]}</strong>标准计算，` +
             `只收取从现在到 <strong>${endText}</strong> 的版本差价；支付后原到期时间不变。`;
-          if (!currentOrderNo) payBtn.textContent = `计算并升级至${tierNames[currentTier]}`;
+          if (!currentOrderNo) {
+            payBtn.textContent = hasCurrentUpgradeQuote()
+              ? `支付${formatCents(currentUpgradeQuote.amount)}元并升级至${tierNames[currentTier]}`
+              : `计算升级至${tierNames[currentTier]}的差价`;
+          }
         } else {
           upgradeNote.innerHTML = `本次选择续费<strong>${planNames[currentPlan]}</strong>套餐，` +
             '支付后从原到期时间继续顺延。';
@@ -761,6 +779,7 @@
         document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentTier = card.dataset.tier;
+        clearUpgradeQuote();
         updatePurchaseMode();
       });
     });
@@ -771,6 +790,7 @@
         document.querySelectorAll('.period-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         currentPlan = card.dataset.plan;
+        clearUpgradeQuote();
         updatePurchaseMode();
       });
     });
@@ -812,6 +832,7 @@
     // 接收订阅信息
     window.electronAPI.onSubscriptionInfo((info) => {
       subInfo = info;
+      clearUpgradeQuote();
       if (subInfo?.status === 'active' && Object.prototype.hasOwnProperty.call(planNames, subInfo.subscription_plan)) {
         selectPlan(subInfo.subscription_plan);
       }
@@ -982,6 +1003,51 @@
           inviteCode: inviteCode || null
         };
 
+        if (isUpgradeSelection() && !hasCurrentUpgradeQuote()) {
+          if (typeof window.electronAPI.quoteSubscriptionUpgrade !== 'function') {
+            throw new Error('升级报价接口未初始化，请重启应用');
+          }
+
+          const quote = await window.electronAPI.quoteSubscriptionUpgrade(payload);
+          if (!quote || typeof quote !== 'object') {
+            throw new Error('服务器返回的升级报价格式异常');
+          }
+          if (quote.error) {
+            alert(quote.error);
+            payBtn.disabled = false;
+            updatePurchaseMode();
+            return;
+          }
+
+          const amount = Number(quote.amount);
+          const originalAmount = Number(quote.original_amount);
+          const discountAmount = Number(quote.discount_amount);
+          const validQuote = quote.order_type === 'upgrade' &&
+            quote.tier === currentTier &&
+            quote.plan === currentPlan &&
+            [amount, originalAmount, discountAmount].every(Number.isSafeInteger) &&
+            amount > 0 && originalAmount - discountAmount === amount;
+          if (!validQuote) {
+            throw new Error('服务器返回的升级报价校验失败');
+          }
+
+          currentUpgradeQuote = {
+            selectionKey: getUpgradeSelectionKey(),
+            amount,
+            originalAmount,
+            discountAmount
+          };
+          showDiscountInfo(
+            formatCents(originalAmount),
+            formatCents(discountAmount),
+            formatCents(amount),
+            'upgrade'
+          );
+          payBtn.disabled = false;
+          updatePurchaseMode();
+          return;
+        }
+
         const result = await window.electronAPI.createPaymentOrder(payload);
 
         if (!result || typeof result !== 'object') {
@@ -990,6 +1056,7 @@
 
         if (result.error) {
           alert(result.error);
+          if (isUpgradeSelection()) clearUpgradeQuote();
           payBtn.disabled = false;
           updatePurchaseMode();
           return;
