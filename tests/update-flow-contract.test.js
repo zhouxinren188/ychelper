@@ -12,6 +12,7 @@ const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'
 const hotLoginBuild = fs.readFileSync(path.join(root, 'scripts', 'hot-update-login.js'), 'utf8');
 const artifactVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-release-artifacts.js'), 'utf8');
 const onlineVerifier = fs.readFileSync(path.join(root, 'scripts', 'verify-online-release.js'), 'utf8');
+const installerInclude = fs.readFileSync(path.join(root, 'build', 'installer.nsh'), 'utf8');
 const releaseBaselines = JSON.parse(fs.readFileSync(path.join(root, 'release-baselines.json'), 'utf8'));
 
 assert.match(main, /autoUpdater\.autoDownload\s*=\s*false/);
@@ -36,6 +37,18 @@ assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
 assert.match(main, /scheduleAutomaticInstall\('autoUpdater'\)/);
 assert.match(main, /scheduleAutomaticInstall\('localPath', savePath\)/);
+assert.match(main, /launchInstallerAfterApplicationExit\(\{/,
+  '完整安装包必须由独立等待器在应用退出后启动');
+assert.match(main, /applicationPath:\s*process\.execPath/);
+assert.doesNotMatch(main, /shell\.openPath\((?:installerPath|global\._pendingUpdateInstaller)\)/,
+  '完整安装包不得在应用退出前直接启动');
+assert.match(main, /if \(pendingUpdateAction\) return;/,
+  '自动安装已经排队时，窗口关闭事件不得清除安装动作');
+assert.match(installerInclude, /!macro customInit/);
+assert.match(installerInclude, /nsProcess::FindProcess/);
+assert.match(installerInclude, /Sleep 200/);
+assert.match(installerInclude, /\$R8 >= 50/,
+  '完整安装包必须为旧客户端退出预留有界等待时间');
 assert.doesNotMatch(main, /60000[\s\S]{0,200}checkForFullUpdate/);
 
 const startupBlock = main.match(/loginWindow\.webContents\.once\('did-finish-load'[\s\S]*?startPeriodicUpdateChecks\(\);/);

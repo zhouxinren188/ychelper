@@ -76,6 +76,7 @@ const {
   createUpdateDownloadState,
   hasUsableDifferentialBase
 } = require('./src/js/updateDownloadState');
+const { launchInstallerAfterApplicationExit } = require('./src/js/deferredInstaller');
 let cookieManager = null;
 try { cookieManager = require('./src/js/cookieManager'); } catch(e) { console.warn('[启动] cookieManager 模块缺失，热更新后将恢复'); }
 
@@ -1723,6 +1724,8 @@ function createMainWindow() {
   mainWindow.on('close', (event) => {
     if (!appIsQuitting && !isCheckingSubscription) {
       event.preventDefault();
+      // 更新已进入自动安装阶段时保持当前动作，等待统一退出流程处理。
+      if (pendingUpdateAction) return;
       // 用户手动关闭窗口时，清除待执行的更新安装动作
       pendingUpdateAction = null;
       // 通知渲染进程显示自定义退出确认弹窗
@@ -1870,6 +1873,42 @@ function showAutomaticUpdate(metadata, context = activeUpdateContext) {
   if (context === 'startup' && win && !win.isVisible()) win.show();
 }
 
+async function installPendingUpdateAndQuit(action, installerPath = null) {
+  const previousAppIsQuitting = appIsQuitting;
+  const previousWmsIsQuitting = wmsIsQuitting;
+  appIsQuitting = true;
+  wmsIsQuitting = true;
+
+  try {
+    if (action === 'localPath') {
+      await launchInstallerAfterApplicationExit({
+        installerPath,
+        applicationPath: process.execPath,
+        parentPid: process.pid
+      });
+      await releaseCurrentSubscriptionSession();
+      app.quit();
+      return;
+    }
+
+    await releaseCurrentSubscriptionSession();
+    autoUpdater.quitAndInstall(false, true);
+  } catch (error) {
+    appIsQuitting = previousAppIsQuitting;
+    wmsIsQuitting = previousWmsIsQuitting;
+    throw error;
+  }
+}
+
+function reportUpdateInstallFailure(error) {
+  automaticInstallScheduled = false;
+  pendingUpdateAction = null;
+  console.error('自动安装更新失败:', error.message);
+  sendUpdateWindowEvent('show-update-download-failed', {
+    message: '更新安装启动失败，请重新启动软件后再试'
+  });
+}
+
 function scheduleAutomaticInstall(action, installerPath = null) {
   if (automaticInstallScheduled) return;
   automaticInstallScheduled = true;
@@ -1881,22 +1920,8 @@ function scheduleAutomaticInstall(action, installerPath = null) {
     changelog: activeUpdateMetadata && activeUpdateMetadata.changelog
   });
 
-  setTimeout(async () => {
-    try {
-      if (action === 'localPath') {
-        const openError = await shell.openPath(installerPath);
-        if (openError) throw new Error(openError);
-        app.quit();
-      } else {
-        autoUpdater.quitAndInstall(false, true);
-      }
-    } catch (err) {
-      automaticInstallScheduled = false;
-      console.error('自动安装更新失败:', err.message);
-      sendUpdateWindowEvent('show-update-download-failed', {
-        message: '更新安装启动失败，请重新启动软件后再试'
-      });
-    }
+  setTimeout(() => {
+    installPendingUpdateAndQuit(action, installerPath).catch(reportUpdateInstallFailure);
   }, 1200);
 }
 
@@ -2810,20 +2835,21 @@ ipcMain.on('window-close', (event) => {
 
 // 渲染进程确认退出
 ipcMain.on('confirm-close', async () => {
-  await releaseCurrentSubscriptionSession();
-  if (pendingUpdateAction === 'autoUpdater') {
-    // 非静默安装，显示 NSIS 安装进度界面，安装后自动重启
-    autoUpdater.quitAndInstall(false, true);
-  } else if (pendingUpdateAction === 'localPath') {
-    shell.openPath(global._pendingUpdateInstaller);
+  try {
+    if (pendingUpdateAction) {
+      await installPendingUpdateAndQuit(pendingUpdateAction, global._pendingUpdateInstaller);
+      return;
+    }
+    await releaseCurrentSubscriptionSession();
+    appIsQuitting = true;
+    wmsIsQuitting = true;
     app.quit();
-  } else {
-    app.quit();
+  } catch (error) {
+    reportUpdateInstallFailure(error);
   }
 });
 
-// 渲染进程确认安装更新（兼容旧版 preload 的 fallback）
-ipcMain.on('confirm-update-install', () => {
+function requestPendingUpdateInstall() {
   if (global._pendingUpdateInstaller) {
     pendingUpdateAction = 'localPath';
   } else {
@@ -2832,35 +2858,20 @@ ipcMain.on('confirm-update-install', () => {
   // 只有主窗口有退出确认弹窗UI；登录窗口/订阅窗口直接安装
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('show-close-confirm');
-  } else {
-    if (pendingUpdateAction === 'localPath') {
-      shell.openPath(global._pendingUpdateInstaller);
-      app.quit();
-    } else {
-      autoUpdater.quitAndInstall(false, true);
-    }
+    return;
   }
+  installPendingUpdateAndQuit(pendingUpdateAction, global._pendingUpdateInstaller)
+    .catch(reportUpdateInstallFailure);
+}
+
+// 渲染进程确认安装更新（兼容旧版 preload 的 fallback）
+ipcMain.on('confirm-update-install', () => {
+  requestPendingUpdateInstall();
 });
 
 // 渲染进程确认安装更新（服务器下载的安装包）
 ipcMain.on('confirm-update-install-by-path', () => {
-  if (global._pendingUpdateInstaller) {
-    pendingUpdateAction = 'localPath';
-  } else {
-    // autoUpdater 下载的更新没有 _pendingUpdateInstaller，走 autoUpdater 路径
-    pendingUpdateAction = 'autoUpdater';
-  }
-  // 只有主窗口有退出确认弹窗UI；登录窗口/订阅窗口直接安装
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('show-close-confirm');
-  } else {
-    if (pendingUpdateAction === 'localPath') {
-      shell.openPath(global._pendingUpdateInstaller);
-      app.quit();
-    } else {
-      autoUpdater.quitAndInstall(false, true);
-    }
-  }
+  requestPendingUpdateInstall();
 });
 
 // 渲染进程点击浏览器下载
