@@ -3460,14 +3460,14 @@ function updateSmQueryProgress(progress = {}) {
 
   if (stage === 'complete') {
     smQueryProgressLabel.textContent = '查询完成';
-    smQueryProgressCount.textContent = total > 0 ? `${total} / ${total} · 100%` : '100%';
+    smQueryProgressCount.textContent = total > 0 ? `${total} / ${total} 个 SPU · 100%` : '100%';
     if (smQueryProgressEta) smQueryProgressEta.textContent = '已完成';
     smQueryProgress.setAttribute('aria-valuetext', '查询完成');
     return;
   }
   if (stage === 'error') {
     smQueryProgressLabel.textContent = progress.message ? `查询失败：${progress.message}` : '查询失败';
-    smQueryProgressCount.textContent = total > 0 ? `${completed} / ${total}` : '';
+    smQueryProgressCount.textContent = total > 0 ? `${completed} / ${total} 个 SPU` : '';
     if (smQueryProgressEta) smQueryProgressEta.textContent = '';
     smQueryProgress.setAttribute('aria-valuetext', '查询失败');
     return;
@@ -3488,10 +3488,10 @@ function updateSmQueryProgress(progress = {}) {
   const pageCompleted = Math.max(0, Number(progress.pageCompleted) || 0);
   const pageTotal = Math.max(0, Number(progress.pageTotal) || 0);
   smQueryProgressLabel.textContent = `正在查询第 ${pageNum}/${totalPages} 页 SKU` +
-    (pageTotal > 0 ? `（本页 ${pageCompleted}/${pageTotal}）` : '');
-  smQueryProgressCount.textContent = `${completed} / ${total} · ${Math.floor(percent)}%`;
+    (pageTotal > 0 ? `（本页 ${pageCompleted}/${pageTotal} 个 SPU）` : '');
+  smQueryProgressCount.textContent = `${completed} / ${total} 个 SPU · ${Math.floor(percent)}%`;
   if (smQueryProgressEta) smQueryProgressEta.textContent = etaText;
-  smQueryProgress.setAttribute('aria-valuetext', `已完成${completed}个，共${total}个商品，${etaText}`);
+  smQueryProgress.setAttribute('aria-valuetext', `已完成${completed}个SPU，共${total}个SPU，${etaText}`);
 }
 
 function finishSmQueryProgress(success, message = '') {

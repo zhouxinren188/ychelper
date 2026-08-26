@@ -3351,6 +3351,7 @@ ipcMain.handle('delete-shop-account', async (event, id) => {
 
   // 如果删除的是当前活跃账号，重置状态
   if (activeShopAccountId === id) {
+    clearShopGoodsResumeCheckpoint();
     activeShopAccountId = '';
     shopLoggedIn = false;
     shopLoginName = '';
@@ -3373,6 +3374,44 @@ let shopSffContextHeaders = null;    // 商品页官方请求生成的 DSM 环�
 const SHOP_GOODS_DIRECT_QUERY_ENABLED = true;
 const shopSffHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
 let lastShopSffResponseFinishedAt = 0;
+const SHOP_QUERY_RESUME_TTL_MS = 2 * 60 * 60 * 1000;
+let shopGoodsResumeCheckpoint = null;
+
+function clearShopGoodsResumeCheckpoint() {
+  shopGoodsResumeCheckpoint = null;
+}
+
+function getShopQueryCheckpointKey(accountId, queryOptions) {
+  return JSON.stringify({
+    accountId: String(accountId || ''),
+    pageSize: Number(queryOptions && queryOptions.pageSize) || 100,
+    productState: queryOptions && queryOptions.productState == null
+      ? null
+      : String(queryOptions.productState),
+    dateFrom: String(queryOptions && queryOptions.dateFrom || ''),
+    dateTo: String(queryOptions && queryOptions.dateTo || '')
+  });
+}
+
+function getOrCreateShopQueryCheckpoint(key) {
+  const now = Date.now();
+  if (
+    shopGoodsResumeCheckpoint &&
+    shopGoodsResumeCheckpoint.key === key &&
+    now - shopGoodsResumeCheckpoint.updatedAt <= SHOP_QUERY_RESUME_TTL_MS
+  ) {
+    shopGoodsResumeCheckpoint.updatedAt = now;
+    return shopGoodsResumeCheckpoint;
+  }
+  shopGoodsResumeCheckpoint = {
+    key,
+    completedProductIds: new Set(),
+    cachedSkuMap: new Map(),
+    totalCount: 0,
+    updatedAt: now
+  };
+  return shopGoodsResumeCheckpoint;
+}
 
 // 获取当前店铺的 session 分区名
 function getShopPartition() {
@@ -3938,6 +3977,7 @@ ipcMain.handle('open-shop-login', async (event, cred) => {
   if (!storedAccount.username || !storedAccount.password) {
     return { success: false, error: '店铺账号或密码为空，请先编辑账号' };
   }
+  clearShopGoodsResumeCheckpoint();
   pendingShopCredentials = { ...storedAccount };
   await createShopLoginWindow();
   return { success: true };
@@ -4028,6 +4068,7 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   if (!storedAccount) {
     return { success: false, error: '店铺账号不存在' };
   }
+  clearShopGoodsResumeCheckpoint();
 
   // 先销毁旧的 shop 窗口
   if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
@@ -4834,7 +4875,7 @@ const SHOP_GOODS_PAGE_URL = 'https://wares-jdm.jd.com/ware/wareList?activeTab=On
 
 function formatShopApiError(parsed, label) {
   if (Number(parsed.code) === 601) {
-    return `${label}触发京东风险校验(code:601)，本次未继续请求，请稍后在店铺后台确认账号状态`;
+    return `${label}触发京东风控(code:601)，本次查询已停止；请勿立即重试，稍后使用相同条件查询可从已完成进度继续`;
   }
   if (Number(parsed.code) === 312) {
     return `${label}签名校验失败(code:312)，请重新打开店铺后台后重试`;
@@ -5170,6 +5211,18 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
       dateFrom: params.dateFrom || '',
       dateTo: params.dateTo || ''
     };
+    const checkpointKey = getShopQueryCheckpointKey(queryAccountId, queryOptions);
+    const checkpoint = getOrCreateShopQueryCheckpoint(checkpointKey);
+    if (checkpoint.completedProductIds.size > 0) {
+      console.log(
+        `[店铺商品] 恢复同条件查询断点：已完成${checkpoint.completedProductIds.size}` +
+        `${checkpoint.totalCount > 0 ? `/${checkpoint.totalCount}` : ''}个SPU`
+      );
+      emitProgress({
+        stage: 'preparing',
+        message: `正在恢复上次已完成的 ${checkpoint.completedProductIds.size} 个 SPU…`
+      });
+    }
     const firstProductRequestBody = buildProductListRequest({ ...queryOptions, pageNum: 1 });
     console.log('[店铺商品] 开始查询（复用已登录页面）, params:', JSON.stringify(queryOptions));
 
@@ -5185,6 +5238,8 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     );
     const queryResult = await queryProductPagesPageMajor({
       pageSize: queryOptions.pageSize,
+      completedProductIds: checkpoint.completedProductIds,
+      cachedSkuMap: checkpoint.cachedSkuMap,
       fetchProductPage: async pageNum => {
         assertQueryAccountUnchanged();
         const requestBody = pageNum === 1
@@ -5195,7 +5250,9 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
         if (!page.success) {
           if (isShopSffAuthenticationFailure(page)) shopLoggedIn = false;
           logShopApiFailure(page, `商品列表第${pageNum}页`);
-          throw new Error(formatShopApiError(page, `商品列表第${pageNum}页`));
+          const error = new Error(formatShopApiError(page, `商品列表第${pageNum}页`));
+          error.shopApiCode = Number(page.code) || 0;
+          throw error;
         }
         return page;
       },
@@ -5211,11 +5268,15 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
         if (!skuResult.success) {
           if (isShopSffAuthenticationFailure(skuResult)) shopLoggedIn = false;
           logShopApiFailure(skuResult, `商品${productId}的SKU查询`);
-          throw new Error(formatShopApiError(skuResult, `商品${productId}的SKU查询`));
+          const error = new Error(formatShopApiError(skuResult, `商品${productId}的SKU查询`));
+          error.shopApiCode = Number(skuResult.code) || 0;
+          throw error;
         }
         return skuResult.items;
       },
       onProductPage: ({ pageNum, totalPages, totalCount, completed, items, allProducts }) => {
+        checkpoint.totalCount = totalCount;
+        checkpoint.updatedAt = Date.now();
         console.log(
           `[店铺商品] SPU第${pageNum}/${totalPages}页：` +
           `本页${items.length}个，累计${allProducts.length}/${totalCount}`
@@ -5242,23 +5303,29 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
           pageTotal: pageSize
         });
       },
-      onSku: ({ productNumber, totalCount, totalPages, pageNum, pageIndex, pageSize, productId, skuItems }) => {
-        if (skuItems.length === 0) {
+      onSku: ({ productNumber, totalCount, totalPages, pageNum, pageIndex, pageSize, productId, skuItems, resumed }) => {
+        checkpoint.updatedAt = Date.now();
+        if (!resumed && skuItems.length === 0) {
           console.warn(`[店铺商品] 商品${productId}的SKU接口返回0条，将保留商品列表附带的SKU`);
         }
-        console.log(
-          `[店铺商品] SKU ${productNumber}/${totalCount}（第${pageNum}页 ` +
-          `${pageIndex + 1}/${pageSize}）：商品${productId}共${skuItems.length}个`
-        );
-        emitProgress({
-          stage: 'sku',
-          completed: productNumber,
-          total: totalCount,
-          pageNum,
-          totalPages,
-          pageCompleted: pageIndex + 1,
-          pageTotal: pageSize
-        });
+        if (!resumed) {
+          console.log(
+            `[店铺商品] SKU ${productNumber}/${totalCount}（第${pageNum}页 ` +
+            `${pageIndex + 1}/${pageSize}）：商品${productId}共${skuItems.length}个`
+          );
+        }
+        // 恢复断点时避免瞬间向渲染进程发送数百条历史进度；每页末尾更新一次即可。
+        if (!resumed || pageIndex + 1 >= pageSize || productNumber >= totalCount) {
+          emitProgress({
+            stage: 'sku',
+            completed: productNumber,
+            total: totalCount,
+            pageNum,
+            totalPages,
+            pageCompleted: pageIndex + 1,
+            pageTotal: pageSize
+          });
+        }
       }
     });
     const { allProducts, skuMap } = queryResult;
@@ -5280,11 +5347,38 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
       skuTotal: goods.length,
       message
     });
+    if (shopGoodsResumeCheckpoint && shopGoodsResumeCheckpoint.key === checkpointKey) {
+      shopGoodsResumeCheckpoint = null;
+    }
     return { success: true, goods, total: goods.length, productTotal: allProducts.length, message };
   } catch (error) {
+    const isRiskControl = Number(error && error.shopApiCode) === 601;
+    if (isRiskControl && shopGoodsResumeCheckpoint) {
+      const completed = shopGoodsResumeCheckpoint.completedProductIds.size;
+      const total = shopGoodsResumeCheckpoint.totalCount;
+      error.message += `；已保存 ${completed}${total > 0 ? `/${total}` : ''} 个 SPU 的查询进度`;
+    } else {
+      shopGoodsResumeCheckpoint = null;
+    }
     console.error('[店铺商品] 查询异常:', error.message, error.stack || '');
-    emitProgress({ stage: 'error', message: error.message });
-    return { success: false, error: error.message };
+    emitProgress({
+      stage: 'error',
+      message: error.message,
+      completed: isRiskControl && shopGoodsResumeCheckpoint
+        ? shopGoodsResumeCheckpoint.completedProductIds.size
+        : 0,
+      total: isRiskControl && shopGoodsResumeCheckpoint
+        ? shopGoodsResumeCheckpoint.totalCount
+        : 0
+    });
+    return {
+      success: false,
+      error: error.message,
+      resumable: isRiskControl,
+      resumeCompleted: isRiskControl && shopGoodsResumeCheckpoint
+        ? shopGoodsResumeCheckpoint.completedProductIds.size
+        : 0
+    };
   } finally {
     shopQueryInProgress = false;
   }

@@ -299,6 +299,50 @@ async function testPageMajorFlow() {
     '服务端下调pageSize后必须按响应中的实际页大小查询完全部页');
   assert.strictEqual(clampedResult.pageSize, 50);
   assert.strictEqual(clampedResult.totalPages, 3);
+
+  const completedProductIds = new Set();
+  const cachedSkuMap = new Map();
+  const resumeCalls = [];
+  const fetchResumePage = async () => ({
+    totalCount: 2,
+    items: [{ productId: 'resume-1' }, { productId: 'resume-2' }]
+  });
+  let firstAttempt = true;
+  await assert.rejects(
+    queryProductPagesPageMajor({
+      pageSize: 100,
+      completedProductIds,
+      cachedSkuMap,
+      fetchProductPage: fetchResumePage,
+      fetchSkuList: async productId => {
+        resumeCalls.push(productId);
+        if (productId === 'resume-2' && firstAttempt) throw new Error('risk-control');
+        return [{ skuId: `${productId}-sku` }];
+      }
+    }),
+    /risk-control/
+  );
+  assert.deepStrictEqual([...completedProductIds], ['resume-1'],
+    '失败的SPU不能写入断点，已经完整返回的SPU必须保留');
+  assert.deepStrictEqual(cachedSkuMap.get('resume-1'), [{ skuId: 'resume-1-sku' }]);
+
+  firstAttempt = false;
+  const resumedFlags = [];
+  const resumedResult = await queryProductPagesPageMajor({
+    pageSize: 100,
+    completedProductIds,
+    cachedSkuMap,
+    fetchProductPage: fetchResumePage,
+    fetchSkuList: async productId => {
+      resumeCalls.push(productId);
+      return [{ skuId: `${productId}-sku` }];
+    },
+    onSku: progress => resumedFlags.push([progress.productId, progress.resumed])
+  });
+  assert.deepStrictEqual(resumeCalls, ['resume-1', 'resume-2', 'resume-2'],
+    '恢复查询必须跳过已经完成的SPU，只重新请求中断点及其后续SPU');
+  assert.deepStrictEqual(resumedFlags, [['resume-1', true], ['resume-2', false]]);
+  assert.strictEqual(resumedResult.skuMap.size, 2);
 }
 
 testPageMajorFlow()

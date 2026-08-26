@@ -381,6 +381,14 @@ async function queryProductPagesPageMajor(options = {}) {
   const onMissingProductId = typeof options.onMissingProductId === 'function'
     ? options.onMissingProductId
     : () => {};
+  // 外部传入的两个容器用于保存一次查询的安全断点。只有已经完整返回的 SKU
+  // 才会写入；请求失败的 SPU 不会被标记为完成，下次同条件查询会继续请求它。
+  const completedProductIds = options.completedProductIds instanceof Set
+    ? options.completedProductIds
+    : new Set();
+  const cachedSkuMap = options.cachedSkuMap instanceof Map
+    ? options.cachedSkuMap
+    : new Map();
   const allProducts = [];
   const skuMap = new Map();
   let totalCount = 0;
@@ -427,12 +435,19 @@ async function queryProductPagesPageMajor(options = {}) {
         continue;
       }
 
-      const skuItems = await options.fetchSkuList(productId, context);
+      const resumed = completedProductIds.has(productId);
+      const skuItems = resumed
+        ? (cachedSkuMap.get(productId) || [])
+        : await options.fetchSkuList(productId, context);
       if (!Array.isArray(skuItems)) {
         throw new Error(`商品${productId}的SKU响应结构异常`);
       }
+      if (!resumed) {
+        cachedSkuMap.set(productId, skuItems);
+        completedProductIds.add(productId);
+      }
       if (skuItems.length > 0) skuMap.set(productId, skuItems);
-      await onSku({ ...context, productId, skuItems });
+      await onSku({ ...context, productId, skuItems, resumed });
     }
     processedProducts += page.items.length;
   }

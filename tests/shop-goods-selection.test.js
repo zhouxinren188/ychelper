@@ -50,6 +50,8 @@ assert.match(styles, /\.sm-action-row\s*\{[^}]*justify-content:\s*center;/s,
   '快速打标查询操作按钮组必须居中对齐');
 assert.match(styles, /\.sm-goods-ctx-menu \.ctx-menu-item:hover/,
   '商品右键菜单必须提供清晰的悬停反馈');
+assert.match(renderer, /\$\{completed\} \/ \$\{total\} 个 SPU/,
+  '查询进度总数必须明确标注为SPU，避免被误解为SKU或筛选后的商品数');
 const selectedSkuFunction = renderer.slice(
   renderer.indexOf('function getSelectedSmSkus()'),
   renderer.indexOf('// ========== 导出 TXT ==========')
