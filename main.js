@@ -4,7 +4,6 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const https = require('https');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
 const excelGen = require('./src/js/excelGenerator');
@@ -64,6 +63,7 @@ const {
   isShopSffAuthenticationFailure,
   queryProductPagesPageMajor
 } = require('./src/js/shopGoodsQuery');
+const { ShopSffTransportClient } = require('./shop-sff-transport');
 const {
   classifyShopIdentityResponse,
   findDuplicateShopAccount,
@@ -2808,7 +2808,7 @@ app.on('before-quit', () => {
   }
   stopHeartbeat();
   if (orderControlPlaneWorker) orderControlPlaneWorker.stop();
-  shopSffHttpsAgent.destroy();
+  shopSffTransportClient.close();
   // 清理隐藏的JD页面窗口
   if (jdPageWindow && !jdPageWindow.isDestroyed()) {
     jdPageWindow.close();
@@ -3370,9 +3370,12 @@ let activeShopAccountId = ''; // 当前活跃的店铺账号ID
 let shopPageWindow = null;           // 店铺后台浏览窗口
 let shopQueryInProgress = false;     // 自动查询任务锁
 let shopSffContextHeaders = null;    // 商品页官方请求生成的 DSM 环境头（仅保存在内存）
-// 老款实测使用主进程精简 HTTPS，并按“1页SPU -> 本页逐个SKU”串行处理。
+// 老款实测使用 Windows/.NET 兼容传输，并按“1页SPU -> 本页逐个SKU”串行处理。
 const SHOP_GOODS_DIRECT_QUERY_ENABLED = true;
-const shopSffHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
+const shopSffTransportExecutable = app.isPackaged
+  ? path.join(process.resourcesPath, 'shop-sff-transport', 'ShopSffTransport.exe')
+  : path.join(__dirname, 'native', 'shop-sff-transport', 'bin', 'ShopSffTransport.exe');
+const shopSffTransportClient = new ShopSffTransportClient({ executablePath: shopSffTransportExecutable });
 let lastShopSffResponseFinishedAt = 0;
 const SHOP_QUERY_RESUME_TTL_MS = 2 * 60 * 60 * 1000;
 let shopGoodsResumeCheckpoint = null;
@@ -5055,7 +5058,8 @@ async function generateShopH5st(win, api, bodyText, timeoutMs = 15000) {
         return {
           h5st: result && result.h5st ? String(result.h5st) : '',
           stk: result && result._stk ? String(result._stk) : '',
-          ste: result && result._ste != null ? Number(result._ste) : null
+          ste: result && result._ste != null ? Number(result._ste) : null,
+          userAgent: String(navigator.userAgent || '')
         };
       });
     })()
@@ -5089,53 +5093,22 @@ async function waitForShopSffRequestPacing() {
 }
 
 function sendShopSffHttpsRequest(requestUrl, bodyText, headers, timeoutMs) {
-  const normalizedTimeoutMs = Math.max(1000, Number(timeoutMs) || 30000);
-  const maxResponseBytes = 20 * 1024 * 1024;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const succeed = value => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const fail = error => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-
-    const request = https.request(requestUrl, {
-      method: 'POST',
-      agent: shopSffHttpsAgent,
-      headers
-    }, response => {
-      const chunks = [];
-      let responseBytes = 0;
-      response.on('data', chunk => {
-        responseBytes += chunk.length;
-        if (responseBytes > maxResponseBytes) {
-          response.destroy();
-          fail(new Error('店铺接口响应超过20MB，已停止读取'));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on('end', () => {
-        succeed({
-          status: Number(response.statusCode) || 0,
-          headers: response.headers || {},
-          body: Buffer.concat(chunks).toString('utf8')
-        });
-      });
-      response.on('error', fail);
-    });
-
-    request.setTimeout(normalizedTimeoutMs, () => {
-      request.destroy(new Error('店铺接口请求超时'));
-    });
-    request.on('error', fail);
-    request.end(bodyText);
+  const parsed = new URL(String(requestUrl || ''));
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'sff.jd.com' || parsed.pathname !== '/api') {
+    throw new Error('店铺查询请求地址不在固定白名单内');
+  }
+  const api = String(parsed.searchParams.get('api') || '');
+  if (![PRODUCT_LIST_API, SKU_LIST_API].includes(api)) {
+    throw new Error('店铺查询接口不在固定白名单内');
+  }
+  return shopSffTransportClient.request({
+    api,
+    bodyText,
+    h5st: headers.h5st,
+    dsmEid: headers['dsm-eid'],
+    userAgent: headers['User-Agent'],
+    cookie: headers.Cookie,
+    timeoutMs
   });
 }
 
@@ -5151,11 +5124,11 @@ async function executeShopSffRequest(win, api, requestBody, timeoutMs = 30000) {
     bodyText,
     h5st: signature.h5st,
     dsmEid: shopSffContextHeaders && shopSffContextHeaders['dsm-eid'],
-    userAgent: win.webContents.getUserAgent(),
+    userAgent: signature.userAgent,
     cookies
   });
 
-  console.log(`[店铺商品] 主进程精简请求已签名: api=${api}, h5st=true`);
+  console.log(`[店铺商品] Windows兼容传输请求已签名: api=${api}, h5st=true, uaAligned=true`);
   let result;
   try {
     result = await sendShopSffHttpsRequest(requestUrl, bodyText, headers, timeoutMs);
@@ -5163,7 +5136,7 @@ async function executeShopSffRequest(win, api, requestBody, timeoutMs = 30000) {
     lastShopSffResponseFinishedAt = Date.now();
   }
   const status = Number(result && result.status) || 0;
-  console.log(`[店铺商品] 主进程精简请求完成: api=${api}, HTTP=${status}`);
+  console.log(`[店铺商品] Windows兼容传输请求完成: api=${api}, HTTP=${status}`);
 
   if (status === 401 || status === 403) {
     shopLoggedIn = false;

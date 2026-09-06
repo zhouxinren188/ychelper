@@ -10,6 +10,22 @@ const SKU_REQUEST_TIMEOUT_MS = 30000;
 const SHOP_REQUEST_COOKIE_NAMES = ['thor', 'flash'];
 const SHOP_AUTH_FAILURE_PATTERN = /(?:unauthori[sz]ed|forbidden|not[ _-]?login|login[ _-]?(?:expired|invalid)|未登录|请(?:先|重新)?登录|登录(?:状态|信息|会话)?(?:已)?(?:失效|过期|无效)|token[^\n]{0,24}(?:失效|过期|无效)|鉴权失败|认证失败)/i;
 
+function normalizeShopDirectUserAgent(userAgent) {
+  const value = String(userAgent || '').trim();
+  if (
+    value.length < 32 ||
+    value.length > 512 ||
+    /[\r\n]/.test(value) ||
+    !/^Mozilla\/5\.0\b/.test(value) ||
+    !/\bChrome\/\d+(?:\.\d+){1,3}\b/.test(value) ||
+    !/\bSafari\/537\.36\b/.test(value) ||
+    /\b(?:Electron|cloud-warehouse-assistant|ychelper)\//i.test(value)
+  ) {
+    throw new Error('店铺商品页浏览器环境无效，请重新打开店铺后台');
+  }
+  return value;
+}
+
 function buildShopCookieHeader(cookies = []) {
   const selected = new Map();
   for (const cookie of Array.isArray(cookies) ? cookies : []) {
@@ -34,12 +50,13 @@ function buildShopSffRequestHeaders({ bodyText, h5st, dsmEid, userAgent, cookies
 
   return {
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-    'User-Agent': String(userAgent || ''),
+    'User-Agent': normalizeShopDirectUserAgent(userAgent),
     Cookie: cookieHeader,
     'Content-Type': 'application/json;charset=UTF-8',
     'dsm-platform': 'pc',
     h5st: String(h5st || ''),
     'dsm-eid': String(dsmEid),
+    Host: 'sff.jd.com',
     'Content-Length': Buffer.byteLength(String(bodyText || ''), 'utf8'),
     Connection: 'Keep-Alive'
   };
@@ -475,6 +492,7 @@ module.exports = {
   getShopProductStatus,
   getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
+  normalizeShopDirectUserAgent,
   normalizeShopDateTime,
   parseSffResponse,
   queryProductPagesPageMajor

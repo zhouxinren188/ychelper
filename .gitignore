@@ -15,6 +15,7 @@ temp-ziptest/
 
 # 测试脚本
 test-*.js
+native/shop-sff-transport/bin/
 
 # 临时调试脚本
 capture-proxy.js

@@ -11,10 +11,11 @@
 1. `src/index.html` 中 `page-shopManage`：界面字段和操作入口。
 2. `src/js/renderer.js` 中“店铺管理模块”：配置恢复、店铺切换、查询状态、结果表格和后续操作。
 3. `preload.js` 中店铺管理 IPC：渲染层与主进程的边界。
-4. `main.js` 中“店铺管理”和“店铺商品查询”：账号分区、Cookie 恢复、页面签名环境、HTTPS 请求与结果转换。
-5. `src/js/shopGoodsQuery.js`：可单测的请求参数、响应解析、价格筛选和分页/SKU 串行流程。
-6. `src/js/shopGoodsSelection.js`：每个 SPU 的 SKU 选择及最终 SKU 去重。
-7. `tests/shop-goods-query.test.js`、`tests/shop-goods-selection.test.js`：当前行为契约。
+4. `main.js` 中“店铺管理”和“店铺商品查询”：账号分区、Cookie 恢复、页面签名环境、兼容传输调用与结果转换。
+5. `shop-sff-transport.js`、`native/shop-sff-transport/ShopSffTransport.cs`：固定 SFF 域名/API 的 Windows 兼容传输与进程边界。
+6. `src/js/shopGoodsQuery.js`：可单测的请求参数、响应解析、价格筛选和分页/SKU 串行流程。
+7. `src/js/shopGoodsSelection.js`：每个 SPU 的 SKU 选择及最终 SKU 去重。
+8. `tests/shop-goods-query.test.js`、`tests/shop-sff-transport.test.js`、`tests/shop-goods-selection.test.js`：当前行为契约。
 
 ## 2. 问题与需求背景
 
@@ -34,12 +35,15 @@
 
 ### 3.1 风控与签名失败
 
-当前有效方案不伪造整套页面请求，也不篡改 `XMLHttpRequest`/`fetch`。软件保留已登录的正常店铺后台页面，只做两件必要的事：
+当前有效方案不篡改 `XMLHttpRequest`/`fetch`。软件保留已登录的正常店铺后台页面，并拆分页面环境与业务传输：
 
 1. 从商品页自己的官方请求捕获当前页面的 `dsm-eid`/`dsm-platform` 环境信息，值不写日志。
-2. 调用该页面已经加载的官方 `ParamsSign` 生成本次请求的 `h5st`，主进程再通过单连接 Keep-Alive HTTPS 串行请求 SFF API。
+2. 调用该页面已经加载的官方 `ParamsSign` 生成本次请求的 `h5st`。
+3. 通过受控 Windows/.NET 兼容模块，以 TLS 1.2、HTTP/1.0、单连接 Keep-Alive 串行请求 SFF API；模块只允许固定 `sff.jd.com` 和商品/SPU、SKU 两个固定 API，没有任意 URL 或命令执行入口。
 
 请求 Cookie 只带老款实测需要的 `thor` 和 `flash`。随意增加 Cookie、请求头、页面注入或并发量都可能改变风控结果。
+
+2026-08-27 对旧软件的进一步抓包复核确认：老款自动查询请求由“蚂蚁工具箱”主进程发出，不是 CefSharp 页面请求；428 个连续请求均为 TLS 1.2、HTTP/1.0、固定 Chrome 131 UA 和固定精简头，且 h5st 每次重新生成。原 Node 实现虽然业务参数、页优先顺序和响应后约 300ms 节奏都一致，但实际使用 OpenSSL/TLS 1.3、HTTP/1.1 和 Electron 当前 Chromium UA。这是此前分析遗漏的传输层差异，也是本轮兼容传输修改的直接依据。该证据显著缩小了 601 根因范围，但最终是否完全消除仍必须由低频真实店铺长任务验收，不能仅凭本地协议测试宣称成功。
 
 ### 3.2 SKU 卡住或请求过密
 
@@ -54,7 +58,7 @@
   → 本页 SKU...
 ```
 
-SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同一查询并发请求。
+SKU 请求超时为 30 秒，Windows 兼容传输模块固定单连接，不允许同一查询并发请求。
 
 2026-08-27 的大店铺实测中，京东商品列表正确返回 1732 个售卖中 SPU；查询到第 909 个 SPU 时返回 `code:601`。同次请求的节奏与老款抓包基本一致，因此没有擅自提高并发或缩短/拉长 300ms 间隔。当前处理方式是：收到 601 后立即停止，不自动重试；在内存中保留已经完整返回的 SKU，用户稍后使用同一店铺和同一查询条件再次点击查询时跳过已完成 SPU，从中断处继续。断点只在当前软件进程内保留两小时，切换条件、出现非 601 错误或重启软件后重新查询。
 
@@ -102,6 +106,8 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 
 - 商品页固定使用官方 `ParamsSign` 生成签名。
 - SPU 与 SKU 全程串行，请求响应完成后至少间隔 300ms。
+- Windows 兼容传输固定 TLS 1.2、HTTP/1.0 和已验证的精简请求头顺序；生产请求沿用生成本次 h5st 的店铺页面当前 Chromium UA，避免签名环境与传输 UA 不一致。证书仍使用系统严格校验，不允许自签名放行或关闭 TLS 校验。
+- Cookie、h5st、dsm-eid 仅经子进程标准输入传递，不能出现在命令行或普通日志；传输模块只允许两个既定 SFF API。
 - 首屏以响应中的真实 `pageSize` 计算总页数，防止服务端限流或下调页大小造成漏查。
 - HTTP 401/403、登录跳转、业务码/消息明确表示未登录或会话失效时，标记店铺离线并提示重新登录。
 - `code:312` 仍归为签名错误，`code:601` 仍归为风控错误，不误判为 Cookie 失效。
@@ -131,7 +137,10 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 
 | 文件 | 作用 | 本轮关键变更 |
 | --- | --- | --- |
-| `main.js` | 店铺账号/会话、页面环境、签名、SFF 请求、结果组合、IPC | 账号绑定与查询锁、登录失效识别、商品标题/状态映射、价格过滤调用、无效 SKU/价格归一化 |
+| `main.js` | 店铺账号/会话、页面环境、签名、SFF 请求、结果组合、IPC | 账号绑定与查询锁、兼容传输调用、601 断点、登录失效识别、商品标题/状态映射、价格过滤调用 |
+| `shop-sff-transport.js` | 主进程与受控传输子进程通信 | 持久子进程、单飞响应、超时/退出清理；敏感头不进入命令行或日志 |
+| `native/shop-sff-transport/ShopSffTransport.cs` | Windows/.NET SFF 传输 | 固定 TLS 1.2、HTTP/1.0、沿用签名页面 UA、固定域名/API、20MB 响应上限和系统证书校验 |
+| `scripts/compile-shop-sff-transport.js` | 开发/测试/构建前生成兼容模块 | 仅调用 Windows 自带 .NET Framework C# 编译器；构建失败时阻止继续打包 |
 | `preload.js` | 安全暴露 IPC | 已有 `shopQueryGoods`、进度、导出等接口；本轮未改接口名 |
 | `src/index.html` | 快速打标界面 | 时间、价格、状态、单品 SKU、按钮组、进度、现代分组商品表结构和商品右键操作菜单 |
 | `src/js/renderer.js` | 页面状态、查询参数、进度、表格、导出/发送 | 查询忙状态、价格校验、账号 ID、失败清理、SPU 整组勾选、商品状态徽标、右键勾选/删除、删除后状态恢复和最终去重 |
@@ -140,6 +149,7 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
 | `src/js/shopSessionState.js` | 登录页/身份接口分类 | 当前未改，仍是店铺状态检测基础 |
 | `src/js/shopExportFile.js` | TXT 文件名 | 当前未改，默认桌面，店铺名+时间范围+SKU 数量 |
 | `tests/shop-goods-query.test.js` | 请求、分页、价格、错误分类 | 增加价格边界、无价格排除、服务端下调 pageSize、登录失效分类 |
+| `tests/shop-sff-transport.test.js` | 兼容传输协议契约 | 用 Chrome 131 样本回环验证 HTTP/1.0 和头顺序，并校验生产路径沿用签名页面 UA、固定 API/TLS 与安装包资源清单 |
 | `tests/shop-goods-selection.test.js` | 每 SPU 选择和 UI 契约 | 覆盖主行/子行选择契约、重复索引去重、右键菜单入口及 SPU/SKU 删除边界 |
 
 ## 6. 当前数据流
@@ -158,6 +168,7 @@ SKU 请求超时为 30 秒，HTTPS Agent 固定 `maxSockets: 1`，不允许同�
   → 导航到商品列表页
   → 捕获官方 dsm-eid
   → 页面 ParamsSign 生成 h5st
+  → Windows/.NET 兼容传输（TLS1.2 / HTTP1.0）
   → 第1页 SPU
   → 本页逐个 SKU（响应后间隔300ms）
   → 后续 SPU 页及各页 SKU
@@ -180,6 +191,7 @@ node --check src/js/renderer.js
 node --check src/js/shopGoodsSelection.js
 node tests/shop-goods-selection.test.js
 node tests/shop-goods-query.test.js
+node tests/shop-sff-transport.test.js
 node tests/ipc-contract.test.js
 # 以及 tests/ 下所有不依赖 dist/app.asar 的现有测试
 git diff --check
@@ -189,9 +201,9 @@ git diff --check
 
 - 所有语法检查通过。
 - 快速打标定向用例通过：查询参数与分页、每 SPU 取值、重复 SKU 去重、右键菜单静态契约、SPU/SKU 删除过滤和 IPC 契约。
-- `tests/` 下不依赖打包产物的 12 个测试文件全部通过。
+- `tests/` 下不依赖打包产物的 28 个测试文件全部通过，两个根目录历史测试也通过。
 - `git diff --check` 通过，无空白错误。
-- 当前仓库 `npm test` 脚本仍引用未纳入版本库的根目录 `test-date-query.js` 和 `test-sku-expand.js`，会在第一项报 `MODULE_NOT_FOUND`；`tests/automation-access.test.js`、`tests/login-account-flow.test.js` 还需要已有的 `dist/win-unpacked/resources/app.asar`。本轮没有发布授权，因此未为测试生成安装包。维护者不能把这两个基线环境问题误判为本轮功能回归。
+- `tests/automation-access.test.js`、`tests/login-account-flow.test.js` 需要与当前源码一致的 `dist/win-unpacked/resources/app.asar`。本轮没有发布授权，因此没有为了这两项生成正式构建产物；维护者不能拿旧 ASAR 的结果判断本轮兼容传输是否回归。
 
 注意：判断当前快速打标活跃链路应以 `tests/shop-goods-query.test.js` 和 `tests/shop-goods-selection.test.js` 为主；若以后修复全量测试入口，应先确认历史复制逻辑测试是否仍有保留价值，不要让它重新约束已经停用的页面注入方案。
 
@@ -225,7 +237,7 @@ git diff --check
 ## 8. 风险点与已知限制
 
 1. **第三方接口变化**：SFF API、`ParamsSign`、字段名、`dsm-eid` 或 Cookie 要求由京东控制，随时可能变化。先采集脱敏日志和真实官方请求结构，再修改；不要猜测补头。
-2. **风控风险**：`312` 与 `601` 不是普通网络重试错误。短时间自动重试可能加剧风险，当前设计直接停止并提示处理。
+2. **风控风险**：`312` 与 `601` 不是普通网络重试错误。短时间自动重试可能加剧风险，当前设计直接停止并保留两小时内同条件断点；兼容传输显著缩小了与老软件的差异，但未经真实低频长任务验证前不能保证京东不再返回 601。
 3. **查询耗时**：流程为稳定性刻意串行，无取消接口；大店铺可能运行数分钟。不要为了提速直接并发 SKU。
 4. **SKU 0 条兜底**：接口返回 0 条时只使用商品列表附带 SKU；如果连兜底编号也没有，该商品会被跳过并写警告。
 5. **内存占用**：全部 SPU 与 SKU 在内存中组合后再返回渲染层，极大店铺仍需关注内存和 IPC 负载。
@@ -237,7 +249,7 @@ git diff --check
 
 ## 9. 维护规则
 
-1. 保持请求顺序为页优先串行，保留 300ms 响应后间隔和单连接 Agent；调整频率必须有新的真实抓包证据。
+1. 保持请求顺序为页优先串行，保留 300ms 响应后间隔和 Windows 兼容单连接；调整频率或传输外形必须有新的真实抓包证据。
 2. 时间/状态尽量由商品列表 API 过滤；价格必须作用于完整 SKU；每 SPU 取值必须最后执行。
 3. 新增筛选条件时明确它属于 SPU 级还是 SKU 级，并把顺序写进测试。
 4. 任何账号切换都必须同时切换 Cookie 分区、页面窗口、内存状态和 `activeShopAccountId`，不能只改下拉框。
@@ -245,7 +257,7 @@ git diff --check
 6. 表格主行只负责分组展示和整组选择，不能对应真实 SKU 索引；后续操作只读取 SKU 子行并最终去重。
 7. 不把 Cookie、`thor`、`flash`、`h5st`、`dsm-eid` 值、账号或密码写入日志。当前日志只记录头名称和业务计数。
 8. 京东响应字段变化时先把数据转换抽成可单测纯函数，再改 UI；不要继续在 `main.js` 堆叠不可测试分支。
-9. 修改 `main.js`、`preload.js` 或 `src/js/shopGoodsQuery.js` 后，如以后获得发布授权，按 `AGENTS.md` 必须发布新的三段完整安装包，不得只做热更新。`shopGoodsQuery.js` 虽位于 `src/`，但由主进程直接 `require`。
+9. 修改 `main.js`、`preload.js`、`src/js/shopGoodsQuery.js`、兼容传输源码/构建脚本后，如以后获得发布授权，按 `AGENTS.md` 必须发布新的三段完整安装包，不得只做热更新。`shopGoodsQuery.js` 虽位于 `src/`，但由主进程直接 `require`；完整包还必须包含 `resources/shop-sff-transport/ShopSffTransport.exe`。
 10. 开发分支不等于发布授权；未明确要求发布时不得改版本号、构建或上传更新。
 11. 右键删除必须继续同时更新 `smGoods` 与 `smFilteredGoods`，并保留剩余 SKU 的勾选状态和 SPU 展开状态；右键勾选只能作用于当前表格结果，不能触发查询或改变价格/单 SPU 筛选顺序。
 

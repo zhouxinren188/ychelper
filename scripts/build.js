@@ -21,19 +21,22 @@ async function main() {
   let buildError = null
 
   try {
-    // 1. 编译字节码
-    console.log('[1/4] 编译字节码...')
+    // 1. 编译 Windows 兼容传输模块；2. 编译主进程字节码
+    console.log('[1/5] 编译店铺查询兼容传输模块...')
+    execSync('node scripts/compile-shop-sff-transport.js', { cwd: ROOT, stdio: 'inherit' })
+
+    console.log('\n[2/5] 编译字节码...')
     execSync('node scripts/compile-bytecode.js', { cwd: ROOT, stdio: 'inherit' })
 
-    // 2. 运行 electron-builder
-    console.log('\n[2/4] 打包应用...')
+    // 3. 运行 electron-builder
+    console.log('\n[3/5] 打包应用...')
     execSync(buildCmd, { cwd: ROOT, stdio: 'inherit' })
 
-    // 3. 完整 NSIS 构建必须同步产生并校验 latest.yml、exe 和 blockmap。
+    // 4. 完整 NSIS 构建必须同步产生并校验 latest.yml、exe 和 blockmap。
     if (isDir) {
-      console.log('\n[3/4] 目录构建不生成发布文件，跳过三件套校验')
+      console.log('\n[4/5] 目录构建不生成发布文件，跳过三件套校验')
     } else {
-      console.log('\n[3/4] 校验发布三件套...')
+      console.log('\n[4/5] 校验发布三件套...')
       execSync('node scripts/verify-release-artifacts.js', { cwd: ROOT, stdio: 'inherit' })
     }
 
@@ -41,8 +44,8 @@ async function main() {
     buildError = err
     console.error('\n构建失败:', err.message)
   } finally {
-    // 3. 无论成功或失败，恢复源文件
-    console.log('\n[4/4] 恢复源文件...')
+    // 5. 无论成功或失败，恢复源文件
+    console.log('\n[5/5] 恢复源文件...')
     restoreBackups()
   }
 

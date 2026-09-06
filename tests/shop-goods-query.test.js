@@ -19,7 +19,8 @@ const {
   getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
   normalizeShopDateTime,
-  queryProductPagesPageMajor
+  queryProductPagesPageMajor,
+  normalizeShopDirectUserAgent
 } = require('../src/js/shopGoodsQuery');
 
 assert.strictEqual(SHOP_REQUEST_RESPONSE_DELAY_MS, 300);
@@ -35,7 +36,7 @@ const directHeaders = buildShopSffRequestHeaders({
   bodyText: '{"test":true}',
   h5st: 'signed-test',
   dsmEid: 'eid-test',
-  userAgent: 'Mozilla/5.0 test',
+  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
   cookies: fakeCookies
 });
 assert.deepStrictEqual(Object.keys(directHeaders), [
@@ -46,15 +47,26 @@ assert.deepStrictEqual(Object.keys(directHeaders), [
   'dsm-platform',
   'h5st',
   'dsm-eid',
+  'Host',
   'Content-Length',
   'Connection'
 ]);
 assert.strictEqual(directHeaders.Cookie, 'thor=thor-test; flash=flash-test');
+assert.match(directHeaders['User-Agent'], /Chrome\/134\.0\.0\.0/);
+assert.strictEqual(directHeaders.Host, 'sff.jd.com');
 assert.strictEqual(directHeaders['dsm-platform'], 'pc');
 assert.strictEqual(directHeaders['Content-Length'], Buffer.byteLength('{"test":true}', 'utf8'));
 assert.throws(
   () => buildShopSffRequestHeaders({ bodyText: '{}', h5st: 'x', dsmEid: 'eid', cookies: [] }),
   /Cookie 不完整/
+);
+assert.throws(
+  () => normalizeShopDirectUserAgent('Mozilla/5.0 Chrome/134.0.0.0 Electron/35.0.0 Safari/537.36'),
+  /浏览器环境无效/
+);
+assert.throws(
+  () => normalizeShopDirectUserAgent('Mozilla/5.0 Chrome/134.0.0.0 Safari/537.36\r\nX-Test: injected'),
+  /浏览器环境无效/
 );
 
 const priceGoods = [
