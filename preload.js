@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWmsLoginStatus: () => ipcRenderer.invoke('get-wms-login-status'),
   onWmsLoginSuccess: (callback) => ipcRenderer.on('wms-login-success', (event, data) => callback(data)),
   wmsQueryOrders: (params) => ipcRenderer.invoke('wms-query-orders', params),
+  executeWmsOutboundPrint: (params) => ipcRenderer.invoke('wms-prepare-outbound-print', params),
+  outboundWmsOrder: (params) => ipcRenderer.invoke('wms-outbound-order', params),
   getWmsCredentials: () => ipcRenderer.invoke('get-wms-credentials'),
   saveWmsCredentials: (cred) => ipcRenderer.invoke('save-wms-credentials', cred),
   getWmsAccounts: () => ipcRenderer.invoke('get-wms-accounts'),

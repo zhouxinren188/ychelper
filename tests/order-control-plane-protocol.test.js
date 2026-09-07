@@ -45,6 +45,7 @@ assert.strictEqual(waitRequest.machine_code, MACHINE_CODE);
 assert.strictEqual(waitRequest.wait_seconds, 25);
 assert.strictEqual(waitRequest.capabilities['exception.order.check'], true);
 assert.strictEqual(waitRequest.capabilities['warehouse.order.print'], false);
+assert.strictEqual(waitRequest.capabilities['warehouse.order.reprint'], false);
 
 const waited = validateWaitResponse({ task: makeTask(), retry_after_seconds: 0 }, MACHINE_CODE, NOW);
 assert.strictEqual(waited.task.target.machine_code, MACHINE_CODE);

@@ -32,7 +32,12 @@ function createExecutor(persistence, overrides = {}) {
 }
 
 function makeTask(command, overrides = {}) {
-  const isWrite = ['exception.order.resolve', 'warehouse.order.print', 'warehouse.order.outbound'].includes(command);
+  const isWrite = [
+    'exception.order.resolve',
+    'warehouse.order.print',
+    'warehouse.order.reprint',
+    'warehouse.order.outbound'
+  ].includes(command);
   const task = {
     protocol_version: PROTOCOL_VERSION,
     task_id: overrides.task_id || `task-${command.replace(/\./g, '-')}`,
@@ -134,7 +139,7 @@ async function run() {
 
   const unavailablePersistence = createPersistence();
   const unavailableExecutor = createExecutor(unavailablePersistence);
-  assert.strictEqual(unavailableExecutor.getCapabilities().length, 5);
+  assert.strictEqual(unavailableExecutor.getCapabilities().length, 6);
   assert.strictEqual(unavailableExecutor.getCapabilities().every(item => item.enabled === false), true);
   const unavailableTask = makeTask('exception.order.check');
   const unavailable = await unavailableExecutor.executeTask(unavailableTask);

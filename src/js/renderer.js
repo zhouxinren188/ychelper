@@ -4562,9 +4562,72 @@ function initWmsPrintOutbound() {
 
   if (!openBtn) return;
 
-  const WMS_OUTBOUND_URL = 'https://unionwms.jdl.com/default#/app-v/jwms-webview/outbound/orderProcess/orderProcessList';
+  const directPrintOrderInput = document.createElement('input');
+  directPrintOrderInput.id = 'wmsDirectPrintOrderInput';
+  directPrintOrderInput.type = 'text';
+  directPrintOrderInput.autocomplete = 'off';
+  directPrintOrderInput.placeholder = '输入订单号';
+  directPrintOrderInput.style.cssText = 'margin-left:auto; width:210px; height:28px; padding:0 10px; border:1px solid #d9d9d9; border-radius:4px; font-size:12px;';
+  const directPrintBtn = document.createElement('button');
+  directPrintBtn.id = 'wmsDirectPrintBtn';
+  directPrintBtn.className = 'btn btn-primary';
+  directPrintBtn.style.cssText = 'padding:4px 12px; font-size:12px;';
+  directPrintBtn.textContent = '打印订单';
+  const directReprintBtn = document.createElement('button');
+  directReprintBtn.id = 'wmsDirectReprintBtn';
+  directReprintBtn.className = 'btn';
+  directReprintBtn.style.cssText = 'padding:4px 12px; font-size:12px; color:#fff; background:#7b61c9; border-color:#7b61c9;';
+  directReprintBtn.textContent = '通道补打';
+  const directOutboundBtn = document.createElement('button');
+  directOutboundBtn.id = 'wmsDirectOutboundBtn';
+  directOutboundBtn.className = 'btn';
+  directOutboundBtn.style.cssText = 'padding:4px 12px; font-size:12px; color:#fff; background:#e67e22; border-color:#e67e22;';
+  directOutboundBtn.textContent = '快速发货';
+  refreshBtn.style.marginLeft = '0';
+  refreshBtn.parentElement.insertBefore(directPrintOrderInput, refreshBtn);
+  refreshBtn.parentElement.insertBefore(directPrintBtn, refreshBtn);
+  refreshBtn.parentElement.insertBefore(directReprintBtn, refreshBtn);
+  refreshBtn.parentElement.insertBefore(directOutboundBtn, refreshBtn);
+
+  const WMS_OUTBOUND_URL = 'https://unionwms.jdl.com/default';
+  const WMS_OUTBOUND_HASH = '#/app-v/jwms-webview/outbound/orderProcess/orderProcessList';
   let webview = null;
   let webviewLoaded = false;
+  let initialOutboundRoutePrepared = false;
+  let initialOutboundRouteTimer = null;
+
+  function clearInitialOutboundRouteTimer() {
+    if (!initialOutboundRouteTimer) return;
+    clearTimeout(initialOutboundRouteTimer);
+    initialOutboundRouteTimer = null;
+  }
+
+  function scheduleInitialOutboundRoute(targetWebview) {
+    if (initialOutboundRoutePrepared || initialOutboundRouteTimer) return;
+    initialOutboundRouteTimer = setTimeout(async () => {
+      initialOutboundRouteTimer = null;
+      if (webview !== targetWebview) return;
+      try {
+        const prepared = await targetWebview.executeJavaScript(`
+          (() => {
+            const targetHash = ${JSON.stringify(WMS_OUTBOUND_HASH)};
+            if (location.origin !== 'https://unionwms.jdl.com') return false;
+            if (!/^\\\/(?:default|gray)(?:\\\/|$)/i.test(location.pathname)) return false;
+            if (location.hash !== targetHash) location.hash = targetHash;
+            return true;
+          })()
+        `);
+        if (webview !== targetWebview || prepared !== true) return;
+        initialOutboundRoutePrepared = true;
+        webviewLoaded = true;
+      } catch (error) {
+        if (webview === targetWebview) {
+          webviewLoaded = false;
+          console.warn('[WMS 打印页面后台准备失败]', String(error?.message || '未知错误'));
+        }
+      }
+    }, 1200);
+  }
 
   // 创建并加载 webview
   async function loadWebview() {
@@ -4579,6 +4642,7 @@ function initWmsPrintOutbound() {
     if (webview) return;
 
     const result = await window.electronAPI.checkWmsSession();
+    if (webview) return;
     if (!result || (!result.loggedIn && !result.hasCookies) || !result.partition) {
       const temporarilyUnavailable = result?.restoreStatus === 'network_error' || result?.restoreStatus === 'service_error';
       statusEl.textContent = temporarilyUnavailable ? 'WMS 验证失败' : '未登录 WMS';
@@ -4618,6 +4682,8 @@ function initWmsPrintOutbound() {
           const expiredWebview = webview;
           webview = null;
           webviewLoaded = false;
+          initialOutboundRoutePrepared = false;
+          clearInitialOutboundRouteTimer();
           setTimeout(() => expiredWebview.remove(), 0);
         }
         return;
@@ -4632,11 +4698,19 @@ function initWmsPrintOutbound() {
 
     webview.addEventListener('did-finish-load', () => {
       if (webview !== createdWebview) return;
-      webviewLoaded = true;
-      updatePrintAuthState(createdWebview.getURL());
+      const currentUrl = createdWebview.getURL();
+      webviewLoaded = currentUrl.includes('/outbound/orderProcess/orderProcessList');
+      updatePrintAuthState(currentUrl);
+      scheduleInitialOutboundRoute(createdWebview);
     });
     webview.addEventListener('did-navigate', (event) => updatePrintAuthState(event.url));
-    webview.addEventListener('did-navigate-in-page', (event) => updatePrintAuthState(event.url));
+    webview.addEventListener('did-navigate-in-page', (event) => {
+      updatePrintAuthState(event.url);
+      if (String(event.url || '').includes('/outbound/orderProcess/orderProcessList')) {
+        initialOutboundRoutePrepared = true;
+        webviewLoaded = true;
+      }
+    });
   }
 
   // 切换到打印出库页面时加载 webview
@@ -4659,15 +4733,158 @@ function initWmsPrintOutbound() {
   // 刷新按钮
   refreshBtn.addEventListener('click', () => {
     if (webview && webviewLoaded) {
+      initialOutboundRoutePrepared = false;
+      clearInitialOutboundRouteTimer();
       webview.reload();
     } else {
       if (webview) {
         webview.remove();
         webview = null;
         webviewLoaded = false;
+        initialOutboundRoutePrepared = false;
+        clearInitialOutboundRouteTimer();
       }
       loadWebview();
     }
+  });
+
+  directPrintBtn?.addEventListener('click', async () => {
+    if (!requireTier('wmsPrintOutbound')) return;
+    if (!webview || !webviewLoaded) {
+      showToast('请先加载打印出库页面', 3000, 'error');
+      return;
+    }
+    const orderNo = String(directPrintOrderInput.value || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(orderNo)) {
+      showToast('请输入正确的订单号', 3000, 'error');
+      return;
+    }
+
+    directPrintBtn.disabled = true;
+    directReprintBtn.disabled = true;
+    directOutboundBtn.disabled = true;
+    if (directPrintOrderInput) directPrintOrderInput.disabled = true;
+    directPrintBtn.textContent = '正在查询...';
+    statusEl.textContent = '正在准备打印';
+    statusEl.style.color = '#e67e22';
+    try {
+      directPrintBtn.textContent = '正在打印...';
+      const result = await window.electronAPI.executeWmsOutboundPrint({
+        orderNo,
+        printMode: 'print',
+        webContentsId: webview.getWebContentsId()
+      });
+      if (!result || result.success !== true) {
+        throw new Error(result?.error || 'WMS 未返回明确的打印结果');
+      }
+      showToast('订单已成功打印', 4000);
+      statusEl.textContent = '打印成功';
+      statusEl.style.color = '#27ae60';
+    } catch (error) {
+      console.error('[WMS 本机打印失败]', String(error?.message || '未知错误'));
+      showToast(`打印失败：${error.message || '未知错误'}`, 6000, 'error');
+      statusEl.textContent = '打印失败';
+      statusEl.style.color = '#e74c3c';
+    } finally {
+      directPrintBtn.disabled = false;
+      directReprintBtn.disabled = false;
+      directOutboundBtn.disabled = false;
+      if (directPrintOrderInput) directPrintOrderInput.disabled = false;
+      directPrintBtn.textContent = '打印订单';
+    }
+  });
+
+  directReprintBtn?.addEventListener('click', async () => {
+    if (!requireTier('wmsPrintOutbound')) return;
+    if (!webview || !webviewLoaded) {
+      showToast('请先加载打印出库页面', 3000, 'error');
+      return;
+    }
+    const orderNo = String(directPrintOrderInput.value || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(orderNo)) {
+      showToast('请输入正确的订单号', 3000, 'error');
+      return;
+    }
+
+    directPrintBtn.disabled = true;
+    directReprintBtn.disabled = true;
+    directOutboundBtn.disabled = true;
+    directPrintOrderInput.disabled = true;
+    directReprintBtn.textContent = '正在补打...';
+    statusEl.textContent = '正在准备通道补打';
+    statusEl.style.color = '#7b61c9';
+    try {
+      const result = await window.electronAPI.executeWmsOutboundPrint({
+        orderNo,
+        printMode: 'reprint',
+        webContentsId: webview.getWebContentsId()
+      });
+      if (!result || result.success !== true) {
+        throw new Error(result?.error || 'WMS 未返回明确的补打结果');
+      }
+      showToast('订单已成功通道补打', 4000);
+      statusEl.textContent = '补打成功';
+      statusEl.style.color = '#27ae60';
+    } catch (error) {
+      console.error('[WMS 本机通道补打失败]', String(error?.message || '未知错误'));
+      showToast('补打失败：' + String(error?.message || '未知错误'), 7000, 'error');
+      statusEl.textContent = '补打失败';
+      statusEl.style.color = '#e74c3c';
+    } finally {
+      directPrintBtn.disabled = false;
+      directReprintBtn.disabled = false;
+      directOutboundBtn.disabled = false;
+      directPrintOrderInput.disabled = false;
+      directReprintBtn.textContent = '通道补打';
+    }
+  });
+
+  directOutboundBtn?.addEventListener('click', async () => {
+    if (!requireTier('wmsPrintOutbound')) return;
+    if (!webview || !webviewLoaded) {
+      showToast('请先加载打印出库页面', 3000, 'error');
+      return;
+    }
+    const orderNo = String(directPrintOrderInput.value || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(orderNo)) {
+      showToast('请输入正确的订单号', 3000, 'error');
+      return;
+    }
+    if (!window.confirm('确认将订单 ' + orderNo + ' 在当前 WMS 仓库执行发货？')) {
+      return;
+    }
+
+    directPrintBtn.disabled = true;
+    directReprintBtn.disabled = true;
+    directOutboundBtn.disabled = true;
+    directPrintOrderInput.disabled = true;
+    directOutboundBtn.textContent = '正在发货...';
+    statusEl.textContent = '正在校验并发货';
+    statusEl.style.color = '#e67e22';
+    try {
+      const result = await window.electronAPI.outboundWmsOrder({ orderNo });
+      if (!result || result.success !== true) {
+        throw new Error(result?.error || 'WMS 未返回明确的发货结果');
+      }
+      showToast('订单已成功发货', 4000);
+      statusEl.textContent = '发货成功';
+      statusEl.style.color = '#27ae60';
+    } catch (error) {
+      console.error('[WMS 本机发货失败]', String(error?.message || '未知错误'));
+      showToast('发货失败：' + String(error?.message || '未知错误'), 7000, 'error');
+      statusEl.textContent = '发货失败';
+      statusEl.style.color = '#e74c3c';
+    } finally {
+      directPrintBtn.disabled = false;
+      directReprintBtn.disabled = false;
+      directOutboundBtn.disabled = false;
+      directPrintOrderInput.disabled = false;
+      directOutboundBtn.textContent = '快速发货';
+    }
+  });
+
+  directPrintOrderInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !directPrintBtn.disabled) directPrintBtn.click();
   });
 
   // 新窗口打开按钮
@@ -4684,12 +4901,14 @@ function initWmsPrintOutbound() {
     statusEl.textContent = '已登录 WMS';
     statusEl.style.color = '#27ae60';
     loginBtn.style.display = 'none';
-    placeholder.textContent = '点击「刷新」加载出库处理页面';
-    const page = document.getElementById('page-wmsPrintOutbound');
-    if (page && page.classList.contains('active') && !webview) {
+    placeholder.textContent = '正在后台准备打印出库页面';
+    if (!webview) {
       loadWebview();
     }
   });
+
+  // 主界面初始化后提前加载同一 WMS webview，打印指令无需用户先点菜单。
+  loadWebview();
 }
 
 // ========== 售后联系弹窗 ==========

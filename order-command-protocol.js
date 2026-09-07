@@ -31,6 +31,13 @@ const COMMAND_DEFINITIONS = Object.freeze({
     successStates: Object.freeze(['printed_unshipped']),
     nextStates: Object.freeze(['printed_unshipped', 'review_required', 'failed'])
   }),
+  'warehouse.order.reprint': Object.freeze({
+    mode: 'write',
+    maxTtlMs: 2 * 60 * 1000,
+    requiresConfirmation: true,
+    successStates: Object.freeze(['reprinted']),
+    nextStates: Object.freeze(['reprinted', 'review_required', 'failed'])
+  }),
   'warehouse.order.outbound': Object.freeze({
     mode: 'write',
     maxTtlMs: 2 * 60 * 1000,
@@ -48,6 +55,8 @@ const WORKFLOW_STATES = Object.freeze([
   'arrived',
   'printing',
   'printed_unshipped',
+  'reprinting',
+  'reprinted',
   'outbound_processing',
   'shipped',
   'failed',

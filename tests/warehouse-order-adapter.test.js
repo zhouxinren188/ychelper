@@ -9,6 +9,7 @@ const {
   createWarehouseOrderCheckAdapter,
   getWaybillNo,
   queryWarehouseOrder,
+  queryWarehouseOrderRecord,
   validateWarehouseOrderParams
 } = require('../warehouse-order-adapter');
 
@@ -48,6 +49,12 @@ function page(list, options = {}) {
     pageNum: 2
   });
   assert.deepStrictEqual(payload.currentStatus, ['10', '30']);
+  assert.deepStrictEqual(buildOutboundOrderListPayload({
+    orderYear: 2026,
+    warehouseNo: WAREHOUSE_NO,
+    pageNum: 1,
+    currentStatuses: ['10', '30', '70']
+  }).currentStatus, ['10', '30', '70']);
   assert.deepStrictEqual(payload.createTime, [
     '2026-01-01 00:00:00',
     '2026-12-31 23:59:59'
@@ -91,6 +98,52 @@ function page(list, options = {}) {
   assert.strictEqual(calls[0].metadata.apiPath, OUTBOUND_ORDER_LIST_API);
   assert.strictEqual(calls[0].metadata.lopDn, OUTBOUND_ORDER_LOP_DN);
   assert.strictEqual(calls[0].metadata.bpLopDn, OUTBOUND_ORDER_LOP_DN);
+
+  const printableRecord = {
+    merchantOrderNo: ORDER_NO,
+    orderNo: 'internal-wms-order',
+    shipmentOrderNo: 'shipment-order',
+    currentStatus: 30
+  };
+  const printQueryCalls = [];
+  const preparedForPrint = await queryWarehouseOrderRecord({
+    orderNo: ORDER_NO,
+    orderYear: 2026,
+    warehouseNo: WAREHOUSE_NO,
+    fetchPage: async (requestPayload, metadata) => {
+      printQueryCalls.push({ requestPayload, metadata });
+      if (requestPayload.pageNum === 1) {
+        return page([{ merchantOrderNo: 'unrelated-1' }], { pageNum: 1, pages: 2, hasNextPage: true });
+      }
+      return page([printableRecord], { pageNum: 2, pages: 2 });
+    }
+  });
+  assert.strictEqual(preparedForPrint, printableRecord);
+  assert.strictEqual(printQueryCalls.length, 2);
+  assert.strictEqual(printQueryCalls[0].metadata.apiPath, OUTBOUND_ORDER_LIST_API);
+
+  await assert.rejects(
+    queryWarehouseOrderRecord({
+      orderNo: ORDER_NO,
+      orderYear: 2026,
+      warehouseNo: WAREHOUSE_NO,
+      fetchPage: async () => page([])
+    }),
+    error => error && error.code === 'warehouse_order_not_found'
+  );
+
+  await assert.rejects(
+    queryWarehouseOrderRecord({
+      orderNo: ORDER_NO,
+      orderYear: 2026,
+      warehouseNo: WAREHOUSE_NO,
+      fetchPage: async () => page([
+        { merchantOrderNo: ORDER_NO, shipmentOrderNo: 'shipment-order-1' },
+        { merchantOrderNo: ORDER_NO, shipmentOrderNo: 'shipment-order-2' }
+      ])
+    }),
+    error => error && error.code === 'warehouse_order_ambiguous'
+  );
 
   const internalNumberMustNotMatch = await queryWarehouseOrder({
     orderNo: ORDER_NO,

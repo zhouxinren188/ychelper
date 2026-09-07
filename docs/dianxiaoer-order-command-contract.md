@@ -35,8 +35,9 @@
 | `exception.order.check` | 已开放 | 同时查询 `billexception` 和 `soExceptionCentre` |
 | `exception.order.resolve` | 已开放 | 处理最近一次查询确认的全部异常快照 |
 | `warehouse.order.check` | 已开放 | 查询当前 WMS 仓库出库订单列表并精确匹配店小二订单号 |
-| `warehouse.order.print` | 禁用 | 实际接口尚未确认 |
-| `warehouse.order.outbound` | 禁用 | 实际接口尚未确认 |
+| `warehouse.order.print` | 已开放 | 调用当前 WMS 会话的官方打印流程 |
+| `warehouse.order.reprint` | 已开放 | 调用当前 WMS 会话的通道补打流程 |
+| `warehouse.order.outbound` | 已开放 | 调用当前 WMS 会话的快速发货流程 |
 
 ## 4. 店小二调用接口
 
@@ -57,8 +58,9 @@ GET /api/cloud-warehouse/v1/machines/YC-7F3K-92MX/status
     "exception.order.check": true,
     "exception.order.resolve": true,
     "warehouse.order.check": true,
-    "warehouse.order.print": false,
-    "warehouse.order.outbound": false
+    "warehouse.order.print": true,
+    "warehouse.order.reprint": true,
+    "warehouse.order.outbound": true
   },
   "active_request_id": null,
   "checked_at": "2026-08-13T10:00:00.000Z"

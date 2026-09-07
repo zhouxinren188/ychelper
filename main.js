@@ -1,5 +1,15 @@
 const logger = require('./logger');
-const { app, BrowserWindow, ipcMain, dialog, shell, session, net, safeStorage } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  shell,
+  session,
+  net,
+  safeStorage,
+  webContents: electronWebContents
+} = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -19,8 +29,13 @@ const { getMachineCodePendingStatus, OrderCommandRuntime } = require('./order-co
 const { registerExceptionOrderAdapters } = require('./order-exception-adapters');
 const {
   queryWarehouseOrder: queryWarehouseOrderFromWms,
+  queryWarehouseOrderRecord: queryWarehouseOrderRecordFromWms,
+  OUTBOUND_ORDER_REPRINT_STATUSES,
   registerWarehouseOrderCheckAdapter
 } = require('./warehouse-order-adapter');
+const { registerWarehouseOrderActionAdapters } = require('./warehouse-order-command-adapters');
+const { buildPrintExecutionScript } = require('./src/js/wmsPrintRuntime');
+const { executeWarehouseOutbound } = require('./src/js/wmsOutboundService');
 const { ExceptionSnapshotStore } = require('./order-exception-snapshot-store');
 const {
   assertRequiredExceptionSources,
@@ -686,6 +701,11 @@ function initializeOrderCommandRuntime(accountIdentity, { generate = false } = {
     });
     registerWarehouseOrderCheckAdapter(orderCommandRuntime.executor, {
       queryWarehouseOrder: queryWarehouseOrderForCommand
+    });
+    registerWarehouseOrderActionAdapters(orderCommandRuntime.executor, {
+      preflightWarehouseOrderAction,
+      printWarehouseOrder: params => runWarehousePrintOperation(null, params),
+      outboundWarehouseOrder: params => runWarehouseOutboundOperation(params)
     });
   }
   if (orderControlPlaneClient) {
@@ -6518,7 +6538,8 @@ async function createWmsLoginWindow() {
     webPreferences: {
       partition: wmsPartition,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
@@ -7040,6 +7061,296 @@ async function queryWarehouseOrderForCommand({ orderNo, orderYear }) {
     throw error;
   }
 }
+
+async function preflightWarehouseOrderAction({ orderNo, orderYear, action } = {}) {
+  if (!['print', 'reprint', 'outbound'].includes(action)) {
+    return { ok: false, message: '云仓订单操作类型无效' };
+  }
+  if (action === 'print' || action === 'reprint') {
+    resolveCurrentWmsPrintWebContents(null);
+  }
+  await queryWarehouseOrderRecordForLocalAction({
+    orderNo,
+    orderYear,
+    currentStatuses: action === 'reprint' ? OUTBOUND_ORDER_REPRINT_STATUSES : undefined
+  });
+  return { ok: true, observed_status: 'ready' };
+}
+
+async function queryWarehouseOrderRecordForLocalAction({
+  orderNo,
+  orderYear,
+  currentStatuses
+} = {}) {
+  if (wmsRestorePromise) await wmsRestorePromise;
+  if (!wmsLoggedIn) {
+    const error = new Error('WMS 登录状态已失效');
+    error.code = 'warehouse_session_expired';
+    throw error;
+  }
+  if (!activeWmsWarehouseNo) {
+    const error = new Error('当前 WMS 仓库编号不可用，请重新进入仓库');
+    error.code = 'warehouse_context_unavailable';
+    throw error;
+  }
+
+  const warehouseNo = activeWmsWarehouseNo;
+  try {
+    const order = await queryWarehouseOrderRecordFromWms({
+      orderNo,
+      orderYear,
+      warehouseNo,
+      currentStatuses,
+      fetchPage: (payload, request) => wmsApiCall(request.apiPath, payload, {
+        lopDn: request.lopDn,
+        bpLopDn: request.bpLopDn
+      })
+    });
+    if (warehouseNo !== activeWmsWarehouseNo) {
+      const error = new Error('查询期间当前 WMS 仓库发生变化，已停止打印');
+      error.code = 'warehouse_context_changed';
+      throw error;
+    }
+    return { order, warehouseNo };
+  } catch (error) {
+    if (error && error.wmsFailureType === 'auth') {
+      await clearInvalidWmsSessionAndOpenLogin(getActiveWmsAccount());
+      error.code = 'warehouse_session_expired';
+    }
+    throw error;
+  }
+}
+
+async function prepareWarehouseOrderForLocalPrint({
+  orderNo,
+  orderYear = new Date().getFullYear(),
+  printMode = 'print'
+} = {}) {
+  if (!['print', 'reprint'].includes(printMode)) {
+    const error = new Error('WMS 打印模式无效');
+    error.code = 'warehouse_print_mode_invalid';
+    throw error;
+  }
+  const { order, warehouseNo } = await queryWarehouseOrderRecordForLocalAction({
+    orderNo,
+    orderYear,
+    currentStatuses: printMode === 'reprint' ? OUTBOUND_ORDER_REPRINT_STATUSES : undefined
+  });
+  return {
+    script: buildPrintExecutionScript(orderNo, order, warehouseNo, printMode)
+  };
+}
+
+function resolveCurrentWmsPrintWebContents(event, requestedId) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    const error = new Error('云仓助手主窗口不可用，已停止打印');
+    error.code = 'warehouse_print_host_unavailable';
+    throw error;
+  }
+  if (event && (!event.sender || event.sender.id !== mainWindow.webContents.id)) {
+    const error = new Error('WMS 页面来源校验失败，已停止打印');
+    error.code = 'warehouse_print_host_invalid';
+    throw error;
+  }
+
+  const webContentsId = Number(requestedId);
+  const hasRequestedId = requestedId !== undefined && requestedId !== null && requestedId !== '';
+  let target = null;
+  if (hasRequestedId) {
+    if (!Number.isSafeInteger(webContentsId) || webContentsId <= 0) {
+      const error = new Error('当前 WMS 页面不可用，请刷新打印出库页面后重试');
+      error.code = 'warehouse_print_host_unavailable';
+      throw error;
+    }
+    target = electronWebContents.fromId(webContentsId);
+  } else {
+    const expectedSession = session.fromPartition(getWmsPartition());
+    const candidates = electronWebContents.getAllWebContents().filter(item => {
+      if (!item || item.isDestroyed() || item.getType() !== 'webview') return false;
+      const host = item.hostWebContents;
+      if (!host || host.id !== mainWindow.webContents.id || item.session !== expectedSession) return false;
+      try {
+        const itemUrl = new URL(String(item.getURL() || ''));
+        return itemUrl.origin === 'https://unionwms.jdl.com' &&
+          itemUrl.href.includes('/outbound/orderProcess/orderProcessList');
+      } catch (_) {
+        return false;
+      }
+    });
+    if (candidates.length === 1) target = candidates[0];
+    if (candidates.length > 1) {
+      const error = new Error('检测到多个 WMS 打印页面，已停止打印');
+      error.code = 'warehouse_print_host_ambiguous';
+      throw error;
+    }
+  }
+  if (!target || target.isDestroyed() || target.getType() !== 'webview') {
+    const error = new Error('当前 WMS 页面不可用，请刷新打印出库页面后重试');
+    error.code = 'warehouse_print_host_unavailable';
+    throw error;
+  }
+
+  const host = target.hostWebContents;
+  if (!host || host.id !== mainWindow.webContents.id) {
+    const error = new Error('WMS 页面来源校验失败，已停止打印');
+    error.code = 'warehouse_print_host_invalid';
+    throw error;
+  }
+
+  const expectedSession = session.fromPartition(getWmsPartition());
+  if (target.session !== expectedSession) {
+    const error = new Error('WMS 页面账号环境不一致，已停止打印');
+    error.code = 'warehouse_print_session_mismatch';
+    throw error;
+  }
+
+  let currentUrl;
+  try {
+    currentUrl = new URL(String(target.getURL() || ''));
+  } catch (_) {
+    const error = new Error('当前 WMS 页面地址无效，已停止打印');
+    error.code = 'warehouse_print_host_invalid';
+    throw error;
+  }
+  if (currentUrl.origin !== 'https://unionwms.jdl.com' ||
+      !currentUrl.href.includes('/outbound/orderProcess/orderProcessList')) {
+    const error = new Error('请先让当前 WMS 页面停留在订单处理页，再执行打印');
+    error.code = 'warehouse_print_page_not_ready';
+    throw error;
+  }
+
+  return target;
+}
+
+async function executeWarehousePrintLocally(event, params = {}) {
+  let target = resolveCurrentWmsPrintWebContents(event, params.webContentsId);
+  const prepared = await prepareWarehouseOrderForLocalPrint(params);
+  target = resolveCurrentWmsPrintWebContents(event, params.webContentsId);
+  const result = await target.executeJavaScript(prepared.script, true);
+  if (!result || result.success !== true) {
+    const error = new Error(String(result && result.message || 'WMS 未返回明确的打印结果'));
+    error.code = String(result && result.code || 'warehouse_print_failed');
+    throw error;
+  }
+  return {
+    code: String(result.code || 'printed'),
+    printedCount: Number(result.printedCount) || 1
+  };
+}
+
+let wmsPrintInProgress = false;
+
+async function runWarehousePrintOperation(event, params = {}) {
+  if (wmsPrintInProgress) {
+    const error = new Error('已有订单正在打印，请等待当前操作完成');
+    error.code = 'warehouse_print_busy';
+    throw error;
+  }
+  wmsPrintInProgress = true;
+  try {
+    return await executeWarehousePrintLocally(event, params);
+  } finally {
+    wmsPrintInProgress = false;
+  }
+}
+
+ipcMain.handle('wms-prepare-outbound-print', async (event, params = {}) => {
+  try {
+    const result = await runWarehousePrintOperation(event, params);
+    return { success: true, ...result };
+  } catch (error) {
+    const code = String(error && error.code || 'warehouse_print_prepare_failed');
+    console.warn(`WMS 本机打印准备失败: ${code}`);
+    return {
+      success: false,
+      code,
+      error: String(error && error.message || 'WMS 打印准备失败')
+    };
+  }
+});
+
+let wmsOutboundInProgress = false;
+
+async function outboundWarehouseOrderLocally({
+  orderNo,
+  orderYear = new Date().getFullYear()
+} = {}) {
+  if (wmsRestorePromise) await wmsRestorePromise;
+  if (!wmsLoggedIn) {
+    const error = new Error('WMS 登录状态已失效');
+    error.code = 'warehouse_session_expired';
+    throw error;
+  }
+  if (!activeWmsWarehouseNo) {
+    const error = new Error('当前 WMS 仓库编号不可用，请重新进入仓库');
+    error.code = 'warehouse_context_unavailable';
+    throw error;
+  }
+
+  const warehouseNo = activeWmsWarehouseNo;
+  try {
+    return await executeWarehouseOutbound({
+      orderNo,
+      orderYear,
+      warehouseNo,
+      fetchPage: (payload, request) => wmsApiCall(request.apiPath, payload, {
+        lopDn: request.lopDn,
+        bpLopDn: request.bpLopDn
+      }),
+      request: (apiPath, payload, request) => wmsApiCall(apiPath, payload, {
+        lopDn: request.lopDn,
+        bpLopDn: request.bpLopDn
+      }),
+      beforeCommit: () => {
+        if (!wmsLoggedIn) {
+          const error = new Error('WMS 登录状态已失效');
+          error.code = 'warehouse_session_expired';
+          throw error;
+        }
+        if (warehouseNo !== activeWmsWarehouseNo) {
+          const error = new Error('校验期间当前 WMS 仓库发生变化，已停止发货');
+          error.code = 'warehouse_context_changed';
+          throw error;
+        }
+      }
+    });
+  } catch (error) {
+    if (error && error.wmsFailureType === 'auth') {
+      await clearInvalidWmsSessionAndOpenLogin(getActiveWmsAccount());
+      error.code = 'warehouse_session_expired';
+    }
+    throw error;
+  }
+}
+
+async function runWarehouseOutboundOperation(params = {}) {
+  if (wmsOutboundInProgress) {
+    const error = new Error('已有订单正在发货，请等待当前操作完成');
+    error.code = 'warehouse_outbound_busy';
+    throw error;
+  }
+  wmsOutboundInProgress = true;
+  try {
+    return await outboundWarehouseOrderLocally(params);
+  } finally {
+    wmsOutboundInProgress = false;
+  }
+}
+
+ipcMain.handle('wms-outbound-order', async (event, params = {}) => {
+  try {
+    const result = await runWarehouseOutboundOperation(params);
+    return { success: true, ...result };
+  } catch (error) {
+    const code = String(error && error.code || 'warehouse_outbound_failed');
+    console.warn('WMS 本机发货失败: ' + code);
+    return {
+      success: false,
+      code,
+      error: String(error && error.message || 'WMS 发货失败')
+    };
+  }
+});
 
 async function queryWmsOrders(warehouseNo, { allowUnverified = false } = {}) {
   try {

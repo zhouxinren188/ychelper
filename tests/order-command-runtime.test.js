@@ -24,14 +24,14 @@ assert.deepStrictEqual(status.transport, {
   reason: 'central_service_not_configured'
 });
 assert.strictEqual(Object.prototype.hasOwnProperty.call(status.transport, 'url'), false);
-assert.strictEqual(status.capabilities.length, 5);
+assert.strictEqual(status.capabilities.length, 6);
 assert.strictEqual(status.capabilities.every(item => item.enabled === false), true);
 
 const pendingStatus = getMachineCodePendingStatus();
 assert.strictEqual(pendingStatus.generated, false);
 assert.strictEqual(pendingStatus.machine_code, '');
 assert.strictEqual(pendingStatus.transport.reason, 'machine_code_not_generated');
-assert.strictEqual(pendingStatus.capabilities.length, 5);
+assert.strictEqual(pendingStatus.capabilities.length, 6);
 assert.strictEqual(pendingStatus.capabilities.every(item => item.enabled === false), true);
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
@@ -42,6 +42,7 @@ for (const runtimeFile of [
   'order-exception-adapters.js',
   'order-exception-snapshot-store.js',
   'warehouse-order-adapter.js',
+  'warehouse-order-command-adapters.js',
   'order-control-plane-protocol.js',
   'order-control-plane-client.js',
   'order-control-plane-runner.js',

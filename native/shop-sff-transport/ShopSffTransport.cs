@@ -239,6 +239,32 @@ internal static class ShopSffTransport
         }
     }
 
+    private static int GetProbeContentLength(string rawHeaders)
+    {
+        foreach (var line in (rawHeaders ?? string.Empty).Split(new[] { "\r\n" }, StringSplitOptions.None))
+        {
+            const string prefix = "Content-Length:";
+            if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            int contentLength;
+            return int.TryParse(line.Substring(prefix.Length).Trim(), out contentLength) && contentLength > 0
+                ? contentLength
+                : 0;
+        }
+        return 0;
+    }
+
+    private static void ReadProbeBody(NetworkStream stream, int contentLength)
+    {
+        var buffer = new byte[Math.Min(contentLength, 4096)];
+        var remaining = contentLength;
+        while (remaining > 0)
+        {
+            var read = stream.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+            if (read <= 0) break;
+            remaining -= read;
+        }
+    }
+
     private static int RunSelfTest()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -254,6 +280,7 @@ internal static class ShopSffTransport
                 using (var stream = client.GetStream())
                 {
                     rawHeaders = ReadProbeHeaders(stream);
+                    ReadProbeBody(stream, GetProbeContentLength(rawHeaders));
                     var bytes = Encoding.ASCII.GetBytes("HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
                     stream.Write(bytes, 0, bytes.Length);
                 }
