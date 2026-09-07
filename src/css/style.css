@@ -1769,8 +1769,11 @@ body {
   color: #e67e22;
   font-size: 13px;
 }
-.ao-open-merchant-btn {
+.ao-portal-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 #page-abnormalOrders .ao-header-stats {
   margin-left: 0;

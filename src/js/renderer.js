@@ -4275,22 +4275,28 @@ function initAoYearSelect() {
 }
 
 function initAoEventListeners() {
-  $('#aoOpenMerchantBtn').addEventListener('click', async event => {
+  const openPortal = async (event, opener, fallbackMessage) => {
     const button = event.currentTarget;
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = '正在打开...';
     try {
-      const result = await window.electronAPI.openMerchantWorkspace();
+      const result = await opener();
       if (!result || result.success !== true) {
-        showToast(result?.error || '商家端页面打开失败', 3000, 'error');
+        showToast(result?.error || fallbackMessage, 3000, 'error');
       }
     } catch (error) {
-      showToast(error?.message || '商家端页面打开失败', 3000, 'error');
+      showToast(error?.message || fallbackMessage, 3000, 'error');
     } finally {
       button.disabled = false;
       button.textContent = originalText;
     }
+  };
+  $('#aoOpenMerchantBtn').addEventListener('click', event => {
+    openPortal(event, () => window.electronAPI.openMerchantWorkspace(), '商家端页面打开失败');
+  });
+  $('#aoOpenCpBtn').addEventListener('click', event => {
+    openPortal(event, () => window.electronAPI.openCpWorkspace(), 'CP 端页面打开失败');
   });
   $('#aoQueryBtn').addEventListener('click', () => handleAoQuery());
   $('#aoResetBtn').addEventListener('click', () => handleAoReset());

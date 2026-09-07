@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteMerchantAccount: (id) => ipcRenderer.invoke('delete-merchant-account', id),
   switchMerchantAccount: (account) => ipcRenderer.invoke('switch-merchant-account', account),
   openMerchantWorkspace: () => ipcRenderer.invoke('open-merchant-workspace'),
+  openCpWorkspace: () => ipcRenderer.invoke('open-cp-workspace'),
 
   // 快捷模式
   getModes: () => ipcRenderer.invoke('get-modes'),

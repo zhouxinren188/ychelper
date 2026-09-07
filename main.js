@@ -783,6 +783,7 @@ let loginWindow = null;
 let webLoginWindow = null;
 let mainWindow = null;
 let jdPageWindow = null; // 登录后保留的隐藏窗口，用于h5st签名的API调用
+let cpPageWindow = null; // 与当前商家端账号共享 Session 的 CP 端窗口
 let isLoggingIn = false; // 防止重复处理登录
 let activeMerchantAccountId = ''; // 当前活跃的商家端账号ID
 let wmsLoginWindow = null;
@@ -820,6 +821,12 @@ function isMerchantLoginPageUrl(url) {
 }
 
 const MERCHANT_WORKSPACE_URL = 'https://o.jdl.com';
+const CP_WORKSPACE_URL = 'https://cp.jdl.com';
+
+function destroyCpPageWindow() {
+  if (cpPageWindow && !cpPageWindow.isDestroyed()) cpPageWindow.destroy();
+  cpPageWindow = null;
+}
 
 function isMerchantWorkspaceUrl(url) {
   try {
@@ -878,6 +885,8 @@ async function createWebLoginWindow() {
     }
     return { success: false, alreadyOpen: true };
   }
+
+  destroyCpPageWindow();
 
   // 设置当前登录用户名
   currentUsername = String((pendingCredentials && pendingCredentials.username) || '').trim();
@@ -1773,6 +1782,7 @@ function createMainWindow() {
       jdPageWindow.destroy();
       jdPageWindow = null;
     }
+    destroyCpPageWindow();
     if (shopPageWindow && !shopPageWindow.isDestroyed()) {
       shopPageWindow.destroy();
       shopPageWindow = null;
@@ -2842,6 +2852,7 @@ app.on('before-quit', () => {
     jdPageWindow.close();
     jdPageWindow = null;
   }
+  destroyCpPageWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -2898,6 +2909,50 @@ ipcMain.handle('open-merchant-workspace', async event => {
   } catch (error) {
     console.warn('打开商家端失败:', error.message);
     return { success: false, error: '商家端页面打开失败，请检查网络或重新登录' };
+  }
+});
+
+ipcMain.handle('open-cp-workspace', async event => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed() || !event.sender || event.sender.id !== mainWindow.webContents.id) {
+      return { success: false, error: 'CP 端窗口来源校验失败' };
+    }
+    if (!jdPageWindow || jdPageWindow.isDestroyed()) {
+      return { success: false, error: '商家端运行环境不可用，请重新登录云仓助手' };
+    }
+
+    if (!cpPageWindow || cpPageWindow.isDestroyed()) {
+      const webPreferences = {
+        contextIsolation: true,
+        nodeIntegration: false
+      };
+      const merchantPartition = getMerchantPartition();
+      if (merchantPartition) webPreferences.partition = merchantPartition;
+
+      cpPageWindow = new BrowserWindow({
+        width: 1200,
+        height: 800,
+        center: true,
+        show: false,
+        title: '京东物流 - CP端',
+        webPreferences
+      });
+      cpPageWindow.on('closed', () => {
+        cpPageWindow = null;
+      });
+    }
+
+    const target = cpPageWindow;
+    await target.loadURL(CP_WORKSPACE_URL);
+    if (target.isDestroyed()) {
+      return { success: false, error: 'CP 端窗口已关闭，请重新打开' };
+    }
+    target.show();
+    target.focus();
+    return { success: true };
+  } catch (error) {
+    console.warn('打开 CP 端失败:', error.message);
+    return { success: false, error: 'CP 端页面打开失败，请检查网络或重新登录' };
   }
 });
 
@@ -3075,6 +3130,7 @@ ipcMain.handle('delete-merchant-account', async (event, id) => {
   await cookieManager.clearPartition(cookieManager.getPartitionName('merchant', id));
 
   if (activeMerchantAccountId === id) {
+    destroyCpPageWindow();
     activeMerchantAccountId = '';
   }
 
@@ -3091,6 +3147,7 @@ ipcMain.handle('switch-merchant-account', async (event, account) => {
     return { success: false, error: '商家端账号不存在' };
   }
 
+  destroyCpPageWindow();
   activeMerchantAccountId = storedAccount.id;
   storeSet('lastMerchantAccountId', storedAccount.id);
 
