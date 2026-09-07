@@ -1769,6 +1769,12 @@ body {
   color: #e67e22;
   font-size: 13px;
 }
+.ao-open-merchant-btn {
+  margin-left: auto;
+}
+#page-abnormalOrders .ao-header-stats {
+  margin-left: 0;
+}
 
 /* 筛选条件区 */
 .ao-filter-bar {

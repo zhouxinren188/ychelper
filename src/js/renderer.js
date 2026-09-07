@@ -4275,6 +4275,23 @@ function initAoYearSelect() {
 }
 
 function initAoEventListeners() {
+  $('#aoOpenMerchantBtn').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = '正在打开...';
+    try {
+      const result = await window.electronAPI.openMerchantWorkspace();
+      if (!result || result.success !== true) {
+        showToast(result?.error || '商家端页面打开失败', 3000, 'error');
+      }
+    } catch (error) {
+      showToast(error?.message || '商家端页面打开失败', 3000, 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  });
   $('#aoQueryBtn').addEventListener('click', () => handleAoQuery());
   $('#aoResetBtn').addEventListener('click', () => handleAoReset());
 

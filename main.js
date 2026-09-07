@@ -819,6 +819,8 @@ function isMerchantLoginPageUrl(url) {
     || normalizedUrl.includes('sso');
 }
 
+const MERCHANT_WORKSPACE_URL = 'https://o.jdl.com';
+
 function isMerchantWorkspaceUrl(url) {
   try {
     return new URL(String(url || '')).hostname.toLowerCase() === 'o.jdl.com'
@@ -953,7 +955,7 @@ async function createWebLoginWindow() {
 
   isLoggingIn = false;
   let merchantLoginPageSeen = false;
-  webLoginWindow.loadURL('https://o.jdl.com');
+  webLoginWindow.loadURL(MERCHANT_WORKSPACE_URL);
 
   const handleMerchantNavigation = async (url, source) => {
     console.log(`商家端${source}: ${url}`);
@@ -1387,6 +1389,12 @@ async function checkLoginStatus(url) {
       jdPageWindow = webLoginWindow;
       webLoginWindow = null;
       jdPageWindow.hide();
+      const preservedJdPageWindow = jdPageWindow;
+      preservedJdPageWindow.on('close', event => {
+        if (appIsQuitting || !mainWindow || mainWindow.isDestroyed() || jdPageWindow !== preservedJdPageWindow) return;
+        event.preventDefault();
+        preservedJdPageWindow.hide();
+      });
       console.log('京配打标: 登录窗口已保留为隐藏窗口（不跳转，使用当前页面）');
     }
     if (loginWindow) {
@@ -2866,6 +2874,30 @@ ipcMain.on('confirm-close', async () => {
     app.quit();
   } catch (error) {
     reportUpdateInstallFailure(error);
+  }
+});
+
+ipcMain.handle('open-merchant-workspace', async event => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed() || !event.sender || event.sender.id !== mainWindow.webContents.id) {
+      return { success: false, error: '商家端窗口来源校验失败' };
+    }
+    const target = jdPageWindow;
+    if (!target || target.isDestroyed()) {
+      return { success: false, error: '商家端运行环境不可用，请重新登录云仓助手' };
+    }
+    target.show();
+    target.focus();
+    await target.loadURL(MERCHANT_WORKSPACE_URL);
+    if (target.isDestroyed()) {
+      return { success: false, error: '商家端窗口已关闭，请重新登录云仓助手' };
+    }
+    target.show();
+    target.focus();
+    return { success: true };
+  } catch (error) {
+    console.warn('打开商家端失败:', error.message);
+    return { success: false, error: '商家端页面打开失败，请检查网络或重新登录' };
   }
 });
 
