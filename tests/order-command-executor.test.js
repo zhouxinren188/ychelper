@@ -123,6 +123,12 @@ async function run() {
     }),
     'order_id_mismatch'
   );
+  const globalWarehouseTask = makeTask('warehouse.order.check', { params: {} });
+  delete globalWarehouseTask.order_id;
+  assert.doesNotThrow(() => validateTaskEnvelope(globalWarehouseTask, {
+    nowMs: NOW,
+    expectedMachineCode: MACHINE_CODE
+  }));
 
   assert.throws(
     () => createExecutor(createPersistence({ version: 2, receipts: null, locks: {}, audit: [] })),
@@ -247,6 +253,31 @@ async function run() {
   assert.strictEqual(warehouseMissingResult.message, '无此订单');
   assert.strictEqual(warehouseMissingResult.result.state, 'waiting_arrival');
   assert.strictEqual(warehouseMissingResult.result.exists, false);
+
+  const warehouseAllExecutor = createExecutor(createPersistence());
+  warehouseAllExecutor.registerAdapter('warehouse.order.check', {
+    validateParams: params => ({ valid: Object.keys(params).length === 0 }),
+    execute: async () => ({
+      queried_at: new Date(NOW).toISOString(),
+      orders: [{
+        order_no: '3589409013687094',
+        status: 'pending_print',
+        logistics_no: '',
+        logistics_company: '',
+        printable: true
+      }]
+    })
+  });
+  const warehouseAllTask = makeTask('warehouse.order.check', {
+    task_id: 'task-warehouse-order-all',
+    idempotency_key: 'idem-warehouse-order-all',
+    params: {}
+  });
+  delete warehouseAllTask.order_id;
+  const warehouseAllResult = await warehouseAllExecutor.executeTask(warehouseAllTask);
+  assert.strictEqual(warehouseAllResult.status, 'succeeded');
+  assert.strictEqual(warehouseAllResult.message, '查询到 1 条待打印订单');
+  assert.strictEqual(warehouseAllResult.result.orders.length, 1);
 
   const warehouseExpiredExecutor = createExecutor(createPersistence());
   warehouseExpiredExecutor.registerAdapter('warehouse.order.check', {

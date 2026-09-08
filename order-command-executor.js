@@ -551,7 +551,9 @@ class OrderCommandExecutor {
             ? '暂无异常订单'
             : ''
           : task.command === 'warehouse.order.check' && executionResult
-          ? executionResult.exists === true
+          ? Array.isArray(executionResult.orders)
+            ? `查询到 ${executionResult.orders.length} 条待打印订单`
+            : executionResult.exists === true
             ? '订单存在'
             : executionResult.exists === false
             ? '无此订单'

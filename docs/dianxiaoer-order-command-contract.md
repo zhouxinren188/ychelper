@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | `exception.order.check` | 已开放 | 同时查询 `billexception` 和 `soExceptionCentre` |
 | `exception.order.resolve` | 已开放 | 处理最近一次查询确认的全部异常快照 |
-| `warehouse.order.check` | 已开放 | 查询当前 WMS 仓库出库订单列表并精确匹配店小二订单号 |
+| `warehouse.order.check` | 已开放 | 全量查询当前 WMS 仓库待打印订单列表 |
 | `warehouse.order.print` | 已开放 | 调用当前 WMS 会话的官方打印流程 |
 | `warehouse.order.reprint` | 已开放 | 调用当前 WMS 会话的通道补打流程 |
 | `warehouse.order.outbound` | 已开放 | 调用当前 WMS 会话的快速发货流程 |
@@ -130,43 +130,33 @@ GET /api/cloud-warehouse/v1/commands/dxr-20260813-000001
 
 ## 6. 云仓订单查询
 
-`warehouse.order.check` 仍只接收中央服务生成的 `order_no + order_year`，桌面端使用本机当前 WMS 登录会话和已进入仓库的仓库编号查询，Cookie、Token、仓库编号和内部 WMS 字段不上传中央服务。
+`warehouse.order.check` 的新请求不携带 `order_id`，`params` 固定为空对象。桌面端使用本机当前 WMS 登录会话和已进入仓库的仓库编号查询当前年度待打印订单；Cookie、Token、仓库编号和内部 WMS 字段不上传中央服务。旧版中央服务下发的 `order_no + order_year` 单订单查询暂时保留兼容。
 
-店小二订单号只与 WMS 返回的 `merchantOrderNo` 精确比较；不得改用 WMS 内部 `orderNo` 或 `shipmentOrderNo`。命中时优先返回 `extendFields.thirdPartyFirstWayBillNo`，为空时回退顶层 `waybillNo`。
+云仓订单号只读取 WMS 返回的 `merchantOrderNo`；不得改用 WMS 内部 `orderNo` 或 `shipmentOrderNo`。运单号优先读取 `extendFields.thirdPartyFirstWayBillNo`，为空时回退顶层 `waybillNo`。
 
-命中回执：
-
-```json
-{
-  "status": "succeeded",
-  "reason": "query_completed",
-  "message": "订单存在",
-  "result": {
-    "state": "arrived",
-    "exists": true,
-    "waybill_no": "JDV029243091652",
-    "queried_at": "ISO时间"
-  }
-}
-```
-
-完成全部必要分页但未命中时回执：
+全量查询回执：
 
 ```json
 {
   "status": "succeeded",
   "reason": "query_completed",
-  "message": "无此订单",
+  "message": "查询到 2 条待打印订单",
   "result": {
-    "state": "waiting_arrival",
-    "exists": false,
-    "waybill_no": "",
-    "queried_at": "ISO时间"
+    "queried_at": "ISO时间",
+    "orders": [
+      {
+        "order_no": "京东销售订单号",
+        "status": "pending_print",
+        "logistics_no": "JDV029243091652",
+        "logistics_company": "京东物流",
+        "printable": true
+      }
+    ]
   }
 }
 ```
 
-WMS 会话失效、网络失败、响应结构异常或未完成全部必要分页时必须失败，禁止降级成“无此订单”。该命令只读，不触发打印、出库或任何订单写操作。同一 `request_id` 重试复用幂等回执；需要重新查询必须使用新的 `request_id`。
+没有待打印订单时返回空 `orders`。WMS 会话失效、网络失败、响应结构异常或未完成全部必要分页时必须失败，禁止降级成空列表。该命令只读，不触发打印、出库或任何订单写操作。同一 `request_id` 重试复用幂等回执；需要重新查询必须使用新的 `request_id`。
 
 ## 7. 桌面端内部接口
 

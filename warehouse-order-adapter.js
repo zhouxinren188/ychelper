@@ -37,6 +37,17 @@ function validateWarehouseOrderParams(params) {
   return { valid: true, orderNo, orderYear };
 }
 
+function validateWarehouseOrderCheckParams(params) {
+  if (!isPlainObject(params)) {
+    return { valid: false, message: '查询参数格式无效' };
+  }
+  if (Object.keys(params).length === 0) {
+    return { valid: true, mode: 'all' };
+  }
+  const validation = validateWarehouseOrderParams(params);
+  return validation.valid ? { ...validation, mode: 'single' } : validation;
+}
+
 function normalizeOutboundOrderStatuses(currentStatuses) {
   if (currentStatuses === undefined) return [...OUTBOUND_ORDER_STATUSES];
   if (!Array.isArray(currentStatuses)) {
@@ -92,6 +103,16 @@ function getWaybillNo(record) {
   return String(
     record && record.extendFields && record.extendFields.thirdPartyFirstWayBillNo ||
     record && record.waybillNo ||
+    ''
+  ).trim();
+}
+
+function getLogisticsCompany(record) {
+  return String(
+    record && record.logisticsCompanyName ||
+    record && record.deliveryCompanyName ||
+    record && record.carrierName ||
+    record && record.extendFields && record.extendFields.logisticsCompanyName ||
     ''
   ).trim();
 }
@@ -167,6 +188,68 @@ async function queryWarehouseOrder(options = {}) {
   throw error;
 }
 
+async function queryWarehouseOrders(options = {}) {
+  const warehouseNo = String(options.warehouseNo || '').trim();
+  if (!warehouseNo) {
+    const error = new Error('当前 WMS 仓库编号不可用，请重新进入仓库');
+    error.code = 'warehouse_context_unavailable';
+    throw error;
+  }
+  if (typeof options.fetchPage !== 'function') {
+    throw new Error('WMS 出库订单查询服务未配置');
+  }
+  const now = typeof options.now === 'function' ? options.now : () => new Date();
+  const queriedAt = now();
+  const orderYear = Number.isInteger(options.orderYear)
+    ? options.orderYear
+    : queriedAt.getFullYear();
+  const maxPages = Number.isInteger(options.maxPages) && options.maxPages > 0
+    ? options.maxPages
+    : OUTBOUND_ORDER_MAX_PAGES;
+  const ordersByNo = new Map();
+
+  for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+    const payload = buildOutboundOrderListPayload({
+      orderYear,
+      warehouseNo,
+      pageNum,
+      currentStatuses: options.currentStatuses
+    });
+    const data = await options.fetchPage(payload, {
+      apiPath: OUTBOUND_ORDER_LIST_API,
+      lopDn: OUTBOUND_ORDER_LOP_DN,
+      bpLopDn: OUTBOUND_ORDER_LOP_DN
+    });
+    const resultValue = assertOutboundOrderPage(data);
+    for (const record of resultValue.list) {
+      const orderNo = getMerchantOrderNo(record);
+      if (!orderNo) continue;
+      const normalized = {
+        order_no: orderNo,
+        status: 'pending_print',
+        logistics_no: getWaybillNo(record),
+        logistics_company: getLogisticsCompany(record),
+        printable: true
+      };
+      const previous = ordersByNo.get(orderNo);
+      if (!previous || (!previous.logistics_no && normalized.logistics_no)) {
+        ordersByNo.set(orderNo, normalized);
+      }
+    }
+    if (!hasNextOutboundPage(resultValue, pageNum)) break;
+    if (pageNum === maxPages) {
+      const error = new Error('WMS 出库订单结果页数超过安全上限，无法完成全量查询');
+      error.code = 'warehouse_query_incomplete';
+      throw error;
+    }
+  }
+
+  return {
+    queried_at: queriedAt.toISOString(),
+    orders: [...ordersByNo.values()]
+  };
+}
+
 async function queryWarehouseOrderRecord(options = {}) {
   const validation = validateWarehouseOrderParams({
     order_no: options.orderNo,
@@ -230,15 +313,18 @@ async function queryWarehouseOrderRecord(options = {}) {
 }
 
 function createWarehouseOrderCheckAdapter(services = {}) {
-  if (typeof services.queryWarehouseOrder !== 'function') {
+  if (typeof services.queryWarehouseOrders !== 'function' ||
+      typeof services.queryWarehouseOrder !== 'function') {
     throw new Error('warehouse.order.check 适配器缺少查询服务');
   }
   return {
-    validateParams: validateWarehouseOrderParams,
-    execute: params => services.queryWarehouseOrder({
-      orderNo: String(params.order_no || '').trim(),
-      orderYear: Number(params.order_year)
-    })
+    validateParams: validateWarehouseOrderCheckParams,
+    execute: params => Object.keys(params).length === 0
+      ? services.queryWarehouseOrders()
+      : services.queryWarehouseOrder({
+        orderNo: String(params.order_no || '').trim(),
+        orderYear: Number(params.order_year)
+      })
   };
 }
 
@@ -263,10 +349,13 @@ module.exports = {
   buildOutboundOrderListPayload,
   createWarehouseOrderCheckAdapter,
   getMerchantOrderNo,
+  getLogisticsCompany,
   getWaybillNo,
   normalizeOutboundOrderStatuses,
   queryWarehouseOrder,
+  queryWarehouseOrders,
   queryWarehouseOrderRecord,
   registerWarehouseOrderCheckAdapter,
+  validateWarehouseOrderCheckParams,
   validateWarehouseOrderParams
 };

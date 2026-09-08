@@ -29,6 +29,7 @@ const { getMachineCodePendingStatus, OrderCommandRuntime } = require('./order-co
 const { registerExceptionOrderAdapters } = require('./order-exception-adapters');
 const {
   queryWarehouseOrder: queryWarehouseOrderFromWms,
+  queryWarehouseOrders: queryWarehouseOrdersFromWms,
   queryWarehouseOrderRecord: queryWarehouseOrderRecordFromWms,
   OUTBOUND_ORDER_REPRINT_STATUSES,
   registerWarehouseOrderCheckAdapter
@@ -700,7 +701,8 @@ function initializeOrderCommandRuntime(accountIdentity, { generate = false } = {
       claimExceptionSnapshot: (ref, options) => exceptionSnapshotStore.claim(ref, options)
     });
     registerWarehouseOrderCheckAdapter(orderCommandRuntime.executor, {
-      queryWarehouseOrder: queryWarehouseOrderForCommand
+      queryWarehouseOrder: queryWarehouseOrderForCommand,
+      queryWarehouseOrders: queryWarehouseOrdersForCommand
     });
     registerWarehouseOrderActionAdapters(orderCommandRuntime.executor, {
       preflightWarehouseOrderAction,
@@ -7136,6 +7138,36 @@ async function queryWarehouseOrderForCommand({ orderNo, orderYear }) {
     return await queryWarehouseOrderFromWms({
       orderNo,
       orderYear,
+      warehouseNo: activeWmsWarehouseNo,
+      fetchPage: (payload, request) => wmsApiCall(request.apiPath, payload, {
+        lopDn: request.lopDn,
+        bpLopDn: request.bpLopDn
+      })
+    });
+  } catch (error) {
+    if (error && error.wmsFailureType === 'auth') {
+      await clearInvalidWmsSessionAndOpenLogin(getActiveWmsAccount());
+      error.code = 'warehouse_session_expired';
+    }
+    throw error;
+  }
+}
+
+async function queryWarehouseOrdersForCommand() {
+  if (wmsRestorePromise) await wmsRestorePromise;
+  if (!wmsLoggedIn) {
+    const error = new Error('WMS 登录状态已失效');
+    error.code = 'warehouse_session_expired';
+    throw error;
+  }
+  if (!activeWmsWarehouseNo) {
+    const error = new Error('当前 WMS 仓库编号不可用，请重新进入仓库');
+    error.code = 'warehouse_context_unavailable';
+    throw error;
+  }
+
+  try {
+    return await queryWarehouseOrdersFromWms({
       warehouseNo: activeWmsWarehouseNo,
       fetchPage: (payload, request) => wmsApiCall(request.apiPath, payload, {
         lopDn: request.lopDn,

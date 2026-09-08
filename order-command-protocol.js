@@ -97,6 +97,7 @@ const MAX_PARAMS_BYTES = 16 * 1024;
 const MAX_RESULT_STRING = 4000;
 const MAX_DEPTH = 8;
 const MAX_ARRAY_ITEMS = 100;
+const MAX_RESULT_ARRAY_ITEMS = 3000;
 
 class OrderCommandProtocolError extends Error {
   constructor(code, message, details) {
@@ -222,7 +223,11 @@ function validateTaskEnvelope(task, options = {}) {
 
   assertSafeId(task.task_id, 'task_id');
   assertSafeId(task.trace_id, 'trace_id');
-  assertSafeId(task.order_id, 'order_id');
+  const isGlobalWarehouseOrderCheck = task.command === 'warehouse.order.check' &&
+    task.order_id === undefined;
+  if (!isGlobalWarehouseOrderCheck) {
+    assertSafeId(task.order_id, 'order_id');
+  }
   assertSafeId(task.idempotency_key, 'idempotency_key');
 
   const nowMs = options.nowMs === undefined ? Date.now() : options.nowMs;
@@ -319,7 +324,9 @@ function sanitizeResult(value, options = {}, depth = 0, seen = new WeakSet()) {
   seen.add(value);
 
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY_ITEMS).map(item => sanitizeResult(item, options, depth + 1, seen));
+    return value.slice(0, MAX_RESULT_ARRAY_ITEMS).map(
+      item => sanitizeResult(item, options, depth + 1, seen)
+    );
   }
 
   const output = Object.create(null);

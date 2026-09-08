@@ -7,9 +7,12 @@ const {
   OUTBOUND_ORDER_PAGE_SIZE,
   buildOutboundOrderListPayload,
   createWarehouseOrderCheckAdapter,
+  getLogisticsCompany,
   getWaybillNo,
   queryWarehouseOrder,
+  queryWarehouseOrders,
   queryWarehouseOrderRecord,
+  validateWarehouseOrderCheckParams,
   validateWarehouseOrderParams
 } = require('../warehouse-order-adapter');
 
@@ -42,6 +45,7 @@ function page(list, options = {}) {
     validateWarehouseOrderParams({ order_no: ORDER_NO, order_year: 2026, request_url: 'unsafe' }).valid,
     false
   );
+  assert.deepStrictEqual(validateWarehouseOrderCheckParams({}), { valid: true, mode: 'all' });
 
   const payload = buildOutboundOrderListPayload({
     orderYear: 2026,
@@ -68,6 +72,7 @@ function page(list, options = {}) {
     waybillNo: 'fallback'
   }), 'JDV029243091652');
   assert.strictEqual(getWaybillNo({ waybillNo: 'JDV029243091653' }), 'JDV029243091653');
+  assert.strictEqual(getLogisticsCompany({ logisticsCompanyName: '京东物流' }), '京东物流');
 
   const calls = [];
   const found = await queryWarehouseOrder({
@@ -174,6 +179,51 @@ function page(list, options = {}) {
     queried_at: NOW.toISOString()
   });
 
+  const allCalls = [];
+  const allOrders = await queryWarehouseOrders({
+    warehouseNo: WAREHOUSE_NO,
+    now: () => NOW,
+    fetchPage: async payload => {
+      allCalls.push(payload);
+      if (payload.pageNum === 1) {
+        return page([
+          { merchantOrderNo: ORDER_NO, currentStatus: 10 },
+          { merchantOrderNo: '', currentStatus: 10 }
+        ], { pages: 2, hasNextPage: true });
+      }
+      return page([
+        {
+          merchantOrderNo: ORDER_NO,
+          currentStatus: 30,
+          extendFields: { thirdPartyFirstWayBillNo: 'JDV029243091652' },
+          logisticsCompanyName: '京东物流'
+        },
+        { merchantOrderNo: '3589409013687095', currentStatus: 30 }
+      ], { pageNum: 2, pages: 2 });
+    }
+  });
+  assert.deepStrictEqual(allOrders, {
+    queried_at: NOW.toISOString(),
+    orders: [
+      {
+        order_no: ORDER_NO,
+        status: 'pending_print',
+        logistics_no: 'JDV029243091652',
+        logistics_company: '京东物流',
+        printable: true
+      },
+      {
+        order_no: '3589409013687095',
+        status: 'pending_print',
+        logistics_no: '',
+        logistics_company: '',
+        printable: true
+      }
+    ]
+  });
+  assert.strictEqual(allCalls.length, 2);
+  assert.strictEqual(allCalls[0].createTime[0], '2026-01-01 00:00:00');
+
   await assert.rejects(
     queryWarehouseOrder({
       orderNo: ORDER_NO,
@@ -206,7 +256,13 @@ function page(list, options = {}) {
   );
 
   const adapter = createWarehouseOrderCheckAdapter({
+    queryWarehouseOrders: async () => ({ queried_at: NOW.toISOString(), orders: [] }),
     queryWarehouseOrder: async input => ({ ...input, state: 'arrived', exists: true, waybill_no: 'JDV' })
+  });
+  assert.strictEqual(adapter.validateParams({}).valid, true);
+  assert.deepStrictEqual(await adapter.execute({}), {
+    queried_at: NOW.toISOString(),
+    orders: []
   });
   assert.strictEqual(adapter.validateParams({ order_no: ORDER_NO, order_year: 2026 }).valid, true);
   assert.deepStrictEqual(await adapter.execute({ order_no: ORDER_NO, order_year: 2026 }), {
