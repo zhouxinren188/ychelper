@@ -220,7 +220,12 @@ class OrderCommandExecutor {
         receipt_id: makeReceiptId(this.machineCode, task.idempotency_key),
         business_confirmed: details.businessConfirmed === true
       },
-      result: details.result === undefined ? null : sanitizeResult(details.result),
+      result: details.result === undefined
+        ? null
+        : sanitizeResult(
+            details.result,
+            task.command === 'warehouse.order.check' ? { maxArrayItems: 3000 } : {}
+          ),
       verification: this._normalizeVerification(task, details.verification, details.verificationObservedAt),
       executor: {
         machine_code: this.machineCode

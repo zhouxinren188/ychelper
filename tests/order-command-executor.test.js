@@ -5,6 +5,7 @@ const { OrderCommandExecutor } = require('../order-command-executor');
 const {
   PROTOCOL_VERSION,
   OrderCommandProtocolError,
+  sanitizeResult,
   validateTaskEnvelope
 } = require('../order-command-protocol');
 
@@ -259,13 +260,13 @@ async function run() {
     validateParams: params => ({ valid: Object.keys(params).length === 0 }),
     execute: async () => ({
       queried_at: new Date(NOW).toISOString(),
-      orders: [{
-        order_no: '3589409013687094',
+      orders: Array.from({ length: 101 }, (_, index) => ({
+        order_no: '3589409013687' + String(index).padStart(3, '0'),
         status: 'pending_print',
         logistics_no: '',
         logistics_company: '',
         printable: true
-      }]
+      }))
     })
   });
   const warehouseAllTask = makeTask('warehouse.order.check', {
@@ -276,8 +277,12 @@ async function run() {
   delete warehouseAllTask.order_id;
   const warehouseAllResult = await warehouseAllExecutor.executeTask(warehouseAllTask);
   assert.strictEqual(warehouseAllResult.status, 'succeeded');
-  assert.strictEqual(warehouseAllResult.message, '查询到 1 条待打印订单');
-  assert.strictEqual(warehouseAllResult.result.orders.length, 1);
+  assert.strictEqual(warehouseAllResult.message, '查询到 101 条待打印订单');
+  assert.strictEqual(warehouseAllResult.result.orders.length, 101);
+  assert.strictEqual(
+    sanitizeResult(Array.from({ length: 101 }, (_, index) => index)).length,
+    100
+  );
 
   const warehouseExpiredExecutor = createExecutor(createPersistence());
   warehouseExpiredExecutor.registerAdapter('warehouse.order.check', {

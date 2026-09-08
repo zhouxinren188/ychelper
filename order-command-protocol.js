@@ -97,7 +97,6 @@ const MAX_PARAMS_BYTES = 16 * 1024;
 const MAX_RESULT_STRING = 4000;
 const MAX_DEPTH = 8;
 const MAX_ARRAY_ITEMS = 100;
-const MAX_RESULT_ARRAY_ITEMS = 3000;
 
 class OrderCommandProtocolError extends Error {
   constructor(code, message, details) {
@@ -324,7 +323,10 @@ function sanitizeResult(value, options = {}, depth = 0, seen = new WeakSet()) {
   seen.add(value);
 
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_RESULT_ARRAY_ITEMS).map(
+    const maxArrayItems = Number.isInteger(options.maxArrayItems) && options.maxArrayItems > 0
+      ? options.maxArrayItems
+      : MAX_ARRAY_ITEMS;
+    return value.slice(0, maxArrayItems).map(
       item => sanitizeResult(item, options, depth + 1, seen)
     );
   }
