@@ -37,11 +37,18 @@ assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
 assert.match(main, /scheduleAutomaticInstall\('autoUpdater'\)/);
 assert.match(main, /scheduleAutomaticInstall\('localPath', savePath\)/);
-assert.match(main, /launchInstallerAfterApplicationExit\(\{/,
-  '完整安装包必须由独立等待器在应用退出后启动');
-assert.match(main, /applicationPath:\s*process\.execPath/);
+assert.match(main, /launchInstallerBeforeApplicationExit\(\{\s*installerPath\s*\}\)/,
+  '完整安装包必须在主程序仍可报告启动错误时创建安装进程');
 assert.doesNotMatch(main, /shell\.openPath\((?:installerPath|global\._pendingUpdateInstaller)\)/,
-  '完整安装包不得在应用退出前直接启动');
+  '完整安装包必须使用可监听启动结果的进程 API');
+const localInstallBlock = main.match(/if \(action === 'localPath'\) \{([\s\S]*?)\n\s*\}/);
+assert(localInstallBlock, '缺少完整安装包安装流程');
+assert(localInstallBlock[1].indexOf('releaseCurrentSubscriptionSession')
+  < localInstallBlock[1].indexOf('launchInstallerBeforeApplicationExit'),
+  '启动安装器前必须先释放当前在线名额');
+assert(localInstallBlock[1].indexOf('launchInstallerBeforeApplicationExit')
+  < localInstallBlock[1].indexOf('app.quit()'),
+  '必须确认安装器进程已创建后再退出主程序');
 assert.match(main, /if \(pendingUpdateAction\) return;/,
   '自动安装已经排队时，窗口关闭事件不得清除安装动作');
 assert.match(installerInclude, /!macro customInit/);

@@ -92,7 +92,7 @@ const {
   createUpdateDownloadState,
   hasUsableDifferentialBase
 } = require('./src/js/updateDownloadState');
-const { launchInstallerAfterApplicationExit } = require('./src/js/deferredInstaller');
+const { launchInstallerBeforeApplicationExit } = require('./src/js/deferredInstaller');
 let cookieManager = null;
 try { cookieManager = require('./src/js/cookieManager'); } catch(e) { console.warn('[启动] cookieManager 模块缺失，热更新后将恢复'); }
 
@@ -1921,12 +1921,8 @@ async function installPendingUpdateAndQuit(action, installerPath = null) {
 
   try {
     if (action === 'localPath') {
-      await launchInstallerAfterApplicationExit({
-        installerPath,
-        applicationPath: process.execPath,
-        parentPid: process.pid
-      });
       await releaseCurrentSubscriptionSession();
+      await launchInstallerBeforeApplicationExit({ installerPath });
       app.quit();
       return;
     }

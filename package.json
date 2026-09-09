@@ -1,6 +1,6 @@
 {
   "name": "cloud-warehouse-assistant",
-  "version": "1.0.83",
+  "version": "1.0.84",
   "description": "云仓助手 - 京东物流云仓自动化工具",
   "main": "main.js",
   "scripts": {

@@ -2,8 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const DEFAULT_WAIT_TIMEOUT_MS = 90000;
-const DEFAULT_POLL_INTERVAL_MS = 200;
+const DEFAULT_LAUNCH_ATTEMPTS = 15;
+const DEFAULT_RETRY_INTERVAL_MS = 1000;
+const DEFAULT_INSTALLER_ARGS = Object.freeze(['--updated', '--force-run']);
 
 function assertPositiveInteger(value, fieldName) {
   if (!Number.isInteger(value) || value <= 0) {
@@ -31,82 +32,17 @@ function validateExecutableFile(filePath, label, fsImpl = fs) {
   return path.normalize(filePath);
 }
 
-function buildDeferredInstallerCommand({
-  installerPath,
-  applicationPath,
-  parentPid,
-  waitTimeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS
-}) {
-  assertPositiveInteger(parentPid, 'parentPid');
-  assertPositiveInteger(waitTimeoutMs, 'waitTimeoutMs');
-  assertPositiveInteger(pollIntervalMs, 'pollIntervalMs');
-
-  const installerBase64 = Buffer.from(installerPath, 'utf8').toString('base64');
-  const applicationBase64 = Buffer.from(applicationPath, 'utf8').toString('base64');
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    `$installer=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${installerBase64}'))`,
-    `$application=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${applicationBase64}'))`,
-    `$parentPid=${parentPid}`,
-    `$deadline=(Get-Date).AddMilliseconds(${waitTimeoutMs})`,
-    'function Test-YcHelperRunning {',
-    '  if (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) { return $true }',
-    '  $match=Get-Process -ErrorAction SilentlyContinue | Where-Object {',
-    '    try { $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path),$application,[StringComparison]::OrdinalIgnoreCase) } catch { $false }',
-    '  } | Select-Object -First 1',
-    '  return $null -ne $match',
-    '}',
-    `while ((Test-YcHelperRunning) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds ${pollIntervalMs} }`,
-    'if (Test-YcHelperRunning) { exit 2 }',
-    'Start-Sleep -Milliseconds 500',
-    'Start-Process -FilePath $installer'
-  ].join('\r\n');
-
-  return Buffer.from(script, 'utf16le').toString('base64');
+function delay(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
-function launchInstallerAfterApplicationExit({
-  installerPath,
-  applicationPath,
-  parentPid = process.pid,
-  waitTimeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-  powershellPath = path.join(
-    process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows',
-    'System32',
-    'WindowsPowerShell',
-    'v1.0',
-    'powershell.exe'
-  ),
-  fsImpl = fs,
-  spawnImpl = spawn
-}) {
-  const safeInstallerPath = validateExecutableFile(installerPath, 'installer', fsImpl);
-  const safeApplicationPath = validateExecutableFile(applicationPath, 'application', fsImpl);
-  const safePowerShellPath = validateExecutableFile(powershellPath, 'PowerShell', fsImpl);
-  const encodedCommand = buildDeferredInstallerCommand({
-    installerPath: safeInstallerPath,
-    applicationPath: safeApplicationPath,
-    parentPid,
-    waitTimeoutMs,
-    pollIntervalMs
-  });
-
+function spawnDetachedInstaller(installerPath, spawnImpl = spawn) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawnImpl(safePowerShellPath, [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-WindowStyle',
-        'Hidden',
-        '-EncodedCommand',
-        encodedCommand
-      ], {
+      child = spawnImpl(installerPath, [...DEFAULT_INSTALLER_ARGS], {
         detached: true,
-        windowsHide: true,
+        windowsHide: false,
         stdio: 'ignore'
       });
     } catch (error) {
@@ -129,10 +65,41 @@ function launchInstallerAfterApplicationExit({
   });
 }
 
+async function launchInstallerBeforeApplicationExit({
+  installerPath,
+  launchAttempts = DEFAULT_LAUNCH_ATTEMPTS,
+  retryIntervalMs = DEFAULT_RETRY_INTERVAL_MS,
+  fsImpl = fs,
+  spawnImpl = spawn,
+  delayImpl = delay
+}) {
+  assertPositiveInteger(launchAttempts, 'launchAttempts');
+  assertPositiveInteger(retryIntervalMs, 'retryIntervalMs');
+
+  const safeInstallerPath = validateExecutableFile(installerPath, 'installer', fsImpl);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= launchAttempts; attempt += 1) {
+    try {
+      await spawnDetachedInstaller(safeInstallerPath, spawnImpl);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < launchAttempts) {
+        await delayImpl(retryIntervalMs);
+      }
+    }
+  }
+
+  const detail = lastError && lastError.message ? `: ${lastError.message}` : '';
+  throw new Error(`installer failed to start after ${launchAttempts} attempts${detail}`);
+}
+
 module.exports = {
-  DEFAULT_POLL_INTERVAL_MS,
-  DEFAULT_WAIT_TIMEOUT_MS,
-  buildDeferredInstallerCommand,
-  launchInstallerAfterApplicationExit,
+  DEFAULT_INSTALLER_ARGS,
+  DEFAULT_LAUNCH_ATTEMPTS,
+  DEFAULT_RETRY_INTERVAL_MS,
+  launchInstallerBeforeApplicationExit,
+  spawnDetachedInstaller,
   validateExecutableFile
 };
