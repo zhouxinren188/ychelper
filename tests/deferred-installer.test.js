@@ -5,6 +5,7 @@ const {
   DEFAULT_INSTALLER_ARGS,
   DEFAULT_LAUNCH_ATTEMPTS,
   DEFAULT_RETRY_INTERVAL_MS,
+  launchInstallerAfterApplicationExit,
   launchInstallerBeforeApplicationExit,
   validateExecutableFile
 } = require('../src/js/deferredInstaller');
@@ -27,6 +28,11 @@ assert.throws(
 assert.throws(
   () => validateExecutableFile('C:\\Temp\\setup.zip', 'installer', existingFileSystem),
   /must be an exe file/
+);
+assert.strictEqual(
+  launchInstallerAfterApplicationExit,
+  launchInstallerBeforeApplicationExit,
+  'v1.0.83 hot bridge must preserve the function name used by the old main process'
 );
 
 function createChild(eventName, error = null) {

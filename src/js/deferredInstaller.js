@@ -99,6 +99,7 @@ module.exports = {
   DEFAULT_INSTALLER_ARGS,
   DEFAULT_LAUNCH_ATTEMPTS,
   DEFAULT_RETRY_INTERVAL_MS,
+  launchInstallerAfterApplicationExit: launchInstallerBeforeApplicationExit,
   launchInstallerBeforeApplicationExit,
   spawnDetachedInstaller,
   validateExecutableFile
