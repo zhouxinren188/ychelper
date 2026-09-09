@@ -232,6 +232,14 @@ async function main() {
       || repeatedBridgePath !== 'api/update/file/ychelper-setup-1.0.66.exe') {
       throw new Error('v1.0.66 桥接状态被首次 latest.yml 请求提前消耗');
     }
+    const bridgeReleaseResponse = await expectResponse(`${BASE_URL}/api/update/full-check?version=1.0.66&bridge-release=${Date.now()}`, {
+      cache: 'no-store'
+    }, 200, 'v1.0.66 定向 latest.yml 会话释放');
+    const bridgeReleaseData = await bridgeReleaseResponse.json();
+    if (!bridgeReleaseData.needUpdate || bridgeReleaseData.version !== '1.0.68'
+      || bridgeReleaseData.bridge !== true) {
+      throw new Error('v1.0.66 未在 full-check 后释放定向 latest.yml 会话');
+    }
   }
 
   if (baselines.includes('1.0.83')) {
