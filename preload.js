@@ -89,6 +89,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('shop-query-progress', listener);
     return () => ipcRenderer.removeListener('shop-query-progress', listener);
   },
+  getShopGoodsTasks: () => ipcRenderer.invoke('get-shop-goods-tasks'),
+  saveShopGoodsTasks: (tasks) => ipcRenderer.invoke('save-shop-goods-tasks', tasks),
+  getLabelTasks: () => ipcRenderer.invoke('get-label-tasks'),
+  saveLabelTasks: (tasks) => ipcRenderer.invoke('save-label-tasks', tasks),
+  saveShopGoodsTaskResult: (params) => ipcRenderer.invoke('save-shop-goods-task-result', params),
+  getShopGoodsTaskResult: (taskId) => ipcRenderer.invoke('get-shop-goods-task-result', taskId),
+  deleteShopGoodsTaskResult: (taskId) => ipcRenderer.invoke('delete-shop-goods-task-result', taskId),
+  getAutoLabelSettings: () => ipcRenderer.invoke('get-auto-label-settings'),
+  saveAutoLabelSettings: (settings) => ipcRenderer.invoke('save-auto-label-settings', settings),
+  saveAutoLabelRuntime: (runtime) => ipcRenderer.invoke('save-auto-label-runtime', runtime),
+  saveShopAutoLabelRuntime: (runtime) => ipcRenderer.invoke('save-shop-auto-label-runtime', runtime),
   exportSkuTxt: (params) => ipcRenderer.invoke('export-sku-txt', params),
   getSmStats: () => ipcRenderer.invoke('get-sm-stats'),
   updateSmStats: (data) => ipcRenderer.invoke('update-sm-stats', data),

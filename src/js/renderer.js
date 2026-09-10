@@ -3,6 +3,8 @@ let tasks = [];
 let taskIdCounter = 0;
 let isExecuting = false;
 let stopRequested = false;
+let labelTaskPersistenceChain = Promise.resolve();
+let smAutomaticExecutionPending = false;
 let shopOptions = []; // 店铺选项数据（当前事业部过滤后）
 let allShopOptions = []; // 全量店铺选项（不受事业部筛选影响）
 let importedFileName = ''; // 当前导入的文本文件名（无扩展名）
@@ -56,6 +58,7 @@ const logBox = $('#logBox');
   await loadUserData();
   await loadModes();
   await loadSubscriptionInfo();
+  await loadLabelTasks();
   initNavigation();
   await initMachineCodeModule();
   initEventListeners();
@@ -399,68 +402,67 @@ function initEventListeners() {
 }
 
 // ========== 添加任务 ==========
-function addTask() {
-  const skuText = skuInput.value.trim();
-  if (!skuText) {
-    showToast('请输入商品SKU');
-    skuInput.focus();
-    return;
+function enqueueLabelTasks({
+  skus,
+  shopId,
+  warehouseId,
+  config,
+  modeName,
+  sourceFileName = '',
+  sourceTaskId = '',
+  automationRunDate = '',
+  autoCreated = false
+}) {
+  const normalizedSkus = [...new Set((Array.isArray(skus) ? skus : [])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+  if (normalizedSkus.length === 0) {
+    return { success: false, error: '没有可发布的SKU', taskCount: 0 };
   }
 
-  const shopId = shopSelect.value;
-  const shopOpt = shopOptions.find(o => o.value === shopId);
+  const shopOpt = allShopOptions.find(o => o.value === shopId)
+    || shopOptions.find(o => o.value === shopId);
   const shopName = shopOpt ? shopOpt.label : '';
   const spShopNo = shopOpt ? shopOpt.spShopNo : '';
   const shopDeptId = shopOpt ? shopOpt.deptId : '';
   const shopDeptName = shopOpt ? shopOpt.deptName : '';
-
-  const warehouseId = warehouseSelect.value;
-
-  // 先获取配置，根据勾选项决定验证规则
-  const config = getCurrentConfig();
+  const taskConfig = config && typeof config === 'object' ? { ...config } : {};
 
   // 其他步骤（非京配/非采购）是否有勾选
-  const hasOtherSteps = config.importShopProduct || config.enableShopProduct ||
-    config.enableMasterData || config.disableMasterData || config.inventoryRatio ||
-    config.disableShopProduct || config.logistics;
+  const hasOtherSteps = taskConfig.importShopProduct || taskConfig.enableShopProduct ||
+    taskConfig.enableMasterData || taskConfig.disableMasterData || taskConfig.inventoryRatio ||
+    taskConfig.disableShopProduct || taskConfig.logistics;
 
   // 仅勾选了"打标生效"和/或"取消京配"（无其他步骤，无采购入库）
-  const onlyJdSteps = (config.jdLabel || config.cancelJdLabel) &&
-    !config.enablePurchase && !hasOtherSteps;
+  const onlyJdSteps = (taskConfig.jdLabel || taskConfig.cancelJdLabel) &&
+    !taskConfig.enablePurchase && !hasOtherSteps;
 
   // 仅勾选了"采购入库"（无其他步骤，无京配相关）
-  const onlyPurchase = config.enablePurchase &&
-    !config.jdLabel && !config.cancelJdLabel && !hasOtherSteps;
+  const onlyPurchase = taskConfig.enablePurchase &&
+    !taskConfig.jdLabel && !taskConfig.cancelJdLabel && !hasOtherSteps;
 
   // 店铺验证：仅京配步骤或仅采购入库时可不选店铺
   if (!shopId && !onlyJdSteps && !onlyPurchase) {
-    showToast('请选择店铺');
-    return;
+    return { success: false, error: '请选择店铺', taskCount: 0 };
+  }
+  if (shopId && !shopOpt) {
+    return { success: false, error: '目标店铺不存在，请重新选择', taskCount: 0 };
   }
 
   // 仓库验证：仅京配步骤时可不选仓库
   if (!warehouseId && !onlyJdSteps) {
-    showToast('请选择仓库');
-    return;
+    return { success: false, error: '请选择仓库', taskCount: 0 };
   }
-
-  // 解析 SKU（支持中英文逗号）
-  const skus = skuText.split(/[,，]/).map(s => s.trim()).filter(Boolean);
 
   // 判断是否仅勾选了京配打标/取消京配打标步骤（用于批大小）
   const batchSize = onlyJdSteps ? 5000 : BATCH_SIZE;
 
-  // 获取当前选择的模式名称
-  const modeName = modeSelect.value || '自定义';
-
   // 按 batchSize 拆分为多个任务，每个任务独立执行所有步骤
   const taskBatches = [];
-  for (let i = 0; i < skus.length; i += batchSize) {
-    taskBatches.push(skus.slice(i, i + batchSize));
+  const createdTaskIds = [];
+  for (let i = 0; i < normalizedSkus.length; i += batchSize) {
+    taskBatches.push(normalizedSkus.slice(i, i + batchSize));
   }
-
-  // 记录本次SKU来源文件名（如有）
-  const sourceFileName = importedFileName || '';
 
   for (const batchSkus of taskBatches) {
     taskIdCounter++;
@@ -473,23 +475,114 @@ function addTask() {
       shopDeptId,
       shopDeptName,
       warehouseId,
-      config,
-      modeName,
+      config: { ...taskConfig },
+      modeName: modeName || '自定义',
       sourceFileName,
+      sourceTaskId,
+      automationRunDate,
+      autoCreated: Boolean(autoCreated),
       status: 'pending'
     });
+    createdTaskIds.push(taskIdCounter);
   }
 
   renderTaskTable();
-  if (taskBatches.length > 1) {
-    addLog('info', `已添加 ${taskBatches.length} 个任务（共${skus.length}个SKU，每任务最多${batchSize}个）`);
+  const persistence = persistLabelTasks();
+  return {
+    success: true,
+    taskCount: taskBatches.length,
+    skuCount: normalizedSkus.length,
+    taskIds: createdTaskIds,
+    persistence
+  };
+}
+
+function toPersistedLabelTask(task) {
+  return {
+    id: task.id,
+    skus: Array.isArray(task.skus) ? task.skus : [],
+    shopId: task.shopId || '',
+    spShopNo: task.spShopNo || '',
+    shopName: task.shopName || '',
+    shopDeptId: task.shopDeptId || '',
+    shopDeptName: task.shopDeptName || '',
+    warehouseId: task.warehouseId || '',
+    config: task.config || {},
+    modeName: task.modeName || '自定义',
+    sourceFileName: task.sourceFileName || '',
+    sourceTaskId: task.sourceTaskId || '',
+    automationRunDate: task.automationRunDate || '',
+    autoCreated: Boolean(task.autoCreated),
+    status: task.status || 'pending',
+    hasLabelFailure: Boolean(task.hasLabelFailure),
+    failedLabelSkus: Array.isArray(task.failedLabelSkus) ? task.failedLabelSkus : []
+  };
+}
+
+async function loadLabelTasks() {
+  if (!window.electronAPI.getLabelTasks) return;
+  try {
+    const stored = await window.electronAPI.getLabelTasks();
+    tasks = (Array.isArray(stored) ? stored : []).map(task => ({ ...task }));
+    taskIdCounter = tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
+    renderTaskTable();
+    if (tasks.length > 0) await persistLabelTasks();
+  } catch (error) {
+    console.error('[打标任务] 恢复失败:', error);
+  }
+}
+
+function persistLabelTasks() {
+  if (!window.electronAPI.saveLabelTasks) return Promise.resolve({ success: false });
+  const snapshot = tasks.map(toPersistedLabelTask);
+  labelTaskPersistenceChain = labelTaskPersistenceChain
+    .catch(() => {})
+    .then(() => window.electronAPI.saveLabelTasks(snapshot));
+  return labelTaskPersistenceChain;
+}
+
+async function confirmEnqueuedLabelTasksPersisted(result) {
+  const saved = await result.persistence;
+  if (saved?.success) return;
+  const createdIds = new Set((result.taskIds || []).map(Number));
+  tasks = tasks.filter(task => !createdIds.has(Number(task.id)));
+  renderTaskTable();
+  await persistLabelTasks();
+  throw new Error(saved?.error || '打标任务保存失败');
+}
+
+function addTask() {
+  const skuText = skuInput.value.trim();
+  if (!skuText) {
+    showToast('请输入商品SKU');
+    skuInput.focus();
+    return { success: false, error: '请输入商品SKU' };
+  }
+
+  const skus = skuText.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const result = enqueueLabelTasks({
+    skus,
+    shopId: shopSelect.value,
+    warehouseId: warehouseSelect.value,
+    config: getCurrentConfig(),
+    modeName: modeSelect.value || '自定义',
+    sourceFileName: importedFileName || ''
+  });
+  if (!result.success) {
+    showToast(result.error);
+    return result;
+  }
+
+  if (result.taskCount > 1) {
+    addLog('info', `已添加 ${result.taskCount} 个任务（共${result.skuCount}个SKU）`);
   } else {
-    addLog('info', `已添加 1 个任务（${skus.length} 个SKU）`);
+    addLog('info', `已添加 1 个任务（${result.skuCount} 个SKU）`);
   }
 
   // 清空SKU输入和文件名
   skuInput.value = '';
   importedFileName = '';
+  return result;
 }
 
 // ========== 物流属性持久化 ==========
@@ -678,11 +771,13 @@ $('#deleteTaskYes').addEventListener('click', () => {
     const idx = ctxTargetIdx;
     tasks.splice(idx, 1);
     renderTaskTable();
+    persistLabelTasks();
     addLog('info', `已删除任务 ${idx + 1}`);
   } else if (deleteAction === 'all') {
     const count = tasks.length;
     tasks.length = 0;
     renderTaskTable();
+    persistLabelTasks();
     addLog('info', `已清空全部 ${count} 个任务`);
   }
   deleteAction = null;
@@ -726,6 +821,8 @@ async function executeTasks() {
 
     task.status = 'running';
     renderTaskTable();
+    await persistLabelTasks();
+    await syncSmSourceExecutionStatus(task.sourceTaskId);
     const skuLabel = task.skus.length <= 3 ? task.skus.join(',') : `${task.skus.slice(0, 3).join(',')}等${task.skus.length}个`;
     addLog('info', `[${skuLabel}] 开始执行...`);
 
@@ -768,8 +865,11 @@ async function executeTasks() {
     }
 
     renderTaskTable();
+    await persistLabelTasks();
+    await syncSmSourceExecutionStatus(task.sourceTaskId);
   }
 
+  const executionWasStopped = stopRequested;
   isExecuting = false;
   stopRequested = false;
   execBtn.textContent = '执行任务';
@@ -780,6 +880,79 @@ async function executeTasks() {
   } else {
     addLog('info', '所有任务执行完毕');
   }
+
+  const completedRunDates = [...new Set(pendingTasks
+    .map(task => String(task.automationRunDate || ''))
+    .filter(Boolean))];
+  for (const runDate of completedRunDates) {
+    if (executionWasStopped && smAutomationSettings.lastRunDate === runDate) {
+      await saveSmAutomationRuntime({
+        lastRunStatus: 'paused',
+        lastRunError: '用户已停止自动打标任务'
+      });
+    } else {
+      await finalizeSmAutomationRun(runDate);
+    }
+  }
+
+  if (smAutomaticExecutionPending && executionWasStopped) {
+    smAutomaticExecutionPending = false;
+    if (smAutomationSettings.lastRunStatus === 'executing') {
+      await saveSmAutomationRuntime({
+        lastRunStatus: 'paused',
+        lastRunError: '用户已停止任务执行'
+      });
+    }
+  } else if (smAutomaticExecutionPending) {
+    smAutomaticExecutionPending = false;
+    setTimeout(() => executeTasks(), 0);
+  }
+}
+
+async function syncSmSourceExecutionStatus(sourceTaskId) {
+  const normalizedSourceTaskId = String(sourceTaskId || '');
+  if (!normalizedSourceTaskId || typeof smTasks === 'undefined') return;
+  const sourceTask = smTasks.find(task => String(task.id) === normalizedSourceTaskId);
+  if (!sourceTask) return;
+  const linkedTasks = tasks.filter(task => String(task.sourceTaskId || '') === normalizedSourceTaskId);
+  if (linkedTasks.length === 0) return;
+  sourceTask.executionStatus = getSmLinkedExecutionStatus(linkedTasks);
+  sourceTask.updatedAt = new Date().toISOString();
+  renderSmTaskTable();
+  await persistSmTasks();
+}
+
+function getSmLinkedExecutionStatus(linkedTasks) {
+  const statuses = linkedTasks.map(task => task.status);
+  if (statuses.includes('running')) return 'running';
+  if (statuses.some(status => status === 'pending' || status === 'stopped')) return 'queued';
+  if (statuses.every(status => status === 'success')) return 'success';
+  if (statuses.every(status => status === 'error')) return 'failed';
+  return 'partial';
+}
+
+async function reconcileSmPersistedLabelTaskSources() {
+  let changed = false;
+  for (const sourceTask of smTasks) {
+    const linkedTasks = tasks.filter(task => String(task.sourceTaskId || '') === String(sourceTask.id));
+    if (linkedTasks.length === 0) continue;
+    sourceTask.publishStatus = 'published';
+    sourceTask.publishedTaskCount = linkedTasks.length;
+    sourceTask.publishedAt = sourceTask.publishedAt || sourceTask.updatedAt || new Date().toISOString();
+    sourceTask.executionStatus = getSmLinkedExecutionStatus(linkedTasks);
+    sourceTask.publishError = '';
+    sourceTask.updatedAt = new Date().toISOString();
+    if (sourceTask.source === 'auto' && sourceTask.params?.dateTo) {
+      try {
+        await saveSmAutomaticAccountCursor(sourceTask.accountId, sourceTask.params.dateTo);
+      } catch (error) {
+        sourceTask.publishError = String(error?.message || '店铺增量进度保存失败');
+      }
+    }
+    changed = true;
+  }
+  if (changed) await persistSmTasks();
+  renderSmTaskTable();
 }
 
 // ========== 获取任务步骤 ==========
@@ -2380,6 +2553,7 @@ function getTierLabel(tier) {
 }
 
 function canUseFeature(feature) {
+  if (currentSubscriptionStatus === 'trial') return true;
   if (feature === 'shopManage') {
     return !!window.subscriptionAccess?.canUseAutomation({
       status: currentSubscriptionStatus,
@@ -2394,7 +2568,7 @@ function canUseFeature(feature) {
 function requireTier(feature) {
   if (canUseFeature(feature)) return true;
   if (feature === 'shopManage') {
-    showToast('自动化处理功能仅限有效试用用户和高级版使用', 4000, 'error');
+    showToast('快速打标功能需升级至标准版或高级版后使用', 4000, 'error');
     return false;
   }
   showToast('当前为基础版，该功能需升级至标准版或高级版后使用', 4000, 'error');
@@ -2605,11 +2779,35 @@ let smGoods = [];          // 当前查询到的商品列表
 let smFilteredGoods = [];  // 筛选后的商品列表
 let smLoggedIn = false;    // 店铺登录状态
 let smSelectedShopState = 'empty'; // empty | checking | online | offline | error
-let smQueryProgressHideTimer = null;
+let smInlineQueryState = { stage: 'idle', title: '', detail: '', summary: '' };
 let smQueryEstimateStartedAt = 0;
 let smDateRangePickerController = null;
 let smQueryRunning = false;
+let smActiveQueryAccountId = '';
+let smGoodsSourceAccountId = '';
 let smGoodsContextTarget = null;
+let smTasks = [];
+let smTaskQueueRunning = false;
+let smActiveTaskId = '';
+let smViewingTaskId = '';
+let smTaskRenderTimer = null;
+let smTaskPersistenceChain = Promise.resolve();
+let smBatchPublishRunning = false;
+let smBatchPublishTaskIds = [];
+let smAutomationSettings = {
+  enabled: false,
+  startTime: '02:00',
+  catchUpMissed: true,
+  scheduleActivatedAt: ''
+};
+let smAutomationTimer = null;
+let smAutomationRunning = false;
+let smAutomationCheckPromise = null;
+let smAutomationEligibleSince = Date.now();
+const SM_AUTOMATION_CHECK_INTERVAL_MS = 30000;
+let smEditConfigLoadVersion = 0;
+const smSelectedTaskIds = new Set();
+const smTaskResultCache = new Map();
 
 // DOM 引用
 const smShopSelect = $('#smShopSelect');
@@ -2622,14 +2820,26 @@ const smShopSelectTrigger = $('#smShopSelectTrigger');
 const smShopSelectText = $('#smShopSelectText');
 const smShopSelectDropdown = $('#smShopSelectDropdown');
 const smShopSelectList = $('#smShopSelectList');
-const smQueryProgress = $('#smQueryProgress');
-const smQueryProgressLabel = $('#smQueryProgressLabel');
-const smQueryProgressCount = $('#smQueryProgressCount');
-const smQueryProgressEta = $('#smQueryProgressEta');
-const smQueryProgressFill = $('#smQueryProgressFill');
 const smGoodsCtxMenu = $('#smGoodsCtxMenu');
 const smCtxToggleSelection = $('#smCtxToggleSelection');
 const smCtxDelete = $('#smCtxDelete');
+const smCreateTaskBtn = $('#smCreateTaskBtn');
+const smStartTasksBtn = $('#smStartTasksBtn');
+const smGoodsTab = $('#smGoodsTab');
+const smTasksTab = $('#smTasksTab');
+const smGoodsPanel = $('#smGoodsPanel');
+const smTasksPanel = $('#smTasksPanel');
+const smTaskTableBody = $('#smTaskTableBody');
+const smTaskCount = $('#smTaskCount');
+const smProductPanelSummary = $('#smProductPanelSummary');
+const smTaskPanelActions = $('#smTaskPanelActions');
+const smProductContext = $('#smProductContext');
+const smTaskSelectAll = $('#smTaskSelectAll');
+const smBatchPublishBtn = $('#smBatchPublishBtn');
+const smBatchPublishModal = $('#smBatchPublishModal');
+const smBatchPublishRows = $('#smBatchPublishRows');
+const smBatchPublishInfo = $('#smBatchPublishInfo');
+const smBatchPublishConfirm = $('#smBatchPublishConfirm');
 let smShopAccountStateMap = {};
 let smShopDropdownCheckVersion = 0;
 
@@ -2647,9 +2857,13 @@ function setSmQueryBusy(busy) {
 
   const queryBtn = $('#smQueryBtn');
   if (queryBtn) {
-    queryBtn.disabled = smQueryRunning || !smLoggedIn;
-    queryBtn.textContent = smQueryRunning ? '查询中...' : '查询商品';
+    queryBtn.disabled = smQueryRunning || smBatchPublishRunning || !smLoggedIn;
+    queryBtn.textContent = smTaskQueueRunning ? '任务执行中...' : (smQueryRunning ? '查询中...' : '查询商品');
   }
+  if (smCreateTaskBtn) {
+    smCreateTaskBtn.disabled = smQueryRunning || smBatchPublishRunning || !smShopSelect?.value;
+  }
+  updateSmTaskActionState();
   if (smShopSelectTrigger) smShopSelectTrigger.disabled = smQueryRunning;
   const manageBtn = $('#smManageBtn');
   if (manageBtn) manageBtn.disabled = smQueryRunning;
@@ -2779,10 +2993,14 @@ async function initSmModule() {
   if (priceMin) priceMin.value = localStorage.getItem('sm_priceMin') || '';
   if (priceMax) priceMax.value = localStorage.getItem('sm_priceMax') || '';
 
+  await loadSmAutomationSettings();
   await loadShopAccounts();
+  await loadSmTasks();
+  await reconcileSmPersistedLabelTaskSources();
   await loadSmStats();
   initSmEventListeners();
-  checkSmLoginStatus();
+  await checkSmLoginStatus();
+  startSmAutomationScheduler();
 
   // 恢复上次的商品状态和“每个 SPU 取哪些 SKU”选择。
   const savedStatus = localStorage.getItem('sm_goodsStatus');
@@ -2817,6 +3035,517 @@ async function initSmModule() {
 
 // ========== 店铺账号管理 ==========
 
+function normalizeSmAutomationSettings(value = {}) {
+  const startTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value.startTime || ''))
+    ? String(value.startTime)
+    : '02:00';
+  return {
+    enabled: Boolean(value.enabled),
+    liveConfirmed: Boolean(value.liveConfirmed),
+    startTime,
+    catchUpMissed: value.catchUpMissed !== false,
+    scheduleActivatedAt: String(value.scheduleActivatedAt || ''),
+    lastRunDate: String(value.lastRunDate || ''),
+    runWindowEnd: String(value.runWindowEnd || ''),
+    lastRunStatus: String(value.lastRunStatus || ''),
+    lastRunError: String(value.lastRunError || ''),
+    lastStartedAt: String(value.lastStartedAt || ''),
+    lastFinishedAt: String(value.lastFinishedAt || '')
+  };
+}
+
+function getSmNextAutomationText(startTime) {
+  const [hours, minutes] = String(startTime || '02:00').split(':').map(Number);
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  let dayLabel = '今天';
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+    dayLabel = '明天';
+  }
+  return `${dayLabel}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function renderSmAutomationStatus(accounts = []) {
+  const entry = $('#smAutomationEntry');
+  const status = $('#smAutomationStatus');
+  const next = $('#smAutomationNext');
+  const shopCount = (Array.isArray(accounts) ? accounts : []).filter(account => account.autoSend).length;
+  if (entry) entry.classList.toggle('is-on', smAutomationSettings.enabled && smAutomationSettings.liveConfirmed);
+  if (status) {
+    const runningLabels = {
+      collecting: '正在采集',
+      publishing: '正在创建任务',
+      executing: '正在执行',
+      paused: '已暂停',
+      partial: '部分失败',
+      failed: '执行失败'
+    };
+    status.textContent = smAutomationSettings.enabled
+      ? smAutomationSettings.liveConfirmed
+        ? `自动打标：${runningLabels[smAutomationSettings.lastRunStatus] || '已开启'}`
+        : '自动打标：待确认'
+      : '自动打标：已关闭';
+  }
+  if (next) {
+    next.hidden = !smAutomationSettings.enabled;
+    next.textContent = smAutomationSettings.enabled
+      ? `· ${smAutomationSettings.startTime} · 下次${getSmNextAutomationText(smAutomationSettings.startTime)}`
+      : '';
+  }
+  const count = $('#smAutomationShopCount');
+  if (count) count.textContent = String(shopCount);
+}
+
+async function loadSmAutomationSettings() {
+  if (!window.electronAPI.getAutoLabelSettings) return;
+  const stored = await window.electronAPI.getAutoLabelSettings();
+  smAutomationSettings = normalizeSmAutomationSettings(stored);
+  renderSmAutomationStatus();
+}
+
+function updateSmAutomationSettingsFormState() {
+  const enabled = Boolean($('#smAutomationEnabled')?.checked);
+  const timeInput = $('#smAutomationStartTime');
+  const catchUpInput = $('#smAutomationCatchUp');
+  if (timeInput) timeInput.disabled = !enabled;
+  if (catchUpInput) catchUpInput.disabled = !enabled;
+}
+
+async function openSmAutomationSettings() {
+  if (!requireTier('shopManage')) return;
+  const enabled = $('#smAutomationEnabled');
+  const startTime = $('#smAutomationStartTime');
+  const catchUp = $('#smAutomationCatchUp');
+  if (enabled) enabled.checked = smAutomationSettings.enabled;
+  if (startTime) startTime.value = smAutomationSettings.startTime;
+  if (catchUp) catchUp.checked = smAutomationSettings.catchUpMissed;
+  updateSmAutomationSettingsFormState();
+  const accounts = await window.electronAPI.getShopAccounts();
+  renderSmAutomationStatus(accounts);
+  const modal = $('#smAutomationSettingsModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeSmAutomationSettings() {
+  const modal = $('#smAutomationSettingsModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function saveSmAutomationSettings() {
+  if (!requireTier('shopManage')) return;
+  const settings = normalizeSmAutomationSettings({
+    enabled: $('#smAutomationEnabled')?.checked,
+    startTime: $('#smAutomationStartTime')?.value,
+    catchUpMissed: $('#smAutomationCatchUp')?.checked
+  });
+  const result = await window.electronAPI.saveAutoLabelSettings(settings);
+  if (!result?.success) {
+    showToast(result?.error || '自动打标设置保存失败');
+    return;
+  }
+  const wasEnabled = smAutomationSettings.enabled;
+  const previousStartTime = smAutomationSettings.startTime;
+  smAutomationSettings = normalizeSmAutomationSettings(result.settings || settings);
+  if ((!wasEnabled && smAutomationSettings.enabled)
+      || previousStartTime !== smAutomationSettings.startTime) {
+    smAutomationEligibleSince = Date.now();
+  }
+  const accounts = await window.electronAPI.getShopAccounts();
+  renderSmAutomationStatus(accounts);
+  closeSmAutomationSettings();
+  showToast('自动打标设置已保存', 3500);
+  checkSmAutomationSchedule();
+}
+
+async function saveSmAutomationRuntime(update = {}) {
+  if (!window.electronAPI.saveAutoLabelRuntime) return false;
+  const result = await window.electronAPI.saveAutoLabelRuntime(update);
+  if (!result?.success) {
+    console.error('[自动打标] 运行状态保存失败:', result?.error || '未知错误');
+    return false;
+  }
+  smAutomationSettings = normalizeSmAutomationSettings(result.settings || {
+    ...smAutomationSettings,
+    ...update
+  });
+  renderSmAutomationStatus(await window.electronAPI.getShopAccounts());
+  return true;
+}
+
+function formatSmAutomationDateTime(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function validateSmAutomaticAccount(account, modes, warehouses, windowEnd) {
+  const config = account?.autoLabelConfig && typeof account.autoLabelConfig === 'object'
+    ? account.autoLabelConfig
+    : {};
+  const dateFrom = String(config.lastSuccessAt || config.firstRunFrom || '');
+  if (!dateFrom) return { success: false, error: '未设置首次采集起点' };
+  const fromTime = new Date(dateFrom).getTime();
+  const endTime = new Date(windowEnd).getTime();
+  if (!Number.isFinite(fromTime) || !Number.isFinite(endTime) || fromTime > endTime) {
+    return { success: false, error: '首次采集起点或增量时间范围无效' };
+  }
+  const priceMin = String(config.priceMin || '').trim();
+  const priceMax = String(config.priceMax || '').trim();
+  const minValue = priceMin === '' ? null : Number(priceMin);
+  const maxValue = priceMax === '' ? null : Number(priceMax);
+  if ((minValue != null && (!Number.isFinite(minValue) || minValue < 0))
+      || (maxValue != null && (!Number.isFinite(maxValue) || maxValue < 0))
+      || (minValue != null && maxValue != null && minValue > maxValue)) {
+    return { success: false, error: '售价范围配置无效' };
+  }
+  const targetMode = (Array.isArray(modes) ? modes : []).find(mode => (
+    mode?.name === config.modeName && mode?.config?.jdLabel && !mode?.config?.cancelJdLabel
+  ));
+  if (!targetMode) return { success: false, error: '快捷模式不存在或不是入仓打标模式' };
+  const targetShopId = findSmMatchingTargetShop(account?.name || account?.username || '', config.targetShopId);
+  if (!targetShopId) return { success: false, error: '没有匹配到商家端目标店铺' };
+  const targetWarehouseId = findSmDefaultWarehouse(account, warehouses);
+  if (!targetWarehouseId) return { success: false, error: '未设置可用的默认仓库' };
+  return {
+    success: true,
+    targetMode,
+    params: {
+      accountId: String(account.id),
+      dateFrom,
+      dateTo: windowEnd,
+      priceMin,
+      priceMax,
+      goodsStatus: config.goodsStatus || '售卖中'
+    },
+    qtyMode: config.qtyMode || '全部',
+    qtyCount: Math.max(1, Number.parseInt(config.qtyCount, 10) || 10),
+    publishConfig: {
+      modeName: targetMode.name,
+      targetShopId,
+      targetWarehouseId
+    }
+  };
+}
+
+async function saveSmAutomaticAccountCursor(accountId, lastSuccessAt) {
+  const result = await window.electronAPI.saveShopAutoLabelRuntime({ accountId, lastSuccessAt });
+  if (!result?.success) throw new Error(result?.error || '店铺增量进度保存失败');
+}
+
+async function createSmAutomaticCollectionTasks(accounts, runDate, windowEnd, modes, warehouses) {
+  const api = getSmTaskStateApi();
+  if (!api) throw new Error('任务模块未加载');
+  const existingAccountIds = new Set(smTasks
+    .filter(task => task.source === 'auto' && task.automationRunDate === runDate)
+    .map(task => String(task.accountId)));
+  const createdTasks = [];
+
+  for (const account of accounts) {
+    if (existingAccountIds.has(String(account.id))) continue;
+    const persistedCursor = String(account?.autoLabelConfig?.lastSuccessAt || '');
+    const taskCursor = smTasks
+      .filter(task => task.source === 'auto'
+        && String(task.accountId) === String(account.id)
+        && task.publishStatus === 'published'
+        && task.params?.dateTo)
+      .map(task => String(task.params.dateTo))
+      .sort()
+      .pop() || '';
+    const effectiveAccount = {
+      ...account,
+      autoLabelConfig: {
+        ...(account.autoLabelConfig || {}),
+        lastSuccessAt: [persistedCursor, taskCursor].filter(Boolean).sort().pop() || ''
+      }
+    };
+    const validation = validateSmAutomaticAccount(effectiveAccount, modes, warehouses, windowEnd);
+    const fallbackConfig = account?.autoLabelConfig || {};
+    const task = api.createTask({
+      accountId: account.id,
+      shopName: account.name || account.username || '未命名店铺',
+      source: 'auto',
+      automationRunDate: runDate,
+      params: validation.success ? validation.params : {
+        accountId: String(account.id),
+        dateFrom: fallbackConfig.lastSuccessAt || fallbackConfig.firstRunFrom || '',
+        dateTo: windowEnd,
+        priceMin: fallbackConfig.priceMin || '',
+        priceMax: fallbackConfig.priceMax || '',
+        goodsStatus: fallbackConfig.goodsStatus || '售卖中'
+      },
+      qtyMode: validation.success ? validation.qtyMode : fallbackConfig.qtyMode,
+      qtyCount: validation.success ? validation.qtyCount : fallbackConfig.qtyCount,
+      publishConfig: validation.success ? validation.publishConfig : {
+        modeName: fallbackConfig.modeName || '',
+        targetShopId: fallbackConfig.targetShopId || '',
+        targetWarehouseId: account.defaultWarehouseId || ''
+      }
+    });
+    if (!validation.success) {
+      task.status = 'failed';
+      task.error = `自动配置不完整：${validation.error}`;
+      task.progress = { stage: 'error', message: task.error };
+    }
+    smTasks.push(task);
+    createdTasks.push(task);
+  }
+  await persistSmTasks();
+  renderSmTaskTable();
+  return createdTasks;
+}
+
+async function publishSmAutomaticTasks(tasksForRun, modes) {
+  const configuredModes = new Map((Array.isArray(modes) ? modes : []).map(mode => [mode.name, mode]));
+  let publishedShops = 0;
+  let publishedSkus = 0;
+  let failedShops = 0;
+
+  smBatchPublishRunning = true;
+  updateSmTaskActionState();
+  try {
+    for (const task of tasksForRun) {
+      if (task.status !== 'complete'
+          || task.publishStatus === 'published'
+          || task.publishStatus === 'skipped') continue;
+
+      if ((task.resultSkuCount || 0) === 0) {
+        task.publishStatus = 'skipped';
+        task.publishError = '';
+        task.executionStatus = 'not_started';
+        task.updatedAt = new Date().toISOString();
+        try {
+          await saveSmAutomaticAccountCursor(task.accountId, task.params.dateTo);
+        } catch (error) {
+          task.publishStatus = 'publish_failed';
+          task.publishError = String(error?.message || '店铺增量进度保存失败');
+          failedShops += 1;
+        }
+        await persistSmTasks();
+        renderSmTaskTable();
+        continue;
+      }
+
+      task.publishStatus = 'publishing';
+      task.publishError = '';
+      task.updatedAt = new Date().toISOString();
+      await persistSmTasks();
+      renderSmTaskTable();
+
+      try {
+        const targetMode = configuredModes.get(task.publishConfig?.modeName);
+        if (!targetMode?.config?.jdLabel || targetMode?.config?.cancelJdLabel) {
+          throw new Error('快捷模式不存在或不是入仓打标模式');
+        }
+        const resultData = await loadSmTaskResultData(task);
+        const skus = [...new Set(resultData.filteredGoods
+          .map(item => String(item?.sku || '').trim())
+          .filter(Boolean))];
+        if (skus.length === 0) throw new Error('该任务没有可发布的SKU');
+        const result = enqueueLabelTasks({
+          skus,
+          shopId: task.publishConfig.targetShopId,
+          warehouseId: task.publishConfig.targetWarehouseId,
+          config: targetMode.config,
+          modeName: targetMode.name,
+          sourceFileName: `自动采集-${task.shopName}`,
+          sourceTaskId: task.id,
+          automationRunDate: task.automationRunDate,
+          autoCreated: true
+        });
+        if (!result.success) throw new Error(result.error || '打标任务创建失败');
+        await confirmEnqueuedLabelTasksPersisted(result);
+        task.publishStatus = 'published';
+        task.executionStatus = 'queued';
+        task.publishError = '';
+        task.publishedAt = new Date().toISOString();
+        task.publishedTaskCount = result.taskCount;
+        try {
+          await saveSmAutomaticAccountCursor(task.accountId, task.params.dateTo);
+        } catch (cursorError) {
+          task.publishError = String(cursorError?.message || '店铺增量进度保存失败');
+          failedShops += 1;
+        }
+        publishedShops += 1;
+        publishedSkus += result.skuCount;
+      } catch (error) {
+        task.publishStatus = 'publish_failed';
+        task.executionStatus = 'not_started';
+        task.publishError = String(error?.message || '打标任务创建失败');
+        task.publishedTaskCount = 0;
+        failedShops += 1;
+      }
+      task.updatedAt = new Date().toISOString();
+      await persistSmTasks();
+      renderSmTaskTable();
+    }
+  } finally {
+    smBatchPublishRunning = false;
+    updateSmTaskActionState();
+  }
+
+  if (publishedShops > 0) {
+    await window.electronAPI.updateSmStats({ shops: publishedShops, skus: publishedSkus });
+    await updateSmDashboard();
+  }
+  return { publishedShops, publishedSkus, failedShops };
+}
+
+async function requestSmAutomaticExecution(runDate) {
+  const pendingForRun = tasks.some(task => (
+    task.autoCreated
+    && task.automationRunDate === runDate
+    && (task.status === 'pending' || task.status === 'stopped')
+  ));
+  if (!pendingForRun) return false;
+  await saveSmAutomationRuntime({ lastRunStatus: 'executing', lastRunError: '' });
+  if (isExecuting) {
+    smAutomaticExecutionPending = true;
+    addSmLog('info', '打标执行器正在运行，本批自动任务已进入下一轮待执行队列');
+    return true;
+  }
+  await executeTasks();
+  return true;
+}
+
+async function finalizeSmAutomationRun(runDate) {
+  if (!runDate || smAutomationSettings.lastRunDate !== runDate) return false;
+  const runTasks = smTasks.filter(task => task.source === 'auto' && task.automationRunDate === runDate);
+  if (runTasks.length === 0) return false;
+  const linkedLabelTasks = tasks.filter(task => task.autoCreated && task.automationRunDate === runDate);
+  if (runTasks.some(task => task.status === 'queued' || task.status === 'collecting'
+      || task.publishStatus === 'publishing' || task.executionStatus === 'queued'
+      || task.executionStatus === 'running')) return false;
+  if (linkedLabelTasks.some(task => task.status === 'pending' || task.status === 'running' || task.status === 'stopped')) {
+    return false;
+  }
+
+  const successful = runTasks.filter(task => (
+    !task.error && !task.publishError
+    && (task.publishStatus === 'skipped' || task.executionStatus === 'success')
+  )).length;
+  const errors = runTasks
+    .map(task => task.error || task.publishError)
+    .filter(Boolean);
+  const status = successful === runTasks.length
+    ? 'success'
+    : successful > 0
+      ? 'partial'
+      : 'failed';
+  await saveSmAutomationRuntime({
+    lastRunStatus: status,
+    lastRunError: errors.slice(0, 3).join('；'),
+    lastFinishedAt: new Date().toISOString()
+  });
+  if (status === 'success') {
+    showToast(`自动打标批次已完成：${successful} 家店铺`, 5000);
+  } else {
+    showToast(`自动打标批次${status === 'partial' ? '部分完成' : '执行失败'}，请到任务列表查看`, 6000, 'error');
+  }
+  return true;
+}
+
+async function runSmAutomaticLabelBatch(runDate, options = {}) {
+  if (smAutomationRunning || !canUseFeature('shopManage')) return;
+  if (smQueryRunning || smTaskQueueRunning || smBatchPublishRunning) return;
+  smAutomationRunning = true;
+  showSmPanel('tasks');
+  try {
+    const accounts = (await window.electronAPI.getShopAccounts())
+      .filter(account => account?.autoSend);
+    renderSmAutomationStatus(accounts);
+    if (accounts.length === 0) return;
+
+    const existingRunTasks = smTasks.filter(task => (
+      task.source === 'auto' && task.automationRunDate === runDate
+    ));
+    const windowEnd = options.resume && smAutomationSettings.runWindowEnd
+      ? smAutomationSettings.runWindowEnd
+      : existingRunTasks[0]?.params?.dateTo || formatSmAutomationDateTime();
+    if (!options.resume) {
+      const saved = await saveSmAutomationRuntime({
+        lastRunDate: runDate,
+        runWindowEnd: windowEnd,
+        lastRunStatus: 'collecting',
+        lastRunError: '',
+        lastStartedAt: new Date().toISOString(),
+        lastFinishedAt: ''
+      });
+      if (!saved) throw new Error('无法保存自动打标批次状态');
+    }
+
+    const [modes, warehouses] = await Promise.all([
+      window.electronAPI.getModes(),
+      Promise.resolve(getSmWarehouseOptions())
+    ]);
+    await createSmAutomaticCollectionTasks(accounts, runDate, windowEnd, modes, warehouses);
+    const runTasks = smTasks.filter(task => task.source === 'auto' && task.automationRunDate === runDate);
+    const queuedIds = runTasks.filter(task => task.status === 'queued').map(task => task.id);
+    if (queuedIds.length > 0) await runSmTaskQueue(queuedIds);
+
+    await saveSmAutomationRuntime({ lastRunStatus: 'publishing', lastRunError: '' });
+    const publishResult = await publishSmAutomaticTasks(runTasks, modes);
+    const started = await requestSmAutomaticExecution(runDate);
+    if (!started) {
+      await finalizeSmAutomationRun(runDate);
+      if (publishResult.publishedShops === 0 && publishResult.failedShops > 0) {
+        addSmLog('error', '自动打标没有创建成功的打标任务，请检查失败店铺配置');
+      }
+    }
+  } catch (error) {
+    const message = String(error?.message || '自动打标执行失败');
+    await saveSmAutomationRuntime({
+      lastRunStatus: 'failed',
+      lastRunError: message,
+      lastFinishedAt: new Date().toISOString()
+    });
+    showToast(`自动打标失败：${message}`, 6000, 'error');
+  } finally {
+    smAutomationRunning = false;
+    renderSmTaskTable();
+  }
+}
+
+async function checkSmAutomationSchedule() {
+  if (smAutomationCheckPromise) return smAutomationCheckPromise;
+  smAutomationCheckPromise = (async () => {
+    if (!smAutomationSettings.enabled || !smAutomationSettings.liveConfirmed
+        || !canUseFeature('shopManage') || smAutomationRunning) return;
+    const api = getSmTaskStateApi();
+    if (!api?.getAutomationDueState) return;
+    const now = new Date();
+    const runDate = api.getLocalDateKey(now);
+    const resumable = smAutomationSettings.lastRunDate === runDate
+      && ['collecting', 'publishing', 'executing'].includes(smAutomationSettings.lastRunStatus);
+    if (resumable) {
+      await runSmAutomaticLabelBatch(runDate, { resume: true });
+      return;
+    }
+    const dueState = api.getAutomationDueState(smAutomationSettings, now, smAutomationEligibleSince);
+    if (dueState.due) await runSmAutomaticLabelBatch(dueState.runDate);
+  })().finally(() => {
+    smAutomationCheckPromise = null;
+  });
+  return smAutomationCheckPromise;
+}
+
+function startSmAutomationScheduler() {
+  if (smAutomationTimer) return;
+  smAutomationEligibleSince = Date.now();
+  smAutomationTimer = setInterval(checkSmAutomationSchedule, SM_AUTOMATION_CHECK_INTERVAL_MS);
+  setTimeout(checkSmAutomationSchedule, 1000);
+  window.addEventListener('focus', checkSmAutomationSchedule);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkSmAutomationSchedule();
+  });
+}
+
 async function loadShopAccounts(preferredAccountId) {
   if (!window.electronAPI.getShopAccounts) return;
   const selectedBeforeReload = preferredAccountId == null
@@ -2841,11 +3570,12 @@ async function loadShopAccounts(preferredAccountId) {
   }
   syncSmShopSelectTrigger();
   renderSmShopSelectDropdown(accounts, smShopAccountStateMap);
+  renderSmAutomationStatus(accounts);
 }
 
 function initSmEventListeners() {
   if (window.electronAPI.onShopQueryProgress) {
-    window.electronAPI.onShopQueryProgress(updateSmQueryProgress);
+    window.electronAPI.onShopQueryProgress(handleSmQueryProgress);
   }
 
   // 管理按钮
@@ -2930,6 +3660,27 @@ function initSmEventListeners() {
   // 查询按钮
   const queryBtn = $('#smQueryBtn');
   if (queryBtn) queryBtn.addEventListener('click', handleSmQuery);
+
+  if (smCreateTaskBtn) smCreateTaskBtn.addEventListener('click', handleSmCreateTask);
+  if (smStartTasksBtn) smStartTasksBtn.addEventListener('click', () => runSmTaskQueue());
+  if (smGoodsTab) smGoodsTab.addEventListener('click', () => showSmPanel('goods'));
+  if (smTasksTab) smTasksTab.addEventListener('click', () => showSmPanel('tasks'));
+  if (smTaskTableBody) {
+    smTaskTableBody.addEventListener('click', handleSmTaskTableAction);
+    smTaskTableBody.addEventListener('change', handleSmTaskSelectionChange);
+  }
+  if (smTaskSelectAll) smTaskSelectAll.addEventListener('change', handleSmTaskSelectAll);
+  if (smBatchPublishBtn) smBatchPublishBtn.addEventListener('click', openSmBatchPublishModal);
+  const batchPublishClose = $('#smBatchPublishClose');
+  const batchPublishCancel = $('#smBatchPublishCancel');
+  if (batchPublishClose) batchPublishClose.addEventListener('click', closeSmBatchPublishModal);
+  if (batchPublishCancel) batchPublishCancel.addEventListener('click', closeSmBatchPublishModal);
+  if (smBatchPublishConfirm) smBatchPublishConfirm.addEventListener('click', confirmSmBatchPublish);
+  if (smBatchPublishModal) {
+    smBatchPublishModal.addEventListener('click', event => {
+      if (event.target === smBatchPublishModal && !smBatchPublishRunning) closeSmBatchPublishModal();
+    });
+  }
 
   // 导出按钮
   const exportBtn = $('#smExportBtn');
@@ -3025,6 +3776,29 @@ function initSmEventListeners() {
   };
   bindSmQtyCountInput('smFirstQtyN', '前N个', 'sm_goodsFirstQtyN');
   bindSmQtyCountInput('smQtyN', 'N个', 'sm_goodsQtyN');
+
+  const automationSettingsBtn = $('#smAutomationSettingsBtn');
+  const automationSettingsModal = $('#smAutomationSettingsModal');
+  const automationSettingsClose = $('#smAutomationSettingsClose');
+  const automationSettingsCancel = $('#smAutomationSettingsCancel');
+  const automationSettingsSave = $('#smAutomationSettingsSave');
+  const automationEnabled = $('#smAutomationEnabled');
+  if (automationSettingsBtn) automationSettingsBtn.addEventListener('click', openSmAutomationSettings);
+  if (automationSettingsClose) automationSettingsClose.addEventListener('click', closeSmAutomationSettings);
+  if (automationSettingsCancel) automationSettingsCancel.addEventListener('click', closeSmAutomationSettings);
+  if (automationSettingsSave) automationSettingsSave.addEventListener('click', saveSmAutomationSettings);
+  if (automationEnabled) automationEnabled.addEventListener('change', updateSmAutomationSettingsFormState);
+  if (automationSettingsModal) {
+    automationSettingsModal.addEventListener('click', event => {
+      if (event.target === automationSettingsModal) closeSmAutomationSettings();
+    });
+  }
+
+  document.querySelectorAll('input[name="smAutoSend"]').forEach(radio => {
+    radio.addEventListener('change', toggleSmAutoLabelConfig);
+  });
+  const autoQtyMode = $('#smAutoQtyMode');
+  if (autoQtyMode) autoQtyMode.addEventListener('change', updateSmAutoQtyCountState);
 
   // 店铺管理弹窗
   const smShopModalEl = $('#smShopModal');
@@ -3190,7 +3964,121 @@ function closeSmShopModal() {
 }
 
 // ===== 添加/编辑店铺弹窗 =====
-function openSmEditShop(account) {
+function getSmWarehouseOptions() {
+  return Array.from(warehouseSelect?.options || [])
+    .filter(option => option.value)
+    .map(option => ({ value: String(option.value), label: option.textContent || option.value }));
+}
+
+function populateSmDefaultWarehouseSelect(selectedId = '') {
+  const select = $('#smDefaultWarehouse');
+  if (!select) return;
+  const options = getSmWarehouseOptions();
+  select.innerHTML = '';
+  appendSmPublishSelectOption(select, '', options.length > 0 ? '不设置默认仓库' : '暂无可用仓库');
+  options.forEach(option => appendSmPublishSelectOption(select, option.value, option.label));
+
+  const normalizedSelectedId = String(selectedId || '');
+  if (normalizedSelectedId && !options.some(option => option.value === normalizedSelectedId)) {
+    const unavailable = document.createElement('option');
+    unavailable.value = normalizedSelectedId;
+    unavailable.textContent = '原默认仓库已不可用（请重新选择）';
+    unavailable.disabled = true;
+    select.appendChild(unavailable);
+  }
+  select.value = normalizedSelectedId;
+  select.disabled = options.length === 0;
+}
+
+function getSmDefaultFirstRunFrom() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T00:00`;
+}
+
+function updateSmAutoQtyCountState() {
+  const mode = $('#smAutoQtyMode')?.value || '全部';
+  const countInput = $('#smAutoQtyCount');
+  if (countInput) countInput.disabled = !['前N个', 'N个'].includes(mode);
+}
+
+function toggleSmAutoLabelConfig() {
+  const enabled = document.querySelector('input[name="smAutoSend"]:checked')?.value === '1';
+  const config = $('#smAutoLabelConfig');
+  if (config) config.hidden = !enabled;
+  const firstRunFrom = $('#smAutoFirstRunFrom');
+  if (enabled && firstRunFrom && !firstRunFrom.value) {
+    firstRunFrom.value = getSmDefaultFirstRunFrom();
+  }
+  updateSmAutoQtyCountState();
+}
+
+async function populateSmAutoLabelConfig(account, loadVersion) {
+  const config = account?.autoLabelConfig && typeof account.autoLabelConfig === 'object'
+    ? account.autoLabelConfig
+    : {};
+  const firstRunFrom = $('#smAutoFirstRunFrom');
+  const priceMin = $('#smAutoPriceMin');
+  const priceMax = $('#smAutoPriceMax');
+  const goodsStatus = $('#smAutoGoodsStatus');
+  const qtyMode = $('#smAutoQtyMode');
+  const qtyCount = $('#smAutoQtyCount');
+  if (firstRunFrom) firstRunFrom.value = config.firstRunFrom || '';
+  if (priceMin) priceMin.value = config.priceMin || '';
+  if (priceMax) priceMax.value = config.priceMax || '';
+  if (goodsStatus) goodsStatus.value = config.goodsStatus || '售卖中';
+  if (qtyMode) qtyMode.value = config.qtyMode || '全部';
+  if (qtyCount) qtyCount.value = Math.max(1, Number.parseInt(config.qtyCount, 10) || 10);
+
+  const targetShop = $('#smAutoTargetShop');
+  if (targetShop) {
+    targetShop.innerHTML = '';
+    appendSmPublishSelectOption(targetShop, '', '登录后按店铺名称自动匹配');
+    allShopOptions.forEach(option => appendSmPublishSelectOption(targetShop, option.value, option.label));
+    targetShop.value = findSmMatchingTargetShop(account?.name || '', config.targetShopId || '');
+  }
+
+  const modeSelectEl = $('#smAutoMode');
+  if (modeSelectEl) {
+    modeSelectEl.innerHTML = '<option value="">正在加载模式...</option>';
+    let modes = [];
+    try {
+      modes = await window.electronAPI.getModes();
+    } catch (error) {
+      console.warn('自动打标模式加载失败:', error);
+    }
+    if (loadVersion !== smEditConfigLoadVersion) return;
+    const availableModes = (Array.isArray(modes) ? modes : [])
+      .filter(mode => mode?.config?.jdLabel && !mode?.config?.cancelJdLabel);
+    modeSelectEl.innerHTML = '';
+    appendSmPublishSelectOption(modeSelectEl, '', '请选择模式');
+    availableModes.forEach(mode => appendSmPublishSelectOption(modeSelectEl, mode.name, mode.name));
+    const preferredMode = config.modeName
+      || availableModes.find(mode => mode.name === '入仓打标')?.name
+      || availableModes[0]?.name
+      || '';
+    modeSelectEl.value = preferredMode;
+  }
+  toggleSmAutoLabelConfig();
+}
+
+function collectSmAutoLabelConfig() {
+  return {
+    firstRunFrom: $('#smAutoFirstRunFrom')?.value || '',
+    priceMin: $('#smAutoPriceMin')?.value || '',
+    priceMax: $('#smAutoPriceMax')?.value || '',
+    goodsStatus: $('#smAutoGoodsStatus')?.value || '售卖中',
+    qtyMode: $('#smAutoQtyMode')?.value || '全部',
+    qtyCount: Math.max(1, Number.parseInt($('#smAutoQtyCount')?.value, 10) || 10),
+    modeName: $('#smAutoMode')?.value || '',
+    targetShopId: $('#smAutoTargetShop')?.value || ''
+  };
+}
+
+async function openSmEditShop(account) {
+  const loadVersion = ++smEditConfigLoadVersion;
   const modal = $('#smEditShopModal');
   const title = $('#smEditShopTitle');
   const idInput = $('#smEditShopId');
@@ -3198,6 +4086,7 @@ function openSmEditShop(account) {
   const userInput = $('#smShopUsername');
   const pwdInput = $('#smShopPassword');
   const autoSendRadios = document.querySelectorAll('input[name="smAutoSend"]');
+  populateSmDefaultWarehouseSelect(account?.defaultWarehouseId || '');
 
   if (account) {
     title.textContent = '编辑店铺';
@@ -3215,11 +4104,15 @@ function openSmEditShop(account) {
     autoSendRadios.forEach(r => { r.checked = r.value === '0'; });
   }
 
+  const configLoadPromise = populateSmAutoLabelConfig(account, loadVersion);
+  toggleSmAutoLabelConfig();
   modal.style.display = 'flex';
   userInput.focus();
+  await configLoadPromise;
 }
 
 function closeSmEditShop() {
+  smEditConfigLoadVersion++;
   $('#smEditShopModal').style.display = 'none';
 }
 
@@ -3236,8 +4129,18 @@ async function handleSmEditShopLogin() {
   const id = $('#smEditShopId').value;
   const name = $('#smShopName').value.trim();
   const autoSend = document.querySelector('input[name="smAutoSend"]:checked')?.value === '1';
+  const defaultWarehouseId = $('#smDefaultWarehouse')?.value || '';
+  const autoLabelConfig = collectSmAutoLabelConfig();
 
-  const result = await window.electronAPI.saveShopAccount({ id: id || undefined, name, username, password, autoSend });
+  const result = await window.electronAPI.saveShopAccount({
+    id: id || undefined,
+    name,
+    username,
+    password,
+    autoSend,
+    defaultWarehouseId,
+    autoLabelConfig
+  });
   if (!result.success) {
     showToast(result.error || '保存失败');
     return;
@@ -3257,7 +4160,9 @@ async function handleSmEditShopLogin() {
     username: account.username,
     password: account.password,
     name: account.name,
-    autoSend: account.autoSend
+    autoSend: account.autoSend,
+    defaultWarehouseId: account.defaultWarehouseId,
+    autoLabelConfig: account.autoLabelConfig
   });
   if (loginResult?.success === false) {
     showToast(loginResult.error || '店铺登录窗口打开失败');
@@ -3272,11 +4177,21 @@ async function saveSmShop() {
   const username = $('#smShopUsername').value.trim();
   const password = $('#smShopPassword').value;
   const autoSend = document.querySelector('input[name="smAutoSend"]:checked')?.value === '1';
+  const defaultWarehouseId = $('#smDefaultWarehouse')?.value || '';
+  const autoLabelConfig = collectSmAutoLabelConfig();
 
   if (!username) { showToast('请输入登录账号'); return; }
   if (!password) { showToast('请输入登录密码'); return; }
 
-  const result = await window.electronAPI.saveShopAccount({ id: id || undefined, name, username, password, autoSend });
+  const result = await window.electronAPI.saveShopAccount({
+    id: id || undefined,
+    name,
+    username,
+    password,
+    autoSend,
+    defaultWarehouseId,
+    autoLabelConfig
+  });
   if (result.success) {
     await loadShopAccounts();
     closeSmEditShop();
@@ -3377,7 +4292,7 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
     smStatusDot.className = `sm-shop-status-inline ${visualState}`;
     smStatusDot.textContent = getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
-    if (queryBtn) queryBtn.disabled = smQueryRunning;
+    if (queryBtn) queryBtn.disabled = smQueryRunning || smBatchPublishRunning;
   } else {
     smStatusDot.className = `sm-shop-status-inline ${visualState}`;
     smStatusDot.textContent = smSelectedShopState === 'empty'
@@ -3385,6 +4300,9 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
       : getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
     if (queryBtn) queryBtn.disabled = true;
+  }
+  if (smCreateTaskBtn) {
+    smCreateTaskBtn.disabled = smQueryRunning || smBatchPublishRunning || !smShopSelect.value;
   }
 }
 
@@ -3406,21 +4324,760 @@ async function checkSmLoginStatus() {
   }
 }
 
+function getSmTaskStateApi() {
+  return window.shopGoodsTaskState || null;
+}
+
+function showSmPanel(panelName) {
+  const showTasks = panelName === 'tasks';
+  if (smGoodsPanel) smGoodsPanel.hidden = showTasks;
+  if (smTasksPanel) smTasksPanel.hidden = !showTasks;
+  if (smProductPanelSummary) smProductPanelSummary.hidden = showTasks;
+  if (smTaskPanelActions) smTaskPanelActions.hidden = !showTasks;
+  if (smGoodsTab) {
+    smGoodsTab.classList.toggle('is-active', !showTasks);
+    smGoodsTab.setAttribute('aria-selected', String(!showTasks));
+  }
+  if (smTasksTab) {
+    smTasksTab.classList.toggle('is-active', showTasks);
+    smTasksTab.setAttribute('aria-selected', String(showTasks));
+  }
+  if (showTasks) {
+    if (smProductContext) smProductContext.hidden = true;
+    renderSmTaskTable();
+  } else {
+    updateSmProductPanelContext();
+  }
+}
+
+function updateSmProductPanelContext() {
+  const task = smViewingTaskId
+    ? smTasks.find(item => item.id === smViewingTaskId)
+    : null;
+  if (smProductContext) {
+    smProductContext.textContent = task ? `当前结果：${task.shopName}` : '';
+    smProductContext.hidden = !task;
+  }
+}
+
+async function loadSmTasks() {
+  const api = getSmTaskStateApi();
+  if (!api || !window.electronAPI.getShopGoodsTasks) return;
+  try {
+    const storedTasks = await window.electronAPI.getShopGoodsTasks();
+    smTasks = api.normalizeTasks(storedTasks);
+    renderSmTaskTable();
+    if (smTasks.some(task => task.status === 'queued')) await persistSmTasks();
+  } catch (error) {
+    console.error('[SM任务] 任务列表加载失败:', error);
+    smTasks = [];
+    renderSmTaskTable();
+  }
+}
+
+function persistSmTasks() {
+  const api = getSmTaskStateApi();
+  if (!api || !window.electronAPI.saveShopGoodsTasks) return Promise.resolve({ success: false });
+  const snapshot = smTasks.map(task => api.toPersistedTask(task));
+  smTaskPersistenceChain = smTaskPersistenceChain
+    .catch(() => {})
+    .then(() => window.electronAPI.saveShopGoodsTasks(snapshot));
+  return smTaskPersistenceChain;
+}
+
+function updateSmTaskActionState() {
+  const hasQueuedTask = smTasks.some(task => task.status === 'queued');
+  if (smStartTasksBtn) {
+    smStartTasksBtn.disabled = smQueryRunning || smTaskQueueRunning || smBatchPublishRunning || !hasQueuedTask;
+    smStartTasksBtn.textContent = smTaskQueueRunning ? '正在采集...' : '开始采集';
+  }
+  if (smCreateTaskBtn) {
+    smCreateTaskBtn.disabled = smQueryRunning || smBatchPublishRunning || !smShopSelect?.value;
+  }
+
+  const eligibleTasks = smTasks.filter(task =>
+    task.status === 'complete'
+    && task.publishStatus !== 'published'
+    && task.publishStatus !== 'publishing'
+  );
+  const eligibleIds = new Set(eligibleTasks.map(task => task.id));
+  [...smSelectedTaskIds].forEach(taskId => {
+    if (!eligibleIds.has(taskId)) smSelectedTaskIds.delete(taskId);
+  });
+  const selectedCount = eligibleTasks.filter(task => smSelectedTaskIds.has(task.id)).length;
+  if (smTaskSelectAll) {
+    smTaskSelectAll.disabled = smTaskQueueRunning || smBatchPublishRunning || eligibleTasks.length === 0;
+    smTaskSelectAll.checked = eligibleTasks.length > 0 && selectedCount === eligibleTasks.length;
+    smTaskSelectAll.indeterminate = selectedCount > 0 && selectedCount < eligibleTasks.length;
+  }
+  if (smBatchPublishBtn) {
+    smBatchPublishBtn.disabled = smTaskQueueRunning || smBatchPublishRunning || selectedCount === 0;
+    smBatchPublishBtn.textContent = smBatchPublishRunning ? '正在发布...' : '批量打标';
+  }
+}
+
+function scheduleSmTaskTableRender() {
+  if (smTaskRenderTimer) return;
+  smTaskRenderTimer = setTimeout(() => {
+    smTaskRenderTimer = null;
+    renderSmTaskTable();
+  }, 120);
+}
+
+function renderSmTaskTable() {
+  const api = getSmTaskStateApi();
+  if (!smTaskTableBody || !api) return;
+  if (smTaskCount) smTaskCount.textContent = String(smTasks.length);
+  updateSmTaskActionState();
+
+  if (smTasks.length === 0) {
+    smTaskTableBody.innerHTML = `
+      <tr class="wms-empty-row sm-task-empty-row">
+        <td colspan="8" class="wms-empty-state sm-task-empty-state">
+          <strong>还没有采集任务</strong>
+          <span>设置店铺和筛选条件后，点击“创建任务”</span>
+        </td>
+      </tr>`;
+    return;
+  }
+
+  smTaskTableBody.innerHTML = smTasks.map((task, index) => {
+    const statusLabel = api.getStatusLabel(task.status);
+    const progressText = api.getProgressText(task);
+    const publishLabel = api.getPublishStatusLabel(task);
+    const publishDetail = api.getPublishDetail(task);
+    const publishStatusClass = task.executionStatus && task.executionStatus !== 'not_started'
+      ? `execution-${task.executionStatus}`
+      : task.publishStatus || 'unpublished';
+    const sourceBadge = task.source === 'auto'
+      ? '<span class="sm-task-source-badge">自动</span>'
+      : '';
+    const isPublishEligible = task.status === 'complete'
+      && task.publishStatus !== 'published'
+      && task.publishStatus !== 'publishing';
+    const selectionDisabled = smTaskQueueRunning || smBatchPublishRunning || !isPublishEligible
+      ? ' disabled'
+      : '';
+    const disabled = smTaskQueueRunning || smBatchPublishRunning || task.status === 'collecting'
+      ? ' disabled'
+      : '';
+    let primaryAction = '';
+    if (task.status === 'complete') {
+      primaryAction = `<button type="button" class="sm-task-action" data-task-action="view" data-task-id="${escapeHtml(task.id)}"${disabled}>查看商品</button>`;
+    } else if (task.status === 'failed') {
+      primaryAction = `<button type="button" class="sm-task-action" data-task-action="retry" data-task-id="${escapeHtml(task.id)}"${disabled}>重试</button>`;
+    } else if (task.status === 'queued') {
+      primaryAction = `<button type="button" class="sm-task-action" data-task-action="run" data-task-id="${escapeHtml(task.id)}"${disabled}>开始</button>`;
+    }
+    const republishAction = task.publishStatus === 'published'
+      ? `<button type="button" class="sm-task-action" data-task-action="republish" data-task-id="${escapeHtml(task.id)}"${disabled}>再次发布</button>`
+      : '';
+    return `
+      <tr data-task-id="${escapeHtml(task.id)}">
+        <td><input type="checkbox" class="sm-task-select" data-task-id="${escapeHtml(task.id)}"
+                   aria-label="选择${escapeHtml(task.shopName)}发布打标"
+                   ${smSelectedTaskIds.has(task.id) ? 'checked' : ''}${selectionDisabled} /></td>
+        <td>${index + 1}</td>
+        <td><div class="sm-task-shop-name" title="${escapeHtml(task.shopName)}">${escapeHtml(task.shopName)}${sourceBadge}</div></td>
+        <td><div class="sm-task-time" title="${escapeHtml(api.formatTimeRange(task))}">${escapeHtml(api.formatTimeRange(task))}</div></td>
+        <td><div class="sm-task-config" title="${escapeHtml(api.formatConfiguration(task))}">${escapeHtml(api.formatConfiguration(task))}</div></td>
+        <td>
+          <div class="sm-task-progress">
+            <span class="sm-task-status is-${escapeHtml(task.status)}">${escapeHtml(statusLabel)}</span>
+            <span class="sm-task-progress-detail" title="${escapeHtml(progressText)}">${escapeHtml(progressText)}</span>
+          </div>
+        </td>
+        <td>
+          <div class="sm-task-progress">
+            <span class="sm-task-status is-${escapeHtml(publishStatusClass)}">${escapeHtml(publishLabel)}</span>
+            <span class="sm-task-progress-detail" title="${escapeHtml(publishDetail)}">${escapeHtml(publishDetail)}</span>
+          </div>
+        </td>
+        <td>
+          <div class="sm-task-operations">
+            ${primaryAction}
+            ${republishAction}
+            <button type="button" class="sm-task-action is-danger" data-task-action="delete"
+                    data-task-id="${escapeHtml(task.id)}"${disabled}>删除</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+function handleSmTaskSelectionChange(event) {
+  const checkbox = event.target.closest('.sm-task-select');
+  if (!checkbox) return;
+  const taskId = String(checkbox.dataset.taskId || '');
+  if (checkbox.checked) smSelectedTaskIds.add(taskId);
+  else smSelectedTaskIds.delete(taskId);
+  updateSmTaskActionState();
+}
+
+function handleSmTaskSelectAll() {
+  const checked = Boolean(smTaskSelectAll?.checked);
+  smTasks.forEach(task => {
+    const eligible = task.status === 'complete'
+      && task.publishStatus !== 'published'
+      && task.publishStatus !== 'publishing';
+    if (!eligible) return;
+    if (checked) smSelectedTaskIds.add(task.id);
+    else smSelectedTaskIds.delete(task.id);
+  });
+  smTaskTableBody.querySelectorAll('.sm-task-select:not(:disabled)').forEach(checkbox => {
+    checkbox.checked = checked;
+  });
+  updateSmTaskActionState();
+}
+
+function closeSmBatchPublishModal() {
+  if (smBatchPublishRunning) return;
+  if (smBatchPublishModal) smBatchPublishModal.style.display = 'none';
+  smBatchPublishTaskIds = [];
+}
+
+function appendSmPublishSelectOption(select, value, label) {
+  const option = document.createElement('option');
+  option.value = String(value || '');
+  option.textContent = String(label || '');
+  select.appendChild(option);
+}
+
+function normalizeSmShopMatchName(value) {
+  const api = getSmTaskStateApi();
+  if (api?.normalizeShopMatchName) return api.normalizeShopMatchName(value);
+  return String(value || '')
+    .replace(/[（(][^）)]*[）)]\s*$/, '')
+    .replace(/[\s\-—_]/g, '')
+    .toLowerCase();
+}
+
+function findSmMatchingTargetShop(sourceName, preferredId = '') {
+  const normalizedPreferredId = String(preferredId || '');
+  if (normalizedPreferredId && allShopOptions.some(option => String(option.value) === normalizedPreferredId)) {
+    return normalizedPreferredId;
+  }
+  const api = getSmTaskStateApi();
+  if (api?.findMatchingShopValue) {
+    return api.findMatchingShopValue(sourceName, allShopOptions);
+  }
+  const sourceNameNormalized = normalizeSmShopMatchName(sourceName);
+  const exact = allShopOptions.find(option =>
+    normalizeSmShopMatchName(option.label) === sourceNameNormalized
+  );
+  return exact?.value || '';
+}
+
+function findSmDefaultTargetShop(task) {
+  return findSmMatchingTargetShop(task.shopName, task.publishConfig?.targetShopId);
+}
+
+function findSmDefaultWarehouse(account, warehouses, preferredId = '') {
+  const api = getSmTaskStateApi();
+  if (api?.resolveWarehouseValue) {
+    return api.resolveWarehouseValue({
+      preferredId,
+      defaultId: account?.defaultWarehouseId,
+      options: warehouses
+    });
+  }
+  const availableIds = warehouses.map(option => String(option.value || '')).filter(Boolean);
+  if (preferredId && availableIds.includes(String(preferredId))) return String(preferredId);
+  if (account?.defaultWarehouseId && availableIds.includes(String(account.defaultWarehouseId))) {
+    return String(account.defaultWarehouseId);
+  }
+  return availableIds.length === 1 ? availableIds[0] : '';
+}
+
+async function openSmBatchPublishModal() {
+  if (!requireTier('shopManage')) return;
+  if (smBatchPublishRunning || smTaskQueueRunning) {
+    showToast('请等待当前任务完成');
+    return;
+  }
+  const selectedTasks = smTasks.filter(task =>
+    smSelectedTaskIds.has(task.id)
+    && task.status === 'complete'
+    && task.publishStatus !== 'published'
+    && task.publishStatus !== 'publishing'
+  );
+  if (selectedTasks.length === 0) {
+    showToast('请先勾选采集完成的店铺任务');
+    return;
+  }
+
+  const modes = await window.electronAPI.getModes();
+  const availableModes = (Array.isArray(modes) ? modes : [])
+    .filter(mode => mode?.config?.jdLabel && !mode?.config?.cancelJdLabel);
+  if (availableModes.length === 0) {
+    showToast('没有可用的快捷模式，请先在店铺打标中创建模式');
+    return;
+  }
+  if (allShopOptions.length === 0) {
+    showToast('没有可用的商家端目标店铺');
+    return;
+  }
+  const warehouses = getSmWarehouseOptions();
+  if (warehouses.length === 0) {
+    showToast('没有可用的目标仓库');
+    return;
+  }
+
+  const defaultMode = availableModes.find(mode => mode.name === '入仓打标')
+    || availableModes[0];
+  const sourceAccounts = await window.electronAPI.getShopAccounts();
+  const sourceAccountMap = new Map(
+    (Array.isArray(sourceAccounts) ? sourceAccounts : [])
+      .map(account => [String(account.id), account])
+  );
+  smBatchPublishTaskIds = selectedTasks.map(task => task.id);
+  smBatchPublishRows.innerHTML = '';
+
+  selectedTasks.forEach(task => {
+    const row = document.createElement('tr');
+    row.dataset.taskId = task.id;
+    row.innerHTML = `
+      <td><div class="sm-batch-source-name" title="${escapeHtml(task.shopName)}">${escapeHtml(task.shopName)}</div></td>
+      <td>${task.resultSkuCount || 0}</td>
+      <td><select class="sm-batch-mode" aria-label="${escapeHtml(task.shopName)}快捷模式"></select></td>
+      <td><select class="sm-batch-shop" aria-label="${escapeHtml(task.shopName)}目标店铺"></select></td>
+      <td><select class="sm-batch-warehouse" aria-label="${escapeHtml(task.shopName)}目标仓库"></select></td>`;
+    const modeSelectEl = row.querySelector('.sm-batch-mode');
+    const shopSelectEl = row.querySelector('.sm-batch-shop');
+    const warehouseSelectEl = row.querySelector('.sm-batch-warehouse');
+    appendSmPublishSelectOption(modeSelectEl, '', '请选择模式');
+    availableModes.forEach(mode => appendSmPublishSelectOption(modeSelectEl, mode.name, mode.name));
+    appendSmPublishSelectOption(shopSelectEl, '', '请选择目标店铺');
+    allShopOptions.forEach(option => appendSmPublishSelectOption(shopSelectEl, option.value, option.label));
+    appendSmPublishSelectOption(warehouseSelectEl, '', '请选择目标仓库');
+    warehouses.forEach(option => appendSmPublishSelectOption(warehouseSelectEl, option.value, option.label));
+
+    modeSelectEl.value = task.publishConfig?.modeName || defaultMode?.name || '';
+    shopSelectEl.value = findSmDefaultTargetShop(task);
+    warehouseSelectEl.value = findSmDefaultWarehouse(
+      sourceAccountMap.get(String(task.accountId)),
+      warehouses,
+      task.publishConfig?.targetWarehouseId
+    );
+    [modeSelectEl, shopSelectEl, warehouseSelectEl].forEach(select => {
+      select.addEventListener('change', () => select.classList.remove('is-invalid'));
+    });
+    smBatchPublishRows.appendChild(row);
+  });
+
+  if (smBatchPublishInfo) {
+    smBatchPublishInfo.textContent = `已选择 ${selectedTasks.length} 个店铺任务。每家配置独立，确认后按顺序逐个创建打标任务。`;
+  }
+  if (smBatchPublishModal) smBatchPublishModal.style.display = 'flex';
+}
+
+async function loadSmTaskResultData(task) {
+  const cached = smTaskResultCache.get(task.id);
+  if (cached) return cached;
+  if (!window.electronAPI.getShopGoodsTaskResult) {
+    throw new Error('当前版本不支持读取任务商品结果');
+  }
+  const storedResult = await window.electronAPI.getShopGoodsTaskResult(task.id);
+  if (!storedResult?.success) {
+    throw new Error(storedResult?.error || '没有找到该任务的商品结果');
+  }
+  const result = {
+    rawGoods: Array.isArray(storedResult.rawGoods) ? storedResult.rawGoods : [],
+    filteredGoods: Array.isArray(storedResult.filteredGoods) ? storedResult.filteredGoods : []
+  };
+  smTaskResultCache.set(task.id, result);
+  return result;
+}
+
+async function confirmSmBatchPublish() {
+  if (!requireTier('shopManage') || smBatchPublishRunning) return;
+  const rows = Array.from(smBatchPublishRows?.querySelectorAll('tr[data-task-id]') || []);
+  const expectedTaskIds = new Set(smBatchPublishTaskIds.map(String));
+  if (rows.length === 0 || rows.length !== expectedTaskIds.size
+    || rows.some(row => !expectedTaskIds.has(String(row.dataset.taskId)))) {
+    showToast('待发布任务已发生变化，请重新选择');
+    closeSmBatchPublishModal();
+    return;
+  }
+  const modes = await window.electronAPI.getModes();
+  const availableModes = (Array.isArray(modes) ? modes : [])
+    .filter(mode => mode?.config?.jdLabel && !mode?.config?.cancelJdLabel);
+  const configuredTasks = [];
+  let firstInvalid = null;
+
+  rows.forEach(row => {
+    const task = smTasks.find(item => item.id === row.dataset.taskId);
+    if (!task || task.status !== 'complete'
+      || task.publishStatus === 'published'
+      || task.publishStatus === 'publishing') {
+      if (!firstInvalid) firstInvalid = row;
+      return;
+    }
+    const modeSelectEl = row.querySelector('.sm-batch-mode');
+    const shopSelectEl = row.querySelector('.sm-batch-shop');
+    const warehouseSelectEl = row.querySelector('.sm-batch-warehouse');
+    [modeSelectEl, shopSelectEl, warehouseSelectEl].forEach(select => {
+      const invalid = !select.value;
+      select.classList.toggle('is-invalid', invalid);
+      if (invalid && !firstInvalid) firstInvalid = select;
+    });
+    const targetMode = availableModes.find(mode => mode.name === modeSelectEl.value);
+    if (modeSelectEl.value && !targetMode) {
+      modeSelectEl.classList.add('is-invalid');
+      if (!firstInvalid) firstInvalid = modeSelectEl;
+    }
+    if (!modeSelectEl.value || !shopSelectEl.value || !warehouseSelectEl.value || !targetMode) return;
+    task.publishConfig = {
+      modeName: modeSelectEl.value,
+      targetShopId: shopSelectEl.value,
+      targetWarehouseId: warehouseSelectEl.value
+    };
+    configuredTasks.push({ task, targetMode });
+  });
+
+  if (firstInvalid || configuredTasks.length !== rows.length) {
+    const taskChanged = firstInvalid instanceof HTMLTableRowElement;
+    showToast(taskChanged
+      ? '待发布任务状态已发生变化，请重新选择'
+      : '请为每个店铺完整选择模式、目标店铺和仓库');
+    if (taskChanged) {
+      closeSmBatchPublishModal();
+    } else {
+      firstInvalid?.focus();
+    }
+    return;
+  }
+
+  if (smBatchPublishModal) smBatchPublishModal.style.display = 'none';
+  await publishSmLabelTasksSequentially(configuredTasks);
+}
+
+async function publishSmLabelTasksSequentially(configuredTasks) {
+  if (smBatchPublishRunning) return;
+  smBatchPublishRunning = true;
+  updateSmTaskActionState();
+  renderSmTaskTable();
+  let successCount = 0;
+  let failedCount = 0;
+  let successSkuCount = 0;
+
+  try {
+    for (const { task, targetMode } of configuredTasks) {
+      task.publishStatus = 'publishing';
+      task.publishError = '';
+      task.updatedAt = new Date().toISOString();
+      renderSmTaskTable();
+      await persistSmTasks();
+
+      try {
+        const resultData = await loadSmTaskResultData(task);
+        const skus = [...new Set(resultData.filteredGoods
+          .map(item => String(item?.sku || '').trim())
+          .filter(Boolean))];
+        if (skus.length === 0) throw new Error('该任务没有可发布的SKU');
+        const result = enqueueLabelTasks({
+          skus,
+          shopId: task.publishConfig.targetShopId,
+          warehouseId: task.publishConfig.targetWarehouseId,
+          config: targetMode.config,
+          modeName: targetMode.name,
+          sourceFileName: `采集任务-${task.shopName}`,
+          sourceTaskId: task.id
+        });
+        if (!result.success) throw new Error(result.error || '打标任务创建失败');
+        await confirmEnqueuedLabelTasksPersisted(result);
+
+        task.publishStatus = 'published';
+        task.executionStatus = 'queued';
+        task.publishError = '';
+        task.publishedAt = new Date().toISOString();
+        task.publishedTaskCount = result.taskCount;
+        successCount += 1;
+        successSkuCount += result.skuCount;
+        smSelectedTaskIds.delete(task.id);
+      } catch (error) {
+        task.publishStatus = 'publish_failed';
+        task.publishError = String(error?.message || '打标任务创建失败');
+        task.publishedTaskCount = 0;
+        failedCount += 1;
+      }
+      task.updatedAt = new Date().toISOString();
+      renderSmTaskTable();
+      await persistSmTasks();
+    }
+  } finally {
+    smBatchPublishRunning = false;
+    smBatchPublishTaskIds = [];
+    if (successCount > 0) {
+      await window.electronAPI.updateSmStats({ shops: successCount, skus: successSkuCount });
+      await updateSmDashboard();
+    }
+    renderSmTaskTable();
+  }
+
+  if (failedCount > 0) {
+    showToast(`批量发布完成：成功 ${successCount} 家，失败 ${failedCount} 家；可勾选失败项重试`, 5000);
+  } else {
+    showToast(`已逐个发布 ${successCount} 家店铺，共 ${successSkuCount} 个SKU`, 5000);
+  }
+}
+
+async function handleSmCreateTask() {
+  if (!requireTier('shopManage')) return;
+  if (smBatchPublishRunning) {
+    showToast('请等待批量发布完成');
+    return;
+  }
+  if (smQueryRunning) {
+    showToast('请等待当前商品查询完成');
+    return;
+  }
+  const accountId = String(smShopSelect?.value || '');
+  if (!accountId) {
+    showToast('请先选择店铺');
+    return;
+  }
+  const collected = collectSmQueryParams(accountId);
+  if (!collected.success) {
+    showToast(collected.error);
+    return;
+  }
+  const api = getSmTaskStateApi();
+  if (!api) {
+    showToast('任务模块未加载，请重启软件后重试');
+    return;
+  }
+  const existingTask = smTasks.find(task => String(task.accountId) === accountId);
+  if (existingTask) {
+    showSmPanel('tasks');
+    showToast('该店铺已有采集任务，请先处理或删除原任务');
+    return;
+  }
+  const selectedOption = smShopSelect.options[smShopSelect.selectedIndex];
+  const qtyConfig = getSmQtyFilterConfig();
+  const task = api.createTask({
+    accountId,
+    shopName: selectedOption?.textContent || '未命名店铺',
+    params: collected.params,
+    qtyMode: qtyConfig.mode,
+    qtyCount: qtyConfig.count
+  });
+  smTasks.push(task);
+  const saveResult = await persistSmTasks();
+  if (saveResult && saveResult.success === false) {
+    smTasks = smTasks.filter(item => item.id !== task.id);
+    renderSmTaskTable();
+    showToast(saveResult.error || '任务保存失败');
+    return;
+  }
+  renderSmTaskTable();
+  showSmPanel('tasks');
+  showToast(`已创建“${task.shopName}”采集任务`);
+}
+
+async function runSmTaskQueue(taskIds) {
+  if (!requireTier('shopManage')) return;
+  if (smBatchPublishRunning) {
+    showToast('请等待批量发布完成');
+    return;
+  }
+  if (smQueryRunning || smTaskQueueRunning) {
+    showToast('已有商品采集正在进行中');
+    return;
+  }
+  const requestedIds = Array.isArray(taskIds) ? new Set(taskIds.map(String)) : null;
+  const queue = smTasks.filter(task =>
+    task.status === 'queued' && (!requestedIds || requestedIds.has(String(task.id)))
+  );
+  if (queue.length === 0) {
+    showToast('没有等待采集的任务');
+    return;
+  }
+
+  smTaskQueueRunning = true;
+  setSmQueryBusy(true);
+  showSmPanel('tasks');
+  try {
+    for (const task of queue) {
+      await executeSmTask(task);
+    }
+  } finally {
+    smActiveTaskId = '';
+    smActiveQueryAccountId = '';
+    smTaskQueueRunning = false;
+    setSmQueryBusy(false);
+    renderSmTaskTable();
+  }
+}
+
+async function executeSmTask(task) {
+  const api = getSmTaskStateApi();
+  task.status = 'collecting';
+  task.error = '';
+  task.progress = { stage: 'preparing', message: '正在验证店铺登录状态' };
+  task.updatedAt = new Date().toISOString();
+  renderSmTaskTable();
+  await persistSmTasks();
+
+  try {
+    const accounts = await window.electronAPI.getShopAccounts();
+    const account = (Array.isArray(accounts) ? accounts : [])
+      .find(item => String(item.id) === String(task.accountId));
+    if (!account) throw new Error('店铺账号已不存在，请重新创建任务');
+
+    const switchResult = await window.electronAPI.switchShopAccount(account);
+    smShopSelect.value = String(task.accountId);
+    syncSmShopSelectTrigger();
+    if (!switchResult || !switchResult.loggedIn) {
+      updateSmLoginStatus(false, '', switchResult?.validationError ? 'error' : 'offline');
+      throw new Error(switchResult?.error || '店铺登录状态已失效，请重新登录后重试');
+    }
+    updateSmLoginStatus(true, switchResult.shopName || task.shopName, 'online');
+
+    smActiveTaskId = task.id;
+    smActiveQueryAccountId = String(task.accountId);
+    task.progress = { stage: 'preparing', message: '正在准备查询' };
+    renderSmTaskTable();
+
+    const result = await window.electronAPI.shopQueryGoods(task.params);
+    if (!result || !result.success) {
+      if (result?.needLogin) updateSmLoginStatus(false, '', 'offline');
+      throw new Error(result?.error || '商品采集失败');
+    }
+
+    const rawGoods = Array.isArray(result.goods) ? result.goods : [];
+    const filteredGoods = selectSmGoodsByQtyConfig(rawGoods, task.qtyMode, task.qtyCount);
+    const productCodes = new Set();
+    let missingProductCodes = 0;
+    filteredGoods.forEach(item => {
+      const productCode = String(item?.productCode || '').trim();
+      if (productCode) productCodes.add(productCode);
+      else missingProductCodes += 1;
+    });
+
+    smTaskResultCache.set(task.id, { rawGoods, filteredGoods });
+    task.status = 'complete';
+    task.progress = {
+      stage: 'complete',
+      completed: productCodes.size + missingProductCodes,
+      total: productCodes.size + missingProductCodes,
+      loadedSkuTotal: filteredGoods.length
+    };
+    task.resultSpuCount = productCodes.size + missingProductCodes;
+    task.resultSkuCount = filteredGoods.length;
+    task.error = '';
+    task.updatedAt = new Date().toISOString();
+
+    const savedResult = await window.electronAPI.saveShopGoodsTaskResult({
+      taskId: task.id,
+      rawGoods,
+      filteredGoods
+    });
+    task.resultSaved = Boolean(savedResult?.success);
+    if (!task.resultSaved) {
+      console.error('[SM任务] 采集结果本地保存失败:', savedResult?.error || '未知错误');
+    }
+  } catch (error) {
+    task.status = 'failed';
+    task.error = String(error?.message || '商品采集失败');
+    task.progress = { stage: 'error', message: task.error };
+    task.resultSpuCount = 0;
+    task.resultSkuCount = 0;
+    task.resultSaved = false;
+    task.updatedAt = new Date().toISOString();
+    smTaskResultCache.delete(task.id);
+  } finally {
+    smActiveTaskId = '';
+    smActiveQueryAccountId = '';
+    renderSmTaskTable();
+    await persistSmTasks();
+  }
+}
+
+async function viewSmTaskResult(task) {
+  let result;
+  try {
+    result = await loadSmTaskResultData(task);
+  } catch (error) {
+    showToast(error.message || '没有找到该任务的商品结果');
+    return;
+  }
+
+  smViewingTaskId = task.id;
+  smGoodsSourceAccountId = String(task.accountId || '');
+  smGoods = result.rawGoods.slice();
+  smFilteredGoods = result.filteredGoods.slice();
+  renderSmGoodsTable();
+  updateSmProductPanelContext();
+  showSmPanel('goods');
+}
+
+async function handleSmTaskTableAction(event) {
+  const button = event.target.closest('[data-task-action]');
+  if (!button || button.disabled) return;
+  const task = smTasks.find(item => item.id === button.dataset.taskId);
+  if (!task) return;
+  const action = button.dataset.taskAction;
+  if (action === 'view') {
+    await viewSmTaskResult(task);
+    return;
+  }
+  if (action === 'run' || action === 'retry') {
+    task.status = 'queued';
+    task.error = '';
+    task.progress = { stage: 'queued' };
+    await persistSmTasks();
+    renderSmTaskTable();
+    await runSmTaskQueue([task.id]);
+    return;
+  }
+  if (action === 'republish') {
+    if (!confirm(`“${task.shopName}”已经发布过打标任务，确定允许再次发布吗？`)) return;
+    task.publishStatus = 'unpublished';
+    task.publishError = '';
+    task.publishedAt = '';
+    task.publishedTaskCount = 0;
+    task.executionStatus = 'not_started';
+    smSelectedTaskIds.add(task.id);
+    await persistSmTasks();
+    renderSmTaskTable();
+    await openSmBatchPublishModal();
+    return;
+  }
+  if (action === 'delete') {
+    const publishedNotice = task.publishStatus === 'published'
+      ? '（已经创建的打标任务不会被删除）'
+      : '';
+    if (!confirm(`确定删除“${task.shopName}”采集任务吗？${publishedNotice}`)) return;
+    smTasks = smTasks.filter(item => item.id !== task.id);
+    smTaskResultCache.delete(task.id);
+    smSelectedTaskIds.delete(task.id);
+    if (smViewingTaskId === task.id) {
+      smViewingTaskId = '';
+      smGoodsSourceAccountId = '';
+      smGoods = [];
+      smFilteredGoods = [];
+      renderSmGoodsTable();
+      updateSmProductPanelContext();
+    }
+    await persistSmTasks();
+    if (window.electronAPI.deleteShopGoodsTaskResult) {
+      await window.electronAPI.deleteShopGoodsTaskResult(task.id);
+    }
+    renderSmTaskTable();
+  }
+}
+
 // ========== 商品查询 ==========
 
 function startSmQueryProgress() {
-  if (!smQueryProgress) return;
-  if (smQueryProgressHideTimer) clearTimeout(smQueryProgressHideTimer);
-  smQueryProgressHideTimer = null;
   smQueryEstimateStartedAt = 0;
-  smQueryProgress.hidden = false;
-  smQueryProgress.className = 'sm-query-progress is-indeterminate';
-  smQueryProgress.removeAttribute('aria-valuenow');
-  smQueryProgress.setAttribute('aria-valuetext', '正在准备查询');
-  smQueryProgressLabel.textContent = '正在准备查询…';
-  smQueryProgressCount.textContent = '';
-  if (smQueryProgressEta) smQueryProgressEta.textContent = '正在估算用时';
-  smQueryProgressFill.style.width = '';
+  smInlineQueryState = {
+    stage: 'preparing',
+    title: '正在准备商品查询',
+    detail: '每完成一页，就会在这里显示这一批商品',
+    summary: ''
+  };
 }
 
 function formatSmRemainingTime(remainingMs) {
@@ -3436,83 +5093,199 @@ function formatSmRemainingTime(remainingMs) {
 }
 
 function updateSmQueryProgress(progress = {}) {
-  if (!smQueryProgress) return;
   const stage = String(progress.stage || 'preparing');
-  smQueryProgress.hidden = false;
-
-  if (stage === 'preparing') {
-    smQueryProgress.className = 'sm-query-progress is-indeterminate';
-    smQueryProgress.removeAttribute('aria-valuenow');
-    smQueryProgress.setAttribute('aria-valuetext', String(progress.message || '正在准备查询'));
-    smQueryProgressLabel.textContent = progress.message || '正在准备查询…';
-    smQueryProgressCount.textContent = '';
-    if (smQueryProgressEta) smQueryProgressEta.textContent = '正在估算用时';
-    smQueryProgressFill.style.width = '';
-    return;
-  }
-
   const completed = Math.max(0, Number(progress.completed) || 0);
   const total = Math.max(0, Number(progress.total) || 0);
-  const percent = total > 0 ? Math.min(100, (completed / total) * 100) : 0;
-  smQueryProgress.className = `sm-query-progress${stage === 'complete' ? ' is-complete' : stage === 'error' ? ' is-error' : ''}`;
-  smQueryProgress.setAttribute('aria-valuenow', String(Math.round(percent)));
-  smQueryProgressFill.style.width = `${stage === 'complete' ? 100 : percent}%`;
-
-  if (stage === 'complete') {
-    smQueryProgressLabel.textContent = '查询完成';
-    smQueryProgressCount.textContent = total > 0 ? `${total} / ${total} 个 SPU · 100%` : '100%';
-    if (smQueryProgressEta) smQueryProgressEta.textContent = '已完成';
-    smQueryProgress.setAttribute('aria-valuetext', '查询完成');
-    return;
-  }
-  if (stage === 'error') {
-    smQueryProgressLabel.textContent = progress.message ? `查询失败：${progress.message}` : '查询失败';
-    smQueryProgressCount.textContent = total > 0 ? `${completed} / ${total} 个 SPU` : '';
-    if (smQueryProgressEta) smQueryProgressEta.textContent = '';
-    smQueryProgress.setAttribute('aria-valuetext', '查询失败');
-    return;
-  }
-
-  if (!smQueryEstimateStartedAt) smQueryEstimateStartedAt = Date.now();
-  let etaText = '正在估算用时';
-  const elapsedMs = Date.now() - smQueryEstimateStartedAt;
-  if (total > completed && completed >= 3 && elapsedMs >= 1500) {
-    const averageMsPerProduct = elapsedMs / completed;
-    etaText = formatSmRemainingTime(averageMsPerProduct * (total - completed));
-  } else if (total > 0 && completed >= total) {
-    etaText = '即将完成';
-  }
-
   const pageNum = Math.max(1, Number(progress.pageNum) || 1);
   const totalPages = Math.max(pageNum, Number(progress.totalPages) || pageNum);
-  const pageCompleted = Math.max(0, Number(progress.pageCompleted) || 0);
-  const pageTotal = Math.max(0, Number(progress.pageTotal) || 0);
-  smQueryProgressLabel.textContent = `正在查询第 ${pageNum}/${totalPages} 页 SKU` +
-    (pageTotal > 0 ? `（本页 ${pageCompleted}/${pageTotal} 个 SPU）` : '');
-  smQueryProgressCount.textContent = `${completed} / ${total} 个 SPU · ${Math.floor(percent)}%`;
-  if (smQueryProgressEta) smQueryProgressEta.textContent = etaText;
-  smQueryProgress.setAttribute('aria-valuetext', `已完成${completed}个SPU，共${total}个SPU，${etaText}`);
+  const loadedSkuTotal = Math.max(0, Number(progress.loadedSkuTotal) || 0);
+  let title = '正在读取商品';
+  let detail = String(progress.message || '商品会按批次直接显示在列表中');
+  let summary = '';
+
+  if (stage === 'preparing' || stage === 'initial-wait') {
+    title = '正在准备商品查询';
+    detail = String(progress.message || '每完成一页，就会在这里显示这一批商品');
+  } else if (stage === 'rate-limit') {
+    title = '查询暂时等待';
+    detail = String(progress.message || '京东接口限流，等待后将重试一次');
+    summary = '限流等待中';
+  } else if (stage === 'complete') {
+    title = '没有符合条件的商品';
+    detail = '可以调整时间、售价或商品状态后重新查询';
+    const skuTotal = Math.max(0, Number(progress.skuTotal ?? progress.loadedSkuTotal) || 0);
+    summary = total > 0 ? `${total} SPU · ${skuTotal} SKU` : `${skuTotal} SKU`;
+  } else if (stage === 'error') {
+    title = '查询失败';
+    detail = String(progress.message || '请稍后重新查询');
+    summary = total > 0 ? `查询中断 · 已读取 ${completed} / ${total} 个 SPU` : '查询失败';
+  } else if (stage === 'page-wait' || stage === 'page-complete') {
+    const completedPage = stage === 'page-wait' ? Math.max(0, pageNum - 1) : pageNum;
+    title = '正在读取商品';
+    detail = stage === 'page-wait'
+      ? `已完成 ${completedPage}/${totalPages} 页，等待读取第 ${pageNum} 页`
+      : `第 ${pageNum}/${totalPages} 页已完成，商品已加入列表`;
+    const nextText = stage === 'page-wait'
+      ? ` · ${Math.max(1, Math.round((Number(progress.waitMs) || 4000) / 1000))}秒后继续`
+      : pageNum >= totalPages ? ' · 正在汇总' : '';
+    summary = `查询中 · 已读取 ${completed} / ${total} 个 SPU · ${loadedSkuTotal} 个 SKU${nextText}`;
+  } else {
+    if (!smQueryEstimateStartedAt) smQueryEstimateStartedAt = Date.now();
+    const elapsedMs = Date.now() - smQueryEstimateStartedAt;
+    const etaText = total > completed && completed >= 3 && elapsedMs >= 1500
+      ? formatSmRemainingTime((elapsedMs / completed) * (total - completed))
+      : '正在读取';
+    const pageCompleted = Math.max(0, Number(progress.pageCompleted) || 0);
+    const pageTotal = Math.max(0, Number(progress.pageTotal) || 0);
+    detail = `正在查询第 ${pageNum}/${totalPages} 页 SKU` +
+      (pageTotal > 0 ? `（本页 ${pageCompleted}/${pageTotal} 个 SPU）` : '');
+    summary = `查询中 · 已读取 ${completed} / ${total} 个 SPU · ${etaText}`;
+  }
+
+  smInlineQueryState = { stage, title, detail, summary };
+  if (smFilteredGoods.length === 0) {
+    renderSmGoodsTable();
+  } else if (smGoodsCount) {
+    smGoodsCount.textContent = summary;
+    smGoodsCount.classList.add('visible', 'is-querying');
+    smGoodsCount.classList.toggle('is-error', stage === 'error');
+  }
+}
+
+function collectSmQueryParams(accountId) {
+  const normalizedAccountId = String(accountId || '');
+  if (!normalizedAccountId) return { success: false, error: '请先选择店铺' };
+
+  const dateFrom = $('#smDateFrom').value || '';
+  const dateTo = $('#smDateTo').value || '';
+  if (Boolean(dateFrom) !== Boolean(dateTo)) {
+    return { success: false, error: '请同时选择上架开始时间和结束时间' };
+  }
+  if (dateFrom && dateTo && new Date(dateFrom).getTime() > new Date(dateTo).getTime()) {
+    return { success: false, error: '上架开始时间不能晚于结束时间' };
+  }
+
+  const priceMinText = $('#smPriceMin').value.trim();
+  const priceMaxText = $('#smPriceMax').value.trim();
+  const priceMin = priceMinText === '' ? null : Number(priceMinText);
+  const priceMax = priceMaxText === '' ? null : Number(priceMaxText);
+  if ((priceMin != null && (!Number.isFinite(priceMin) || priceMin < 0)) ||
+      (priceMax != null && (!Number.isFinite(priceMax) || priceMax < 0))) {
+    return { success: false, error: '售价范围必须是大于或等于0的有效数字' };
+  }
+  if (priceMin != null && priceMax != null && priceMin > priceMax) {
+    return { success: false, error: '最低售价不能高于最高售价' };
+  }
+
+  return {
+    success: true,
+    params: {
+      accountId: normalizedAccountId,
+      dateFrom,
+      dateTo,
+      priceMin: priceMinText,
+      priceMax: priceMaxText,
+      goodsStatus: (document.querySelector('input[name="smGoodsStatus"]:checked') || {}).value || '售卖中'
+    }
+  };
+}
+
+function getSmQtyFilterConfig() {
+  const qtyRadio = document.querySelector('input[name="smGoodsQty"]:checked');
+  const mode = qtyRadio ? qtyRadio.value : '全部';
+  const countInput = mode === '前N个' ? $('#smFirstQtyN') : $('#smQtyN');
+  return { mode, count: parseInt(countInput?.value, 10) || 10 };
+}
+
+function selectSmGoodsForCurrentQty(goods) {
+  const source = Array.isArray(goods) ? goods : [];
+  const { mode, count } = getSmQtyFilterConfig();
+  return selectSmGoodsByQtyConfig(source, mode, count);
+}
+
+function selectSmGoodsByQtyConfig(goods, mode, count) {
+  const source = Array.isArray(goods) ? goods : [];
+  if (!window.shopGoodsSelection || typeof window.shopGoodsSelection.selectGoodsPerProduct !== 'function') {
+    return source.slice();
+  }
+  return window.shopGoodsSelection.selectGoodsPerProduct(source, mode, count);
+}
+
+function mergeSmGoodsBySku(currentGoods, incomingGoods) {
+  if (window.shopGoodsSelection?.mergeGoodsBySku) {
+    return window.shopGoodsSelection.mergeGoodsBySku(currentGoods, incomingGoods);
+  }
+  return [...(Array.isArray(currentGoods) ? currentGoods : []), ...(Array.isArray(incomingGoods) ? incomingGoods : [])];
+}
+
+function appendSmGoodsBatch(batchGoods) {
+  const incoming = Array.isArray(batchGoods) ? batchGoods : [];
+  if (incoming.length === 0) return;
+  const previousFilteredCount = smFilteredGoods.length;
+  const selectedIncoming = selectSmGoodsForCurrentQty(incoming);
+  smGoods = mergeSmGoodsBySku(smGoods, incoming);
+  smFilteredGoods = mergeSmGoodsBySku(smFilteredGoods, selectedIncoming);
+  const appendedGoods = smFilteredGoods.slice(previousFilteredCount);
+  if (appendedGoods.length === 0) return;
+  if (appendedGoods.length !== selectedIncoming.length) {
+    // 极少数接口重复返回既有 SKU 时需要更新旧行；此时才进行一次完整校正。
+    renderSmGoodsTable();
+    return;
+  }
+
+  // 查询期间每一页只追加本页新行，不再反复重建前面已经展示的全部商品。
+  // 这让渲染成本从“累计数据反复重绘”降为“每条数据只创建一次”。
+  if (previousFilteredCount === 0) smGoodsTableBody.innerHTML = '';
+  const existingSpuCount = smGoodsTableBody.querySelectorAll('.sm-spu-row').length;
+  appendSmGoodsGroupRows(
+    buildSmGoodsGroups(appendedGoods, previousFilteredCount),
+    existingSpuCount
+  );
+  updateSmGoodsSummary();
+  syncSmSelectionCheckboxes();
+}
+
+function haveSameSmSkuSet(leftGoods, rightGoods) {
+  const left = new Set((Array.isArray(leftGoods) ? leftGoods : []).map(item => String(item?.sku || '')).filter(Boolean));
+  const right = new Set((Array.isArray(rightGoods) ? rightGoods : []).map(item => String(item?.sku || '')).filter(Boolean));
+  return left.size === right.size && [...left].every(sku => right.has(sku));
+}
+
+function handleSmQueryProgress(progress = {}) {
+  const progressAccountId = String(progress.accountId || '');
+  if (smActiveQueryAccountId && progressAccountId && progressAccountId !== smActiveQueryAccountId) return;
+  if (smActiveTaskId) {
+    const task = smTasks.find(item => item.id === smActiveTaskId);
+    const api = getSmTaskStateApi();
+    if (task && api) {
+      api.applyProgress(task, progress);
+      scheduleSmTaskTableRender();
+    }
+    return;
+  }
+  if (progress.stage === 'page-complete' && Array.isArray(progress.batchGoods)) {
+    appendSmGoodsBatch(progress.batchGoods);
+  }
+  updateSmQueryProgress(progress);
 }
 
 function finishSmQueryProgress(success, message = '') {
-  if (!smQueryProgress) return;
   if (success) {
-    if (!smQueryProgress.classList.contains('is-complete')) {
-      updateSmQueryProgress({ stage: 'complete', completed: 1, total: 1 });
-    }
-  } else if (!smQueryProgress.classList.contains('is-error')) {
+    smInlineQueryState = { stage: 'complete', title: '', detail: '', summary: '' };
+    if (smFilteredGoods.length > 0) updateSmGoodsSummary();
+    else renderSmGoodsTable();
+  } else if (smInlineQueryState.stage !== 'error') {
     updateSmQueryProgress({ stage: 'error', message });
   }
-  if (smQueryProgressHideTimer) clearTimeout(smQueryProgressHideTimer);
-  smQueryProgressHideTimer = setTimeout(() => {
-    smQueryProgress.hidden = true;
-    smQueryProgressHideTimer = null;
-  }, success ? 1800 : 3500);
 }
 
 async function handleSmQuery() {
   if (!requireTier('shopManage')) return;
   console.log('[SM] handleSmQuery called, smLoggedIn:', smLoggedIn);
+  if (smBatchPublishRunning) {
+    showToast('请等待批量发布完成');
+    return;
+  }
   if (smQueryRunning) {
     showToast('商品查询正在进行中');
     return;
@@ -3528,42 +5301,23 @@ async function handleSmQuery() {
     return;
   }
 
-  const dateFrom = $('#smDateFrom').value || '';
-  const dateTo = $('#smDateTo').value || '';
-  if (Boolean(dateFrom) !== Boolean(dateTo)) {
-    showToast('请同时选择上架开始时间和结束时间');
+  const collected = collectSmQueryParams(queryAccountId);
+  if (!collected.success) {
+    showToast(collected.error);
     return;
   }
-  if (dateFrom && dateTo && new Date(dateFrom).getTime() > new Date(dateTo).getTime()) {
-    showToast('上架开始时间不能晚于结束时间');
-    return;
-  }
+  const params = collected.params;
 
-  const priceMinText = $('#smPriceMin').value.trim();
-  const priceMaxText = $('#smPriceMax').value.trim();
-  const priceMin = priceMinText === '' ? null : Number(priceMinText);
-  const priceMax = priceMaxText === '' ? null : Number(priceMaxText);
-  if ((priceMin != null && (!Number.isFinite(priceMin) || priceMin < 0)) ||
-      (priceMax != null && (!Number.isFinite(priceMax) || priceMax < 0))) {
-    showToast('售价范围必须是大于或等于0的有效数字');
-    return;
-  }
-  if (priceMin != null && priceMax != null && priceMin > priceMax) {
-    showToast('最低售价不能高于最高售价');
-    return;
-  }
-
-  const params = {
-    accountId: queryAccountId,
-    dateFrom,
-    dateTo,
-    priceMin: priceMinText,
-    priceMax: priceMaxText,
-    goodsStatus: (document.querySelector('input[name="smGoodsStatus"]:checked') || {}).value || '售卖中'
-  };
-
+  smViewingTaskId = '';
+  smGoodsSourceAccountId = queryAccountId;
+  showSmPanel('goods');
   setSmQueryBusy(true);
+  smActiveQueryAccountId = queryAccountId;
+  smGoods = [];
+  smFilteredGoods = [];
   startSmQueryProgress();
+  renderSmGoodsTable();
+  setSmResultActionsEnabled(false);
   addSmLog('info', '正在查询店铺商品...');
   let querySucceeded = false;
   let queryError = '';
@@ -3576,8 +5330,17 @@ async function handleSmQuery() {
         throw new Error('查询期间店铺已发生变化，本次结果已丢弃，请重新查询');
       }
       querySucceeded = true;
-      smGoods = result.goods || [];
-      applySmQtyFilter();
+      const finalGoods = Array.isArray(result.goods) ? result.goods : [];
+      const incrementalResultComplete = haveSameSmSkuSet(smGoods, finalGoods);
+      smGoods = finalGoods;
+      if (incrementalResultComplete) {
+        // 所有分页事件均已到达时保留现有 DOM，避免完成时再重绘上万条记录。
+        updateSmGoodsSummary();
+        syncSmSelectionCheckboxes();
+      } else {
+        // IPC 进度若因窗口刷新等原因漏过一页，以最终完整结果纠正列表。
+        applySmQtyFilter();
+      }
       addSmLog('success', `查询完成，共 ${smGoods.length} 条SKU记录`);
 
       if (result.message) {
@@ -3585,9 +5348,9 @@ async function handleSmQuery() {
       }
     } else {
       queryError = result.error || '未知错误';
-      smGoods = [];
-      smFilteredGoods = [];
-      renderSmGoodsTable();
+      if (smGoods.length > 0) {
+        addSmLog('info', `已保留前面成功读取的 ${smGoods.length} 条SKU记录，仅供查看`);
+      }
       setSmResultActionsEnabled(false);
       if (result.needLogin) updateSmLoginStatus(false, '', 'offline');
       console.error('[SM] 店铺商品查询失败:', result.error || '未知错误');
@@ -3595,15 +5358,18 @@ async function handleSmQuery() {
     }
   } catch (err) {
     queryError = err.message || '未知错误';
-    smGoods = [];
-    smFilteredGoods = [];
-    renderSmGoodsTable();
+    if (smGoods.length > 0) {
+      addSmLog('info', `已保留前面成功读取的 ${smGoods.length} 条SKU记录，仅供查看`);
+    }
     setSmResultActionsEnabled(false);
     console.error('[SM] 店铺商品查询异常:', err);
     addSmLog('error', `查询异常: ${err.message}`);
   } finally {
     finishSmQueryProgress(querySucceeded, queryError);
     setSmQueryBusy(false);
+    if (!querySucceeded) setSmResultActionsEnabled(false);
+    if (smGoods.length === 0) renderSmGoodsTable();
+    smActiveQueryAccountId = '';
   }
 }
 
@@ -3745,62 +5511,75 @@ function deleteSmGoodsContextTarget() {
   }
 }
 
-function renderSmGoodsTable(options = {}) {
-  hideSmGoodsContextMenu();
-  if (smFilteredGoods.length === 0) {
-    smGoodsTableBody.innerHTML = `
-      <tr class="wms-empty-row sm-empty-row">
-        <td colspan="7" class="wms-empty-state sm-product-empty-state">
-          <span class="sm-empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M4.5 7.5 12 3l7.5 4.5v9L12 21l-7.5-4.5z"></path>
-              <path d="M4.8 7.7 12 12l7.2-4.3M12 12v9"></path>
-            </svg>
-          </span>
-          <strong>没有符合条件的商品</strong>
-          <span>可以调整时间、售价或商品状态后重新查询</span>
-        </td>
-      </tr>`;
-    smGoodsCount.classList.remove('visible');
-    if (smSelectedCount) {
-      smSelectedCount.textContent = '已选 0';
-      smSelectedCount.classList.remove('has-selection');
-    }
-    const selectAll = $('#smSelectAll');
-    if (selectAll) {
-      selectAll.checked = false;
-      selectAll.indeterminate = false;
-    }
-    setSmResultActionsEnabled(false);
-    return;
-  }
-
-  // 按 productCode 分组
+function buildSmGoodsGroups(goods, startIndex = 0) {
   const groups = [];
   const groupMap = new Map();
-  smFilteredGoods.forEach((item, idx) => {
-    const pcode = String(item.productCode || '').trim();
+  (Array.isArray(goods) ? goods : []).forEach((item, offset) => {
+    const originalIdx = startIndex + offset;
+    const productCode = String(item.productCode || '').trim();
     // 响应异常缺少 productCode 时，每条记录必须独立成组，不能把不同商品合并。
-    const groupKey = pcode || `__missing_product_${idx}`;
+    const groupKey = productCode || `__missing_product_${originalIdx}`;
     if (!groupMap.has(groupKey)) {
-      const group = { groupKey, productCode: pcode, items: [], startIdx: idx };
+      const group = { groupKey, productCode, items: [], startIdx: originalIdx };
       groups.push(group);
       groupMap.set(groupKey, group);
     }
-    groupMap.get(groupKey).items.push({ ...item, originalIdx: idx });
+    groupMap.get(groupKey).items.push({ ...item, originalIdx });
+  });
+  return groups;
+}
+
+function getSmHighResolutionImageUrl(value) {
+  const api = getSmTaskStateApi();
+  return api?.toJdHighResolutionImageUrl
+    ? api.toJdHighResolutionImageUrl(value)
+    : String(value || '');
+}
+
+function bindSmGoodsRowInteractions(root) {
+  root.querySelectorAll('.sm-spu-row').forEach(row => {
+    row.addEventListener('click', (event) => {
+      if (event.target.tagName === 'INPUT' && event.target.type === 'checkbox') return;
+      const skuRows = getSmSkuRowsForGroup(row.dataset.groupKey);
+      const isHidden = skuRows.length > 0 && skuRows[0].style.display === 'none';
+      skuRows.forEach(skuRow => {
+        skuRow.style.display = isHidden ? '' : 'none';
+      });
+      row.classList.toggle('is-expanded', isHidden);
+      row.setAttribute('aria-expanded', String(isHidden));
+    });
   });
 
-  smGoodsCount.textContent = `${groups.length} SPU · ${smFilteredGoods.length} SKU`;
-  smGoodsCount.classList.add('visible');
+  root.querySelectorAll('.sm-thumb-wrap').forEach(wrap => {
+    const zoom = wrap.querySelector('.sm-thumb-zoom');
+    wrap.addEventListener('mouseenter', () => {
+      if (zoom && !zoom.getAttribute('src')) {
+        zoom.src = zoom.dataset.previewSrc || zoom.dataset.fallbackSrc || '';
+      }
+    });
+    wrap.addEventListener('mousemove', (event) => {
+      if (zoom) {
+        zoom.style.left = (event.clientX + 15) + 'px';
+        zoom.style.top = Math.max(10, event.clientY - 140) + 'px';
+      }
+    });
+    if (zoom) {
+      zoom.addEventListener('error', () => {
+        if (zoom.dataset.fallbackApplied === '1' || !zoom.dataset.fallbackSrc) return;
+        zoom.dataset.fallbackApplied = '1';
+        zoom.src = zoom.dataset.fallbackSrc;
+      });
+    }
+  });
+}
 
-  smGoodsTableBody.innerHTML = '';
-  let spuSeq = 0;
-  groups.forEach((group) => {
-    spuSeq++;
+function appendSmGoodsGroupRows(groups, spuSequenceStart = 0) {
+  const fragment = document.createDocumentFragment();
+  (Array.isArray(groups) ? groups : []).forEach((group, groupOffset) => {
+    const spuSeq = spuSequenceStart + groupOffset + 1;
     const firstItem = group.items[0];
+    const previewImageUrl = getSmHighResolutionImageUrl(firstItem.image);
     const skuCount = group.items.length;
-
-    // 价格范围
     const prices = group.items
       .map(item => item.price)
       .filter(value => value != null && String(value).trim() !== '')
@@ -3813,7 +5592,6 @@ function renderSmGoodsTable(options = {}) {
       priceDisplay = min === max ? `¥${min}` : `¥${min} ~ ¥${max}`;
     }
 
-    // 主行（SPU 行）
     const mainTr = document.createElement('tr');
     mainTr.className = 'sm-spu-row';
     mainTr.dataset.spu = group.productCode;
@@ -3824,7 +5602,7 @@ function renderSmGoodsTable(options = {}) {
       <td><span class="sm-check-wrap"><input type="checkbox" class="sm-spu-check" aria-label="选择该商品的全部SKU" checked /></span></td>
       <td><span class="sm-index-badge">${spuSeq}</span></td>
       <td>${firstItem.image
-        ? `<span class="sm-thumb-wrap"><img class="sm-thumb" src="${escapeHtml(firstItem.image)}" alt="" /><img class="sm-thumb-zoom" src="${escapeHtml(firstItem.image)}" alt="" /></span>`
+        ? `<span class="sm-thumb-wrap"><img class="sm-thumb" src="${escapeHtml(firstItem.image)}" alt="" /><img class="sm-thumb-zoom" data-preview-src="${escapeHtml(previewImageUrl)}" data-fallback-src="${escapeHtml(firstItem.image)}" alt="" /></span>`
         : `<span class="sm-thumb-placeholder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 16 4.2-4.2 3 3L14 12l6 6"></path><circle cx="15.5" cy="7.5" r="2"></circle><rect x="3" y="3" width="18" height="18" rx="4"></rect></svg></span>`}
       </td>
       <td>
@@ -3837,9 +5615,8 @@ function renderSmGoodsTable(options = {}) {
       <td>${getSmStatusBadgeMarkup(firstItem.status)}</td>
       <td><span class="sm-date-value">${escapeHtml(firstItem.listDate || '—')}</span></td>
     `;
-    smGoodsTableBody.appendChild(mainTr);
+    fragment.appendChild(mainTr);
 
-    // SKU 子行
     group.items.forEach((item, subIdx) => {
       const skuDisplayName = item.skuName || item.name || '未命名商品';
       const subTr = document.createElement('tr');
@@ -3864,34 +5641,72 @@ function renderSmGoodsTable(options = {}) {
         <td>${getSmStatusBadgeMarkup(item.status)}</td>
         <td><span class="sm-date-value">${escapeHtml(item.listDate || '—')}</span></td>
       `;
-      smGoodsTableBody.appendChild(subTr);
+      fragment.appendChild(subTr);
     });
   });
 
-  // 展开/折叠事件
-  smGoodsTableBody.querySelectorAll('.sm-spu-row').forEach(row => {
-    row.addEventListener('click', (e) => {
-      if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') return;
-      const skuRows = getSmSkuRowsForGroup(row.dataset.groupKey);
-      const isHidden = skuRows.length > 0 && skuRows[0].style.display === 'none';
-      skuRows.forEach(r => {
-        r.style.display = isHidden ? '' : 'none';
-      });
-      row.classList.toggle('is-expanded', isHidden);
-      row.setAttribute('aria-expanded', String(isHidden));
-    });
-  });
+  bindSmGoodsRowInteractions(fragment);
+  smGoodsTableBody.appendChild(fragment);
+}
 
-  // 图片悬停放大：动态定位放大图到鼠标旁边
-  smGoodsTableBody.querySelectorAll('.sm-thumb-wrap').forEach(wrap => {
-    wrap.addEventListener('mousemove', (e) => {
-      const zoom = wrap.querySelector('.sm-thumb-zoom');
-      if (zoom) {
-        zoom.style.left = (e.clientX + 15) + 'px';
-        zoom.style.top = Math.max(10, e.clientY - 140) + 'px';
-      }
+function updateSmGoodsSummary(groups) {
+  let groupCount;
+  if (Array.isArray(groups)) {
+    groupCount = groups.length;
+  } else {
+    const productCodes = new Set();
+    let missingProductCodes = 0;
+    smFilteredGoods.forEach(item => {
+      const productCode = String(item.productCode || '').trim();
+      if (productCode) productCodes.add(productCode);
+      else missingProductCodes++;
     });
-  });
+    groupCount = productCodes.size + missingProductCodes;
+  }
+  smGoodsCount.textContent = `${groupCount} SPU · ${smFilteredGoods.length} SKU`;
+  smGoodsCount.classList.add('visible');
+  smGoodsCount.classList.remove('is-querying', 'is-error');
+}
+
+function renderSmGoodsTable(options = {}) {
+  hideSmGoodsContextMenu();
+  if (smFilteredGoods.length === 0) {
+    const queryStateVisible = smQueryRunning && !['complete', 'error'].includes(smInlineQueryState.stage);
+    const emptyTitle = smInlineQueryState.stage === 'error'
+      ? '查询失败'
+      : queryStateVisible
+        ? smInlineQueryState.title || '正在读取商品'
+        : '没有符合条件的商品';
+    const emptyDescription = smInlineQueryState.stage === 'error'
+      ? smInlineQueryState.detail || '请稍后重新查询'
+      : queryStateVisible
+        ? smInlineQueryState.detail || '商品会按批次直接显示在列表中'
+        : '可以调整时间、售价或商品状态后重新查询';
+    smGoodsTableBody.innerHTML = `
+      <tr class="wms-empty-row sm-empty-row">
+        <td colspan="7" class="wms-empty-state sm-product-empty-state">
+          <strong>${escapeHtml(emptyTitle)}</strong>
+          <span>${escapeHtml(emptyDescription)}</span>
+        </td>
+      </tr>`;
+    smGoodsCount.classList.remove('visible', 'is-querying', 'is-error');
+    if (smSelectedCount) {
+      smSelectedCount.textContent = '已选 0';
+      smSelectedCount.classList.remove('has-selection');
+    }
+    const selectAll = $('#smSelectAll');
+    if (selectAll) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+    }
+    setSmResultActionsEnabled(false);
+    return;
+  }
+
+  const groups = buildSmGoodsGroups(smFilteredGoods);
+  updateSmGoodsSummary(groups);
+  smGoodsTableBody.innerHTML = '';
+  appendSmGoodsGroupRows(groups);
 
   const selectAll = $('#smSelectAll');
   if (selectAll) selectAll.checked = true;
@@ -3923,22 +5738,26 @@ function getSmSkuRowsForGroup(groupKey) {
 
 function syncSmSelectionCheckboxes() {
   const skuChecks = Array.from(smGoodsTableBody.querySelectorAll('.sm-sku-row .sm-goods-check'));
+  const groupChecks = new Map();
+  smGoodsTableBody.querySelectorAll('.sm-sku-row').forEach(skuRow => {
+    const groupKey = String(skuRow.dataset.groupKey || '');
+    const checkbox = skuRow.querySelector('.sm-goods-check');
+    if (!checkbox) return;
+    if (!groupChecks.has(groupKey)) groupChecks.set(groupKey, []);
+    groupChecks.get(groupKey).push(checkbox);
+    skuRow.classList.toggle('is-unselected', !checkbox.checked);
+  });
+
   smGoodsTableBody.querySelectorAll('.sm-spu-row').forEach(row => {
-    const groupChecks = getSmSkuRowsForGroup(row.dataset.groupKey)
-      .map(skuRow => skuRow.querySelector('.sm-goods-check'))
-      .filter(Boolean);
-    const checkedCount = groupChecks.filter(checkbox => checkbox.checked).length;
+    const checks = groupChecks.get(String(row.dataset.groupKey || '')) || [];
+    const checkedCount = checks.filter(checkbox => checkbox.checked).length;
     const groupCheck = row.querySelector('.sm-spu-check');
     if (groupCheck) {
-      groupCheck.checked = groupChecks.length > 0 && checkedCount === groupChecks.length;
-      groupCheck.indeterminate = checkedCount > 0 && checkedCount < groupChecks.length;
+      groupCheck.checked = checks.length > 0 && checkedCount === checks.length;
+      groupCheck.indeterminate = checkedCount > 0 && checkedCount < checks.length;
     }
     row.classList.toggle('is-unselected', checkedCount === 0);
-    row.classList.toggle('is-partial', checkedCount > 0 && checkedCount < groupChecks.length);
-    getSmSkuRowsForGroup(row.dataset.groupKey).forEach(skuRow => {
-      const skuCheck = skuRow.querySelector('.sm-goods-check');
-      skuRow.classList.toggle('is-unselected', !skuCheck || !skuCheck.checked);
-    });
+    row.classList.toggle('is-partial', checkedCount > 0 && checkedCount < checks.length);
   });
 
   const selectAll = $('#smSelectAll');
@@ -3960,15 +5779,12 @@ function applySmQtyFilter() {
     return;
   }
 
-  const qtyRadio = document.querySelector('input[name="smGoodsQty"]:checked');
-  const qtyVal = qtyRadio ? qtyRadio.value : '全部';
-  const qtyCountInput = qtyVal === '前N个' ? $('#smFirstQtyN') : $('#smQtyN');
-  const qtyCount = parseInt(qtyCountInput?.value, 10) || 10;
+  const { mode: qtyVal, count: qtyCount } = getSmQtyFilterConfig();
   if (!window.shopGoodsSelection || typeof window.shopGoodsSelection.selectGoodsPerProduct !== 'function') {
     console.error('[SM] 每个SPU取SKU筛选模块未加载，保留全部SKU');
     smFilteredGoods = smGoods.slice();
   } else {
-    smFilteredGoods = window.shopGoodsSelection.selectGoodsPerProduct(smGoods, qtyVal, qtyCount);
+    smFilteredGoods = selectSmGoodsForCurrentQty(smGoods);
   }
 
   const spuCount = new Set(smGoods.map(item => String(item.productCode || ''))).size;
@@ -4012,12 +5828,15 @@ async function handleSmExport() {
   }
 
   addSmLog('info', `正在导出 ${skus.length} 个SKU...`);
-  const shopName = smShopSelect.options[smShopSelect.selectedIndex]?.text || '';
+  const viewedTask = smViewingTaskId
+    ? smTasks.find(task => task.id === smViewingTaskId)
+    : null;
+  const shopName = viewedTask?.shopName || smShopSelect.options[smShopSelect.selectedIndex]?.text || '';
   const result = await window.electronAPI.exportSkuTxt({
     skus,
     shopName,
-    dateFrom: $('#smDateFrom').value || '',
-    dateTo: $('#smDateTo').value || ''
+    dateFrom: viewedTask?.params?.dateFrom || $('#smDateFrom').value || '',
+    dateTo: viewedTask?.params?.dateTo || $('#smDateTo').value || ''
   });
 
   if (result.success) {
@@ -4046,11 +5865,26 @@ async function handleSmSend(type) {
   const info = $('#smSendInfo');
   info.textContent = `即将发送 ${skus.length} 个SKU到店铺${smSendType}任务`;
 
+  const viewedTask = smViewingTaskId
+    ? smTasks.find(task => task.id === smViewingTaskId)
+    : null;
+  const sourceAccountId = String(viewedTask?.accountId || smGoodsSourceAccountId || smShopSelect.value || '');
+  const [modes, sourceAccounts] = await Promise.all([
+    window.electronAPI.getModes(),
+    window.electronAPI.getShopAccounts()
+  ]);
+  const availableSendModes = Array.isArray(modes) ? modes : [];
+  const sourceAccount = (Array.isArray(sourceAccounts) ? sourceAccounts : [])
+    .find(account => String(account.id) === sourceAccountId);
+  const sourceShopName = viewedTask?.shopName
+    || sourceAccount?.name
+    || smShopSelect.options[smShopSelect.selectedIndex]?.textContent
+    || '';
+
   // 加载快捷模式列表
   const smSendMode = $('#smSendMode');
-  const modes = await window.electronAPI.getModes();
   smSendMode.innerHTML = '<option value="">请选择模式</option>';
-  modes.forEach(mode => {
+  availableSendModes.forEach(mode => {
     const opt = document.createElement('option');
     opt.value = mode.name;
     opt.textContent = mode.name;
@@ -4059,34 +5893,35 @@ async function handleSmSend(type) {
   // 根据类型选择默认模式
   let defaultMode;
   if (smSendType === '下标') {
-    defaultMode = modes.find(m => m.name.includes('下标'));
+    defaultMode = availableSendModes.find(m => m.name.includes('下标'));
   } else {
-    defaultMode = modes.find(m => m.name === '入仓打标') || modes.find(m => m.name.includes('打标'));
+    defaultMode = availableSendModes.find(m => m.name === '入仓打标')
+      || availableSendModes.find(m => m.name.includes('打标'));
   }
   if (defaultMode) smSendMode.value = defaultMode.name;
 
   // 加载商家端店铺列表
   const smSendShop = $('#smSendShop');
   smSendShop.innerHTML = '<option value="">请选择店铺</option>';
-  shopOptions.forEach(opt => {
+  allShopOptions.forEach(opt => {
     const o = document.createElement('option');
     o.value = opt.value;
     o.textContent = opt.label;
     smSendShop.appendChild(o);
   });
+  smSendShop.value = findSmMatchingTargetShop(sourceShopName);
 
   // 加载仓库列表
   const smSendWarehouse = $('#smSendWarehouse');
   smSendWarehouse.innerHTML = '<option value="">请选择仓库</option>';
-  const warehouseOpts = warehouseSelect.querySelectorAll('option');
-  warehouseOpts.forEach(opt => {
-    if (opt.value) {
-      const o = document.createElement('option');
-      o.value = opt.value;
-      o.textContent = opt.textContent;
-      smSendWarehouse.appendChild(o);
-    }
+  const warehouseOptions = getSmWarehouseOptions();
+  warehouseOptions.forEach(option => {
+    const o = document.createElement('option');
+    o.value = option.value;
+    o.textContent = option.label;
+    smSendWarehouse.appendChild(o);
   });
+  smSendWarehouse.value = findSmDefaultWarehouse(sourceAccount, warehouseOptions);
 
   modal.style.display = 'flex';
 }
@@ -4119,7 +5954,7 @@ async function confirmSmSend() {
   // 2. 设置店铺（如果选择了）
   if (targetShopId) {
     shopSelect.value = targetShopId;
-    const shopOpt = shopOptions.find(o => o.value === targetShopId);
+    const shopOpt = allShopOptions.find(o => o.value === targetShopId);
     if (shopOpt) shopSearchInput.value = shopOpt.label;
   }
 

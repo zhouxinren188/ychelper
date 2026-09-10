@@ -8,14 +8,26 @@ assert.strictEqual(canUseAutomation({ status: 'trial', tier: 'basic' }), true);
 assert.strictEqual(canUseAutomation({ status: 'trial', tier: 'standard' }), true);
 assert.strictEqual(canUseAutomation({ status: 'active', tier: 'premium' }), true);
 assert.strictEqual(canUseAutomation({ status: 'active', tier: 'basic' }), false);
-assert.strictEqual(canUseAutomation({ status: 'active', tier: 'standard' }), false);
+assert.strictEqual(canUseAutomation({ status: 'active', tier: 'standard' }), true);
 assert.strictEqual(canUseAutomation({ status: 'expired', tier: 'premium' }), false);
 assert.strictEqual(canUseAutomation({}), false);
 
 const root = path.join(__dirname, '..');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const styleCss = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
+const subscriptionHtml = fs.readFileSync(path.join(root, 'src', 'subscription.html'), 'utf8');
+const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const packagedAsar = path.join(root, 'dist', 'win-unpacked', 'resources', 'app.asar');
+
+assert.match(subscriptionHtml,
+  /<span>自动验收<\/span>\s*<span class="yes">✓<\/span>\s*<span class="yes">✓<\/span>\s*<span class="yes">✓<\/span>/,
+  '版本功能对比必须使用“自动验收”名称并保持全版本支持');
+assert.match(subscriptionHtml,
+  /<span>快速打标、自动定时打标<\/span>\s*<span class="no">—<\/span>\s*<span class="yes">✓<\/span>\s*<span class="yes">✓<\/span>/,
+  '版本功能对比必须标明快速打标及自动定时打标支持标准版和高级版');
+assert.match(renderer,
+  /function canUseFeature\(feature\) \{\s*if \(currentSubscriptionStatus === 'trial'\) return true;/,
+  '试用状态必须放行全部功能，不能按基础版档位拦截打单出库');
 
 assert.match(indexHtml,
   /<div class="ao-action-bar sm-action-group">\s*<button class="btn sm-action-btn sm-action-btn-primary" id="aoQueryBtn">查询<\/button>\s*<button class="btn sm-action-btn" id="aoResetBtn">重置<\/button>\s*<button class="btn sm-action-btn" id="aoBatchBtn">批量处理<\/button>/,

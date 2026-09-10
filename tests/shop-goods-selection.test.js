@@ -8,6 +8,7 @@ const { JSDOM } = require('jsdom');
 const {
   collectUniqueSkuValues,
   groupGoodsByProduct,
+  mergeGoodsBySku,
   removeGoodsByTarget,
   selectGoodsPerProduct
 } = require('../src/js/shopGoodsSelection');
@@ -23,6 +24,23 @@ assert(firstNPosition >= 0 && randomNPosition > firstNPosition,
   'SKU前N个选项必须存在并位于随机N个之前');
 assert.match(indexHtml, /id="smFirstQtyN"/,
   'SKU前N个必须有独立的数量输入框');
+const shopManageMarkup = indexHtml.slice(
+  indexHtml.indexOf('<div class="page" id="page-shopManage">'),
+  indexHtml.indexOf('<div class="page" id="page-abnormalOrders">')
+);
+assert.match(shopManageMarkup, /id="smLogBox" hidden/,
+  '快速打标内部日志容器必须隐藏且不占用商品列表空间');
+assert.doesNotMatch(shopManageMarkup, /class="log-section"/,
+  '快速打标页面不得保留单独的可见执行日志区域');
+assert.match(shopManageMarkup, /sm-filter-query-action[\s\S]*id="smQueryBtn"/,
+  '查询商品按钮必须归入筛选区域');
+assert.match(
+  shopManageMarkup,
+  /sm-product-panel-summary[\s\S]*id="smExportBtn"[\s\S]*id="smSendBtn"[\s\S]*id="smSendDownBtn"/,
+  '导出和发送按钮必须归入商品列表标题栏'
+);
+assert.doesNotMatch(shopManageMarkup, /class="sm-action-row"/,
+  '筛选区与商品列表之间不得保留悬空按钮行');
 assert.match(renderer, /sm_goodsFirstQtyN/,
   'SKU前N个数量必须保存并在下次启动恢复');
 assert.match(renderer, /class="sm-spu-check"/,
@@ -46,12 +64,42 @@ assert.match(indexHtml, /id="smCtxToggleSelection"/,
   '商品右键菜单必须提供勾选与取消勾选操作');
 assert.match(renderer, /target\.isChecked \? '取消勾选' : '勾选'/,
   '右键菜单必须根据当前行勾选状态切换操作文案');
-assert.match(styles, /\.sm-action-row\s*\{[^}]*justify-content:\s*center;/s,
-  '快速打标查询操作按钮组必须居中对齐');
+assert.match(styles, /\.sm-filter-query-action\s*\{[^}]*margin-left:\s*auto;/s,
+  '筛选区域的查询按钮必须右对齐');
+assert.match(
+  styles,
+  /\.sm-product-result-actions \.sm-action-btn\s*\{[^}]*height:\s*26px;[^}]*min-width:\s*78px;/s,
+  '商品列表标题栏的结果按钮必须使用紧凑尺寸'
+);
 assert.match(styles, /\.sm-goods-ctx-menu \.ctx-menu-item:hover/,
   '商品右键菜单必须提供清晰的悬停反馈');
 assert.match(renderer, /\$\{completed\} \/ \$\{total\} 个 SPU/,
   '查询进度总数必须明确标注为SPU，避免被误解为SKU或筛选后的商品数');
+assert.match(renderer, /function appendSmGoodsBatch\(batchGoods\)/,
+  '快速打标必须支持按页追加已经读取完成的商品');
+assert.match(renderer, /progress\.stage === 'page-complete'.*progress\.batchGoods/s,
+  '每页查询完成事件必须立即把该页商品加入列表');
+assert.match(renderer, /每完成一页，就会在这里显示这一批商品/,
+  '首批商品返回前必须明确提示逐页显示行为');
+const appendBatchFunction = renderer.slice(
+  renderer.indexOf('function appendSmGoodsBatch(batchGoods)'),
+  renderer.indexOf('function haveSameSmSkuSet')
+);
+assert.match(appendBatchFunction, /appendSmGoodsGroupRows/,
+  '每页结果必须只追加新分组行');
+assert.match(
+  appendBatchFunction,
+  /if \(appendedGoods\.length !== selectedIncoming\.length\)[\s\S]*renderSmGoodsTable\(\)/,
+  '只有接口重复返回既有SKU时才允许完整校正表格'
+);
+const selectionSyncSource = renderer.slice(
+  renderer.indexOf('function syncSmSelectionCheckboxes()'),
+  renderer.indexOf('function applySmQtyFilter()')
+);
+assert.match(selectionSyncSource, /const groupChecks = new Map\(\)/,
+  '勾选状态同步必须先建立分组索引');
+assert.doesNotMatch(selectionSyncSource, /getSmSkuRowsForGroup\(/,
+  '勾选状态同步不得按每个SPU反复扫描整张表');
 const selectedSkuFunction = renderer.slice(
   renderer.indexOf('function getSelectedSmSkus()'),
   renderer.indexOf('// ========== 导出 TXT ==========')
@@ -101,6 +149,14 @@ assert.deepStrictEqual(randomCounts, { A: 5, B: 3, C: 2 });
 assert.strictEqual(new Set(randomFive.map(item => item.sku)).size, randomFive.length);
 assert.strictEqual(randomFive.length, 10);
 assert.strictEqual(selectGoodsPerProduct(goods, '全部').length, goods.length);
+assert.deepStrictEqual(
+  mergeGoodsBySku(
+    [{ productCode: 'A', sku: 'A1', name: '旧数据' }, { productCode: 'A', sku: 'A2' }],
+    [{ productCode: 'A', sku: 'A1', name: '新数据' }, { productCode: 'B', sku: 'B1' }]
+  ).map(item => [item.sku, item.name || '']),
+  [['A1', '新数据'], ['A2', ''], ['B1', '']],
+  '逐页合并必须按SKU去重、保留原顺序并使用最新数据覆盖重复项'
+);
 assert.deepStrictEqual(
   collectUniqueSkuValues(goods, [0, 0, 1, 99, 2]),
   ['A1', 'A2', 'A3'],

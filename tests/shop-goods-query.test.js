@@ -3,13 +3,20 @@
 const assert = require('assert');
 const crypto = require('crypto');
 const {
+  SHOP_BATCH_PRODUCT_URL,
+  SHOP_BATCH_QUERY_POLICY,
+  SHOP_BATCH_SKU_URL,
   SHOP_REQUEST_RESPONSE_DELAY_MS,
   SKU_REQUEST_TIMEOUT_MS,
+  buildShopBatchProductRequest,
+  buildShopBatchSkuRequest,
   buildShopCookieHeader,
   buildProductListRequest,
   buildShopSffRequestHeaders,
   buildSkuListRequest,
   extractProductPage,
+  extractShopBatchProductPage,
+  extractShopBatchSkuMap,
   extractSkuList,
   filterGoodsByPriceRange,
   getProductId,
@@ -19,12 +26,33 @@ const {
   getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
   normalizeShopDateTime,
+  queryShopProductPagesBatch,
   queryProductPagesPageMajor,
-  normalizeShopDirectUserAgent
+  shouldUseShopBatchProductList,
+  normalizeShopDirectUserAgent,
+  withShopBatchRateLimitRetry
 } = require('../src/js/shopGoodsQuery');
 
 assert.strictEqual(SHOP_REQUEST_RESPONSE_DELAY_MS, 300);
 assert.strictEqual(SKU_REQUEST_TIMEOUT_MS, 30000);
+assert.strictEqual(SHOP_BATCH_PRODUCT_URL, 'https://data.shop.jd.com/fullQuery/querySpu');
+assert.strictEqual(SHOP_BATCH_SKU_URL, 'https://data.shop.jd.com/fullQuery/querySkuBySpuIds');
+assert.deepStrictEqual(SHOP_BATCH_QUERY_POLICY, {
+  pageSize: 100,
+  initialDelayMs: 1000,
+  pageIntervalMs: 4000,
+  rateLimitWaitMs: 60000,
+  rateLimitRetries: 1
+});
+assert.strictEqual(shouldUseShopBatchProductList({ productState: '4' }), true,
+  '未限制日期的售卖中商品应继续使用低风控批量商品接口');
+assert.strictEqual(shouldUseShopBatchProductList({
+  productState: '4',
+  dateFrom: '2026-09-07T00:00',
+  dateTo: '2026-09-07T23:59'
+}), false, '设置上架时间时必须使用真正支持日期筛选的 SFF 商品列表接口');
+assert.strictEqual(shouldUseShopBatchProductList({ productState: '5' }), false,
+  '已下架商品必须继续使用 SFF 状态筛选接口');
 
 const fakeCookies = [
   { name: 'unrelated', value: 'must-not-be-sent' },
@@ -197,6 +225,94 @@ assert.throws(
   /不能晚于/
 );
 
+const batchProductRequest = buildShopBatchProductRequest({
+  dateFrom: '2026-04-14',
+  dateTo: '2026-04-15',
+  pageNum: 2,
+  pageSize: 100
+});
+assert.strictEqual(batchProductRequest.status, 1);
+assert.strictEqual(batchProductRequest.pageNo, 2);
+assert.strictEqual(batchProductRequest.pageSize, 100);
+assert.strictEqual(batchProductRequest.startOnlineTime, '2026-04-14 00:00:00');
+assert.strictEqual(batchProductRequest.endOnlineTime, '2026-04-15 23:59:59');
+assert.deepStrictEqual(batchProductRequest.columns, ['jdPrice', 'stockNum', 'onlineTime']);
+assert.deepStrictEqual(
+  buildShopBatchSkuRequest(['10032969041181', '10032969041182', '10032969041181']),
+  { spuIdList: [10032969041181, 10032969041182], xnztQuery: false },
+  '安全整数商品编号应按已验证项目的数字数组格式提交，并去重'
+);
+assert.deepStrictEqual(
+  buildShopBatchSkuRequest(['9007199254740993']),
+  { spuIdList: ['9007199254740993'], xnztQuery: false },
+  '超过安全整数范围的商品编号必须保留字符串，不能损失精度'
+);
+assert.throws(() => buildShopBatchSkuRequest([]), /缺少商品编号/);
+
+const batchProducts = extractShopBatchProductPage({
+  code: 200,
+  data: {
+    total: 2,
+    pageNo: 1,
+    pageSize: 100,
+    dataList: [
+      {
+        spuId: 1001,
+        spuName: '批量商品一',
+        jdPrice: '12.30',
+        imgUrl: '//img.example.test/a.jpg',
+        onlineTime: '2026-04-14 08:05:00'
+      },
+      { wareId: '1002', wareName: '批量商品二', price: 9.9, skuId: 2002, onlineTime: 1713060000 }
+    ]
+  }
+});
+assert.strictEqual(batchProducts.success, true);
+assert.strictEqual(batchProducts.totalCount, 2);
+assert.deepStrictEqual(batchProducts.items.map(item => item.productId), ['1001', '1002']);
+assert.deepStrictEqual(batchProducts.items.map(item => item.productName), ['批量商品一', '批量商品二']);
+assert.strictEqual(batchProducts.items[0].priceDetailVO.jdPrice, '12.30');
+assert.strictEqual(batchProducts.items[1].productSkuInfoVO.skuId, '2002');
+assert.strictEqual(batchProducts.items[0].logo, 'https://img.example.test/a.jpg');
+assert.strictEqual(batchProducts.items[0].onlineTime, Date.parse('2026-04-14 08:05:00'));
+assert.strictEqual(batchProducts.items[1].onlineTime, 1713060000000);
+
+const objectSkuResult = extractShopBatchSkuMap({
+  code: 200,
+  data: {
+    1001: [
+      { skuId: 2001, skuName: '规格A', jdPrice: 10 },
+      { skuId: 2002, skuName: '规格B', jdPrice: 11 }
+    ],
+    1002: [{ id: 2003, name: '规格C', price: 12 }]
+  }
+}, ['1001', '1002']);
+assert.strictEqual(objectSkuResult.success, true);
+assert.deepStrictEqual(objectSkuResult.missingProductIds, []);
+assert.deepStrictEqual(objectSkuResult.skuMap.get('1001').map(item => item.skuId), ['2001', '2002']);
+assert.deepStrictEqual(objectSkuResult.skuMap.get('1002').map(item => item.skuId), ['2003']);
+
+const groupedSkuResult = extractShopBatchSkuMap({
+  code: 200,
+  data: [
+    { spuId: 1001, skuList: [{ skuId: 2001 }, { skuId: 2002 }] },
+    { spuId: 1002, skuInfoList: [{ itemId: 2003 }] }
+  ]
+}, ['1001', '1002']);
+assert.deepStrictEqual(groupedSkuResult.skuMap.get('1001').map(item => item.skuId), ['2001', '2002']);
+assert.deepStrictEqual(groupedSkuResult.skuMap.get('1002').map(item => item.skuId), ['2003']);
+
+const flatSkuResult = extractShopBatchSkuMap({
+  code: 200,
+  data: [
+    { spuId: 1001, skuId: 2001 },
+    { productId: 1001, skuId: 2002 },
+    { wareId: 1002, skuId: 2003 }
+  ]
+}, ['1001', '1002']);
+assert.deepStrictEqual(flatSkuResult.skuMap.get('1001').map(item => item.skuId), ['2001', '2002']);
+assert.deepStrictEqual(flatSkuResult.skuMap.get('1002').map(item => item.skuId), ['2003']);
+
 const productId = '10032969041181';
 const skuRequest = buildSkuListRequest(productId);
 assert.strictEqual(skuRequest.skuListQueryReq.productId, productId);
@@ -224,6 +340,34 @@ const products = extractProductPage(JSON.stringify({
 assert.strictEqual(products.success, true);
 assert.strictEqual(products.totalCount, 1);
 assert.strictEqual(getProductId(products.items[0]), productId);
+
+const emptyProductsWithNullData = extractProductPage(JSON.stringify({
+  code: 200,
+  msg: '成功',
+  data: null
+}));
+assert.strictEqual(emptyProductsWithNullData.success, true,
+  '京东以null表示空结果时必须作为正常的0条商品处理');
+assert.deepStrictEqual(emptyProductsWithNullData.items, []);
+assert.strictEqual(emptyProductsWithNullData.totalCount, 0);
+
+const emptyProductsWithZeroTotal = extractProductPage(JSON.stringify({
+  code: 200,
+  msg: '成功',
+  data: { totalCount: 0, pageNum: 1, pageSize: 100, data: null }
+}));
+assert.strictEqual(emptyProductsWithZeroTotal.success, true,
+  '京东明确返回总数0且列表缺省时必须作为正常空结果处理');
+assert.deepStrictEqual(emptyProductsWithZeroTotal.items, []);
+assert.strictEqual(emptyProductsWithZeroTotal.totalCount, 0);
+
+const malformedProductsWithPositiveTotal = extractProductPage(JSON.stringify({
+  code: 200,
+  msg: '成功',
+  data: { totalCount: 3, pageNum: 1, pageSize: 100, data: null }
+}));
+assert.strictEqual(malformedProductsWithPositiveTotal.success, false,
+  '总数大于0却缺少商品列表时仍必须报结构异常');
 
 const skuIds = [
   '10198582176944',
@@ -357,7 +501,127 @@ async function testPageMajorFlow() {
   assert.strictEqual(resumedResult.skuMap.size, 2);
 }
 
-testPageMajorFlow()
+async function testBatchPageFlow() {
+  const calls = [];
+  const delays = [];
+  const progress = [];
+  const result = await queryShopProductPagesBatch({
+    pageSize: 2,
+    delay: async ms => delays.push(ms),
+    fetchProductPage: async pageNum => {
+      calls.push(`P${pageNum}`);
+      return {
+        totalCount: 3,
+        pageSize: 2,
+        items: pageNum === 1
+          ? [{ productId: 'p1' }, { productId: 'p2' }]
+          : [{ productId: 'p3' }]
+      };
+    },
+    fetchSkuBatch: async productIds => {
+      calls.push(`S${productIds.join(',')}`);
+      return {
+        skuMap: new Map(productIds.map(productId => [
+          productId,
+          productId === 'p1'
+            ? [{ skuId: 'p1-a' }, { skuId: 'p1-b' }]
+            : [{ skuId: `${productId}-a` }]
+        ]))
+      };
+    },
+    onProgress: value => progress.push(value)
+  });
+  assert.deepStrictEqual(calls, ['P1', 'Sp1,p2', 'P2', 'Sp3']);
+  assert.deepStrictEqual(delays, [1000, 4000]);
+  assert.strictEqual(result.totalPages, 2);
+  assert.strictEqual(result.skuMap.get('p1').length, 2, '批量流程必须保留同一SPU的全部SKU');
+  const completedProgress = progress.filter(item => item.stage === 'page-complete');
+  assert.deepStrictEqual(completedProgress.map(item => item.completed), [2, 3]);
+  assert.deepStrictEqual(completedProgress[0].pageProducts.map(item => item.productId), ['p1', 'p2']);
+  assert.deepStrictEqual(completedProgress[0].pageSkuMap.get('p1'), [
+    { skuId: 'p1-a' },
+    { skuId: 'p1-b' }
+  ], '每页完成回调必须带上该页全部SKU，供界面立即显示');
+
+  const bulkCalls = [];
+  const bulkDelays = [];
+  const totalProducts = 1732;
+  const bulkResult = await queryShopProductPagesBatch({
+    pageSize: 100,
+    delay: async ms => bulkDelays.push(ms),
+    fetchProductPage: async pageNum => {
+      bulkCalls.push(`P${pageNum}`);
+      const start = (pageNum - 1) * 100;
+      const count = Math.min(100, totalProducts - start);
+      return {
+        totalCount: totalProducts,
+        pageSize: 100,
+        items: Array.from({ length: count }, (_, index) => ({ productId: `p${start + index + 1}` }))
+      };
+    },
+    fetchSkuBatch: async productIds => {
+      bulkCalls.push(`S${productIds.length}`);
+      return {
+        skuMap: new Map(productIds.map(productId => [productId, [{ skuId: `${productId}-sku` }]]))
+      };
+    }
+  });
+  assert.strictEqual(bulkCalls.filter(call => call.startsWith('P')).length, 18);
+  assert.strictEqual(bulkCalls.filter(call => call.startsWith('S')).length, 18);
+  assert.strictEqual(bulkCalls.length, 36, '1732个SPU只能产生18次商品和18次SKU批量调用');
+  assert.deepStrictEqual(bulkDelays, [1000, ...Array(17).fill(4000)]);
+  assert.strictEqual(bulkResult.skuMap.size, totalProducts);
+
+  await assert.rejects(
+    queryShopProductPagesBatch({
+      pageSize: 100,
+      delay: async () => {},
+      fetchProductPage: async () => ({
+        totalCount: 2,
+        pageSize: 100,
+        items: [{ productId: 'missing-1' }, { productId: 'missing-2' }]
+      }),
+      fetchSkuBatch: async () => ({
+        skuMap: new Map([['missing-1', [{ skuId: 'sku-1' }]]])
+      })
+    }),
+    /缺少1个商品结果/,
+    '批量响应不完整时必须停止，不能把漏掉的SKU当作成功'
+  );
+
+  const rateCalls = [];
+  const rateDelays = [];
+  const rateResult = await withShopBatchRateLimitRetry(async attempt => {
+    rateCalls.push(attempt);
+    if (attempt === 0) {
+      const error = new Error('rate limited');
+      error.code = 'JD_RATE_LIMIT';
+      throw error;
+    }
+    return 'ok';
+  }, {
+    label: '测试批量查询',
+    delay: async ms => rateDelays.push(ms)
+  });
+  assert.strictEqual(rateResult, 'ok');
+  assert.deepStrictEqual(rateCalls, [0, 1]);
+  assert.deepStrictEqual(rateDelays, [60000]);
+
+  let failedAttempts = 0;
+  await assert.rejects(
+    withShopBatchRateLimitRetry(async () => {
+      failedAttempts += 1;
+      const error = new Error('still limited');
+      error.code = 'JD_RATE_LIMIT';
+      throw error;
+    }, { delay: async () => {} }),
+    /still limited/
+  );
+  assert.strictEqual(failedAttempts, 2, '限流后只能重试一次，不能无限循环');
+}
+
+testBatchPageFlow()
+  .then(() => testPageMajorFlow())
   .then(() => console.log('shop-goods-query tests passed'))
   .catch(error => {
     console.error(error);

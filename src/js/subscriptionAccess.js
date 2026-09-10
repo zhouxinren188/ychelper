@@ -6,7 +6,8 @@
   function canUseAutomation(subscription) {
     const status = String(subscription?.status || '').trim().toLowerCase();
     const tier = String(subscription?.tier || '').trim().toLowerCase();
-    return status === 'trial' || (status === 'active' && tier === 'premium');
+    return status === 'trial'
+      || (status === 'active' && (tier === 'standard' || tier === 'premium'));
   }
 
   return { canUseAutomation };

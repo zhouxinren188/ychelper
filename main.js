@@ -61,23 +61,31 @@ const {
 } = require('./src/js/wmsSessionState');
 const {
   PRODUCT_LIST_API,
+  SHOP_BATCH_PRODUCT_URL,
+  SHOP_BATCH_QUERY_POLICY,
+  SHOP_BATCH_SKU_URL,
   SHOP_H5ST_APP_ID,
   SHOP_REQUEST_RESPONSE_DELAY_MS,
   SHOP_SFF_APP_ID,
   SKU_LIST_API,
   SKU_REQUEST_TIMEOUT_MS,
+  buildShopBatchProductRequest,
+  buildShopBatchSkuRequest,
   buildProductListRequest,
   buildShopSffRequestHeaders,
-  buildSkuListRequest,
   extractProductPage,
-  extractSkuList,
+  extractShopBatchProductPage,
+  extractShopBatchSkuMap,
   filterGoodsByPriceRange,
   getProductState,
   getShopGoodsDisplayName,
   getShopProductStatus,
   getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
-  queryProductPagesPageMajor
+  queryShopProductPagesBatch,
+  shouldUseShopBatchProductList,
+  validateShopBatchResponse,
+  withShopBatchRateLimitRetry
 } = require('./src/js/shopGoodsQuery');
 const { ShopSffTransportClient } = require('./shop-sff-transport');
 const {
@@ -370,7 +378,7 @@ async function releaseCurrentSubscriptionSession() {
 function assertAutomationAccess() {
   const subscription = storeGet('subscriptionInfo', {});
   if (canUseAutomation(subscription)) return;
-  const error = new Error('自动化处理功能仅限有效试用用户和高级版使用');
+  const error = new Error('快速打标功能需升级至标准版或高级版后使用');
   error.code = 'AUTOMATION_ACCESS_DENIED';
   throw error;
 }
@@ -611,6 +619,206 @@ function storeUpdate(update) {
   if (storeReadBlocked) return false;
   update(data);
   return saveStore(data);
+}
+
+const SHOP_GOODS_TASK_RESULT_PREFIX = 'YCH-SM-TASK-V1:';
+const shopGoodsTaskResultDir = path.join(app.getPath('userData'), 'shop-goods-task-results');
+
+function normalizeShopGoodsTaskId(taskId) {
+  const normalized = String(taskId || '').trim();
+  if (!/^sm_[a-z0-9_\-]{6,80}$/i.test(normalized)) {
+    throw new Error('采集任务编号无效');
+  }
+  return normalized;
+}
+
+function getShopGoodsTaskResultPath(taskId) {
+  return path.join(shopGoodsTaskResultDir, `${normalizeShopGoodsTaskId(taskId)}.dat`);
+}
+
+function sanitizeShopGoodsTaskMetadata(task) {
+  const source = task && typeof task === 'object' ? task : {};
+  const params = source.params && typeof source.params === 'object' ? source.params : {};
+  const progress = source.progress && typeof source.progress === 'object' ? source.progress : {};
+  const publishConfig = source.publishConfig && typeof source.publishConfig === 'object'
+    ? source.publishConfig
+    : {};
+  const validStatuses = new Set(['queued', 'collecting', 'complete', 'failed']);
+  const validPublishStatuses = new Set(['unpublished', 'publishing', 'published', 'publish_failed', 'skipped']);
+  const validExecutionStatuses = new Set(['not_started', 'queued', 'running', 'success', 'partial', 'failed']);
+  const text = (value, maxLength = 500) => String(value == null ? '' : value).trim().slice(0, maxLength);
+  const number = value => Math.max(0, Number(value) || 0);
+  const id = normalizeShopGoodsTaskId(source.id);
+  const accountId = text(source.accountId, 128);
+  if (!accountId) throw new Error('采集任务缺少店铺');
+  return {
+    id,
+    accountId,
+    shopName: text(source.shopName, 256) || '未命名店铺',
+    source: source.source === 'auto' ? 'auto' : 'manual',
+    automationRunDate: text(source.automationRunDate, 16),
+    createdAt: text(source.createdAt, 64),
+    updatedAt: text(source.updatedAt, 64),
+    status: validStatuses.has(source.status) ? source.status : 'queued',
+    params: {
+      accountId,
+      dateFrom: text(params.dateFrom, 32),
+      dateTo: text(params.dateTo, 32),
+      priceMin: text(params.priceMin, 32),
+      priceMax: text(params.priceMax, 32),
+      goodsStatus: text(params.goodsStatus, 32) || '售卖中'
+    },
+    qtyMode: text(source.qtyMode, 32) || '全部',
+    qtyCount: Math.max(1, Math.min(100000, Number.parseInt(source.qtyCount, 10) || 10)),
+    progress: {
+      stage: text(progress.stage, 32),
+      pageNum: number(progress.pageNum),
+      totalPages: number(progress.totalPages),
+      completed: number(progress.completed),
+      total: number(progress.total),
+      loadedSkuTotal: number(progress.loadedSkuTotal),
+      message: text(progress.message, 500)
+    },
+    resultSpuCount: number(source.resultSpuCount),
+    resultSkuCount: number(source.resultSkuCount),
+    error: text(source.error, 500),
+    resultSaved: Boolean(source.resultSaved),
+    publishStatus: validPublishStatuses.has(source.publishStatus)
+      ? source.publishStatus
+      : 'unpublished',
+    publishConfig: {
+      modeName: text(publishConfig.modeName, 128),
+      targetShopId: text(publishConfig.targetShopId, 128),
+      targetWarehouseId: text(publishConfig.targetWarehouseId, 128)
+    },
+    publishError: text(source.publishError, 500),
+    publishedAt: text(source.publishedAt, 64),
+    publishedTaskCount: number(source.publishedTaskCount),
+    executionStatus: validExecutionStatuses.has(source.executionStatus)
+      ? source.executionStatus
+      : 'not_started'
+  };
+}
+
+function sanitizeShopAutoLabelConfig(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const goodsStatuses = new Set(['全部商品', '售卖中', '已下架']);
+  const qtyModes = new Set(['全部', '第1个', '最后1个', '最低价', '最高价', '前N个', 'N个']);
+  const text = (input, maxLength = 128) => String(input == null ? '' : input).trim().slice(0, maxLength);
+  return {
+    firstRunFrom: text(source.firstRunFrom, 32),
+    priceMin: text(source.priceMin, 32),
+    priceMax: text(source.priceMax, 32),
+    goodsStatus: goodsStatuses.has(source.goodsStatus) ? source.goodsStatus : '售卖中',
+    qtyMode: qtyModes.has(source.qtyMode) ? source.qtyMode : '全部',
+    qtyCount: Math.min(10000, Math.max(1, Number.parseInt(source.qtyCount, 10) || 10)),
+    modeName: text(source.modeName),
+    targetShopId: text(source.targetShopId),
+    lastSuccessAt: text(source.lastSuccessAt, 32)
+  };
+}
+
+function sanitizeAutoLabelSettings(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const startTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(source.startTime || ''))
+    ? String(source.startTime)
+    : '02:00';
+  return {
+    enabled: Boolean(source.enabled),
+    liveConfirmed: Boolean(source.liveConfirmed),
+    startTime,
+    catchUpMissed: source.catchUpMissed !== false,
+    scheduleActivatedAt: String(source.scheduleActivatedAt || '').trim().slice(0, 64),
+    lastRunDate: String(source.lastRunDate || '').trim().slice(0, 16),
+    runWindowEnd: String(source.runWindowEnd || '').trim().slice(0, 32),
+    lastRunStatus: String(source.lastRunStatus || '').trim().slice(0, 32),
+    lastRunError: String(source.lastRunError || '').trim().slice(0, 500),
+    lastStartedAt: String(source.lastStartedAt || '').trim().slice(0, 64),
+    lastFinishedAt: String(source.lastFinishedAt || '').trim().slice(0, 64)
+  };
+}
+
+function sanitizeLabelTaskMetadata(task) {
+  const source = task && typeof task === 'object' ? task : {};
+  const validStatuses = new Set(['pending', 'running', 'success', 'error', 'partial', 'stopped']);
+  const status = validStatuses.has(source.status) ? source.status : 'pending';
+  const config = source.config && typeof source.config === 'object' ? source.config : {};
+  const text = (value, maxLength = 256) => String(value == null ? '' : value).trim().slice(0, maxLength);
+  const taskId = Number.parseInt(source.id, 10) || 0;
+  const skus = (Array.isArray(source.skus) ? source.skus : [])
+    .map(value => text(value, 128))
+    .filter(Boolean)
+    .slice(0, 5000);
+  if (taskId < 1 || skus.length === 0) throw new Error('打标任务数据无效');
+  return {
+    id: taskId,
+    skus,
+    shopId: text(source.shopId, 128),
+    spShopNo: text(source.spShopNo, 128),
+    shopName: text(source.shopName, 256),
+    shopDeptId: text(source.shopDeptId, 128),
+    shopDeptName: text(source.shopDeptName, 256),
+    warehouseId: text(source.warehouseId, 128),
+    config: JSON.parse(JSON.stringify(config)),
+    modeName: text(source.modeName, 128) || '自定义',
+    sourceFileName: text(source.sourceFileName, 256),
+    sourceTaskId: text(source.sourceTaskId, 128),
+    automationRunDate: text(source.automationRunDate, 16),
+    autoCreated: Boolean(source.autoCreated),
+    status: status === 'running' ? 'pending' : status,
+    hasLabelFailure: Boolean(source.hasLabelFailure),
+    failedLabelSkus: (Array.isArray(source.failedLabelSkus) ? source.failedLabelSkus : [])
+      .map(value => text(value, 128))
+      .filter(Boolean)
+      .slice(0, 5000)
+  };
+}
+
+function saveShopGoodsTaskResult(taskId, payload) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('系统安全存储不可用，无法保存采集结果');
+  }
+  const rawGoods = Array.isArray(payload && payload.rawGoods) ? payload.rawGoods : [];
+  const filteredGoods = Array.isArray(payload && payload.filteredGoods) ? payload.filteredGoods : [];
+  if (rawGoods.length > 200000 || filteredGoods.length > 200000) {
+    throw new Error('采集结果数量超出本地保存上限');
+  }
+  fs.mkdirSync(shopGoodsTaskResultDir, { recursive: true });
+  const resultPath = getShopGoodsTaskResultPath(taskId);
+  const tempPath = `${resultPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    const json = JSON.stringify({ rawGoods, filteredGoods });
+    const encrypted = safeStorage.encryptString(json).toString('base64');
+    fs.writeFileSync(tempPath, SHOP_GOODS_TASK_RESULT_PREFIX + encrypted, 'utf-8');
+    fs.renameSync(tempPath, resultPath);
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
+  }
+}
+
+function loadShopGoodsTaskResult(taskId) {
+  const resultPath = getShopGoodsTaskResultPath(taskId);
+  if (!fs.existsSync(resultPath)) return null;
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('系统安全存储不可用，无法读取采集结果');
+  }
+  const raw = fs.readFileSync(resultPath, 'utf-8');
+  if (!raw.startsWith(SHOP_GOODS_TASK_RESULT_PREFIX)) {
+    throw new Error('采集结果文件格式无效');
+  }
+  const encrypted = Buffer.from(raw.slice(SHOP_GOODS_TASK_RESULT_PREFIX.length), 'base64');
+  const payload = JSON.parse(safeStorage.decryptString(encrypted));
+  return {
+    rawGoods: Array.isArray(payload.rawGoods) ? payload.rawGoods : [],
+    filteredGoods: Array.isArray(payload.filteredGoods) ? payload.filteredGoods : []
+  };
+}
+
+function deleteShopGoodsTaskResult(taskId) {
+  const resultPath = getShopGoodsTaskResultPath(taskId);
+  if (fs.existsSync(resultPath)) fs.unlinkSync(resultPath);
 }
 
 function initializeOrderCommandRuntime(accountIdentity, { generate = false } = {}) {
@@ -1785,10 +1993,7 @@ function createMainWindow() {
       jdPageWindow = null;
     }
     destroyCpPageWindow();
-    if (shopPageWindow && !shopPageWindow.isDestroyed()) {
-      shopPageWindow.destroy();
-      shopPageWindow = null;
-    }
+    destroyAllShopEnvironments();
     if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
       shopLoginWindow.destroy();
       shopLoginWindow = null;
@@ -3373,6 +3578,147 @@ ipcMain.handle('save-failed-label-skus', async (event, { skus, label, shopName }
 
 // ========== IPC: 店铺管理 ==========
 
+ipcMain.handle('get-shop-goods-tasks', async () => {
+  const storedTasks = storeGet('shopGoodsTasks', []);
+  return (Array.isArray(storedTasks) ? storedTasks : []).flatMap(task => {
+    try {
+      return [sanitizeShopGoodsTaskMetadata(task)];
+    } catch (_) {
+      return [];
+    }
+  });
+});
+
+ipcMain.handle('save-shop-goods-tasks', async (event, tasks) => {
+  assertAutomationAccess();
+  try {
+    const list = (Array.isArray(tasks) ? tasks : [])
+      .slice(-100)
+      .map(sanitizeShopGoodsTaskMetadata);
+    if (!storeSet('shopGoodsTasks', list)) {
+      return { success: false, error: '任务列表保存失败' };
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message || '任务列表保存失败' };
+  }
+});
+
+ipcMain.handle('get-label-tasks', async () => {
+  const storedTasks = storeGet('labelTasks', []);
+  return (Array.isArray(storedTasks) ? storedTasks : []).flatMap(task => {
+    try {
+      return [sanitizeLabelTaskMetadata(task)];
+    } catch (_) {
+      return [];
+    }
+  });
+});
+
+ipcMain.handle('save-label-tasks', async (event, tasks) => {
+  try {
+    const list = (Array.isArray(tasks) ? tasks : [])
+      .slice(-500)
+      .map(sanitizeLabelTaskMetadata);
+    if (!storeSet('labelTasks', list)) {
+      return { success: false, error: storeReadBlockedReason || '打标任务保存失败' };
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message || '打标任务保存失败' };
+  }
+});
+
+ipcMain.handle('save-shop-goods-task-result', async (event, { taskId, rawGoods, filteredGoods } = {}) => {
+  assertAutomationAccess();
+  try {
+    saveShopGoodsTaskResult(taskId, { rawGoods, filteredGoods });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message || '采集结果保存失败' };
+  }
+});
+
+ipcMain.handle('get-shop-goods-task-result', async (event, taskId) => {
+  assertAutomationAccess();
+  try {
+    const result = loadShopGoodsTaskResult(taskId);
+    return result
+      ? { success: true, ...result }
+      : { success: false, missing: true, error: '没有找到该任务的商品结果' };
+  } catch (error) {
+    return { success: false, error: error.message || '采集结果读取失败' };
+  }
+});
+
+ipcMain.handle('delete-shop-goods-task-result', async (event, taskId) => {
+  assertAutomationAccess();
+  try {
+    deleteShopGoodsTaskResult(taskId);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message || '采集结果删除失败' };
+  }
+});
+
+ipcMain.handle('get-auto-label-settings', async () => {
+  return sanitizeAutoLabelSettings(storeGet('autoLabelSettings', {}));
+});
+
+ipcMain.handle('save-auto-label-settings', async (event, settings) => {
+  assertAutomationAccess();
+  const current = sanitizeAutoLabelSettings(storeGet('autoLabelSettings', {}));
+  const requested = sanitizeAutoLabelSettings({
+    ...current,
+    enabled: settings?.enabled,
+    liveConfirmed: Boolean(settings?.enabled),
+    startTime: settings?.startTime,
+    catchUpMissed: settings?.catchUpMissed
+  });
+  const scheduleChanged = requested.enabled && (
+    !current.enabled
+    || !current.liveConfirmed
+    || !current.scheduleActivatedAt
+    || current.startTime !== requested.startTime
+  );
+  const normalized = sanitizeAutoLabelSettings({
+    ...requested,
+    scheduleActivatedAt: requested.enabled
+      ? (scheduleChanged ? new Date().toISOString() : current.scheduleActivatedAt)
+      : ''
+  });
+  if (!storeSet('autoLabelSettings', normalized)) {
+    return { success: false, error: storeReadBlockedReason || '自动打标设置保存失败' };
+  }
+  return { success: true, settings: normalized };
+});
+
+ipcMain.handle('save-auto-label-runtime', async (event, runtime) => {
+  assertAutomationAccess();
+  const current = sanitizeAutoLabelSettings(storeGet('autoLabelSettings', {}));
+  const normalized = sanitizeAutoLabelSettings({ ...current, ...(runtime || {}) });
+  if (!storeSet('autoLabelSettings', normalized)) {
+    return { success: false, error: storeReadBlockedReason || '自动打标运行状态保存失败' };
+  }
+  return { success: true, settings: normalized };
+});
+
+ipcMain.handle('save-shop-auto-label-runtime', async (event, runtime) => {
+  assertAutomationAccess();
+  const accountId = String(runtime?.accountId || '').trim();
+  if (!accountId) return { success: false, error: '店铺编号无效' };
+  const list = storeGet('shopAccounts', []);
+  const index = list.findIndex(account => String(account?.id || '') === accountId);
+  if (index < 0) return { success: false, error: '店铺账号不存在' };
+  const config = sanitizeShopAutoLabelConfig(list[index].autoLabelConfig);
+  config.lastSuccessAt = String(runtime?.lastSuccessAt || '').trim().slice(0, 32);
+  list[index] = { ...list[index], autoLabelConfig: config };
+  if (!storeSet('shopAccounts', list)) {
+    return { success: false, error: storeReadBlockedReason || '店铺自动打标进度保存失败' };
+  }
+  return { success: true, autoLabelConfig: config };
+});
+
 // 店铺账号 CRUD - 存储在 config.json 的 shopAccounts key
 ipcMain.handle('get-shop-accounts', async () => {
   return storeGet('shopAccounts', []);
@@ -3404,12 +3750,30 @@ ipcMain.handle('save-shop-account', async (event, account) => {
     };
   }
 
+  const existingAccount = accountId
+    ? list.find(item => String(item.id || '') === accountId)
+    : duplicate;
+  const defaultWarehouseId = Object.prototype.hasOwnProperty.call(account, 'defaultWarehouseId')
+    ? String(account.defaultWarehouseId || '').trim().slice(0, 128)
+    : String(existingAccount?.defaultWarehouseId || '').trim().slice(0, 128);
+  const previousAutoLabelConfig = sanitizeShopAutoLabelConfig(existingAccount?.autoLabelConfig);
+  const autoLabelConfig = Object.prototype.hasOwnProperty.call(account, 'autoLabelConfig')
+    ? sanitizeShopAutoLabelConfig(account.autoLabelConfig)
+    : previousAutoLabelConfig;
+  if (autoLabelConfig.firstRunFrom === previousAutoLabelConfig.firstRunFrom) {
+    autoLabelConfig.lastSuccessAt = previousAutoLabelConfig.lastSuccessAt;
+  } else {
+    autoLabelConfig.lastSuccessAt = '';
+  }
+
   const savedAccount = {
     id: accountId || (duplicate ? duplicate.id : crypto.randomUUID()),
     name: String(account.name || '').trim(),
     username,
     password,
-    autoSend: !!account.autoSend
+    autoSend: !!account.autoSend,
+    defaultWarehouseId,
+    autoLabelConfig
   };
 
   if (accountId) {
@@ -3453,6 +3817,7 @@ ipcMain.handle('delete-shop-account', async (event, id) => {
   }
 
   // 删除该账号的 cookie 文件和 session 分区
+  destroyShopEnvironment(id);
   cookieManager.deleteCookieFile('shop', id);
   await cookieManager.clearPartition(cookieManager.getPartitionName('shop', id));
 
@@ -3477,6 +3842,9 @@ let activeShopAccountId = ''; // 当前活跃的店铺账号ID
 let shopPageWindow = null;           // 店铺后台浏览窗口
 let shopQueryInProgress = false;     // 自动查询任务锁
 let shopSffContextHeaders = null;    // 商品页官方请求生成的 DSM 环境头（仅保存在内存）
+const SHOP_ENVIRONMENT_CACHE_LIMIT = 3;
+const shopEnvironmentCache = new Map();
+const trackedShopEnvironmentWindows = new WeakSet();
 // 老款实测使用 Windows/.NET 兼容传输，并按“1页SPU -> 本页逐个SKU”串行处理。
 const SHOP_GOODS_DIRECT_QUERY_ENABLED = true;
 const shopSffTransportExecutable = app.isPackaged
@@ -3489,6 +3857,118 @@ let shopGoodsResumeCheckpoint = null;
 
 function clearShopGoodsResumeCheckpoint() {
   shopGoodsResumeCheckpoint = null;
+}
+
+function isUsableShopEnvironmentWindow(win) {
+  return Boolean(win) && !win.isDestroyed();
+}
+
+function trackShopEnvironmentWindow(accountId, win) {
+  if (!accountId || !isUsableShopEnvironmentWindow(win) || trackedShopEnvironmentWindows.has(win)) return;
+  trackedShopEnvironmentWindows.add(win);
+  win.once('closed', () => {
+    const cached = shopEnvironmentCache.get(accountId);
+    if (cached && cached.window === win) shopEnvironmentCache.delete(accountId);
+    if (shopPageWindow === win) {
+      shopPageWindow = null;
+      if (activeShopAccountId === accountId) shopSffContextHeaders = null;
+    }
+  });
+}
+
+function destroyShopEnvironment(accountId) {
+  const normalizedAccountId = String(accountId || '');
+  if (!normalizedAccountId) return;
+  const cached = shopEnvironmentCache.get(normalizedAccountId);
+  const win = cached && cached.window
+    ? cached.window
+    : activeShopAccountId === normalizedAccountId
+      ? shopPageWindow
+      : null;
+  shopEnvironmentCache.delete(normalizedAccountId);
+  if (activeShopAccountId === normalizedAccountId) {
+    if (!win || shopPageWindow === win) shopPageWindow = null;
+    shopSffContextHeaders = null;
+  }
+  if (isUsableShopEnvironmentWindow(win)) win.destroy();
+}
+
+function pruneShopEnvironmentCache(preserveAccountId = '') {
+  while (shopEnvironmentCache.size > SHOP_ENVIRONMENT_CACHE_LIMIT) {
+    const candidate = [...shopEnvironmentCache.entries()]
+      .filter(([accountId]) => (
+        accountId !== activeShopAccountId && accountId !== String(preserveAccountId || '')
+      ))
+      .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt)[0];
+    if (!candidate) break;
+    console.log(`[店铺环境] 回收最久未使用的缓存：账号[${candidate[0]}]`);
+    destroyShopEnvironment(candidate[0]);
+  }
+}
+
+function rememberShopEnvironment(accountId, win, contextHeaders = null) {
+  const normalizedAccountId = String(accountId || '');
+  if (!normalizedAccountId || !isUsableShopEnvironmentWindow(win)) return false;
+  const existing = shopEnvironmentCache.get(normalizedAccountId);
+  if (existing && existing.window !== win && isUsableShopEnvironmentWindow(existing.window)) {
+    existing.window.destroy();
+  }
+  shopEnvironmentCache.set(normalizedAccountId, {
+    window: win,
+    contextHeaders: contextHeaders || null,
+    lastUsedAt: Date.now()
+  });
+  trackShopEnvironmentWindow(normalizedAccountId, win);
+  pruneShopEnvironmentCache(normalizedAccountId);
+  return true;
+}
+
+function stashActiveShopEnvironment() {
+  const accountId = String(activeShopAccountId || '');
+  const win = shopPageWindow;
+  if (accountId && isUsableShopEnvironmentWindow(win)) {
+    win.hide();
+    rememberShopEnvironment(accountId, win, shopSffContextHeaders);
+  }
+  shopPageWindow = null;
+  shopSffContextHeaders = null;
+}
+
+function restoreShopEnvironment(accountId) {
+  const normalizedAccountId = String(accountId || '');
+  const cached = shopEnvironmentCache.get(normalizedAccountId);
+  if (!cached || !isUsableShopEnvironmentWindow(cached.window)) {
+    shopEnvironmentCache.delete(normalizedAccountId);
+    return false;
+  }
+  cached.lastUsedAt = Date.now();
+  shopPageWindow = cached.window;
+  shopSffContextHeaders = cached.contextHeaders || null;
+  pruneShopEnvironmentCache(normalizedAccountId);
+  console.log(`[店铺环境] 已复用账号[${normalizedAccountId}]的独立查询环境`);
+  return true;
+}
+
+function updateActiveShopEnvironmentHeaders(headers, win = shopPageWindow) {
+  const accountId = String(activeShopAccountId || '');
+  if (!accountId || !isUsableShopEnvironmentWindow(win) || win !== shopPageWindow) return;
+  shopSffContextHeaders = headers || null;
+  rememberShopEnvironment(accountId, win, shopSffContextHeaders);
+}
+
+function destroyAllShopEnvironments() {
+  const windows = new Set(
+    [...shopEnvironmentCache.values()]
+      .map(environment => environment.window)
+      .filter(isUsableShopEnvironmentWindow)
+  );
+  if (isUsableShopEnvironmentWindow(shopPageWindow)) windows.add(shopPageWindow);
+  shopEnvironmentCache.clear();
+  shopPageWindow = null;
+  shopSffContextHeaders = null;
+  for (const win of windows) {
+    if (isUsableShopEnvironmentWindow(win)) win.destroy();
+  }
 }
 
 function getShopQueryCheckpointKey(accountId, queryOptions) {
@@ -3649,6 +4129,7 @@ async function validateShopSession() {
 
   shopLoggedIn = false;
   if (probe.state === 'login') {
+    destroyShopEnvironment(validatingAccountId);
     return { loggedIn: false, shopName: '', expired: true };
   }
   return { loggedIn: false, shopName: '', validationError: true };
@@ -3803,21 +4284,25 @@ function buildShopLoginAutofillScript(username, password) {
 }
 
 async function createShopLoginWindow() {
+  // 重新登录只作废目标店铺的旧环境；其他店铺的独立环境继续保留。
+  const accountId = pendingShopCredentials ? pendingShopCredentials.id || '' : '';
   if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
     shopLoginWindow.destroy();
     shopLoginWindow = null;
   }
-  if (shopPageWindow && !shopPageWindow.isDestroyed()) {
-    shopPageWindow.destroy();
-    shopPageWindow = null;
+  if (accountId && activeShopAccountId !== accountId) {
+    stashActiveShopEnvironment();
   }
+  if (accountId) {
+    activeShopAccountId = accountId;
+    destroyShopEnvironment(accountId);
+    shopLoggedIn = false;
+    shopLoginName = pendingShopCredentials.name || pendingShopCredentials.username || '';
+  }
+  shopPageWindow = null;
   shopSffContextHeaders = null;
 
   // 确定当前店铺分区（基于 pendingShopCredentials 的 ID）
-  const accountId = pendingShopCredentials ? pendingShopCredentials.id || '' : '';
-  if (accountId) {
-    activeShopAccountId = accountId;
-  }
   const shopPartition = getShopPartition();
 
   // 从 cookie 文件恢复 session（免登录）
@@ -4040,18 +4525,15 @@ async function createShopLoginWindow() {
         // 旧软件也是在已登录的内嵌页面环境中完成签名和请求；销毁后重建会丢失
         // 页面侧的本地状态与签名环境，容易被京东判定为异常请求。
         if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
-          if (shopPageWindow && !shopPageWindow.isDestroyed()) {
-            shopPageWindow.destroy();
-          }
+          const retainedAccountId = String(activeShopAccountId || '');
+          destroyShopEnvironment(retainedAccountId);
           const retainedShopWindow = shopLoginWindow;
           shopPageWindow = retainedShopWindow;
+          shopSffContextHeaders = null;
           shopLoginWindow = null;
           retainedShopWindow.setTitle('店铺后台 - ' + (shopLoginName || ''));
           retainedShopWindow.hide();
-          retainedShopWindow.once('closed', () => {
-            shopSffContextHeaders = null;
-            if (shopPageWindow === retainedShopWindow) shopPageWindow = null;
-          });
+          rememberShopEnvironment(retainedAccountId, retainedShopWindow, null);
           console.log('店铺登录: 已保留当前页面会话供商品查询复用');
         }
 
@@ -4146,7 +4628,10 @@ ipcMain.handle('check-shop-accounts-status', async () => {
 
       if (account.id === activeShopAccountId) {
         if (state === 'online') shopLoggedIn = true;
-        if (state === 'offline') shopLoggedIn = false;
+        if (state === 'offline') {
+          shopLoggedIn = false;
+          destroyShopEnvironment(account.id);
+        }
       }
     }
   };
@@ -4178,52 +4663,82 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   if (!storedAccount) {
     return { success: false, error: '店铺账号不存在' };
   }
+  const targetAccountId = String(storedAccount.id);
+
+  // 重复选择当前店铺时只校验会话，不销毁已经准备好的页面与签名环境。
+  if (targetAccountId === activeShopAccountId) {
+    const currentResult = await validateShopSession();
+    if (currentResult.loggedIn) {
+      shopLoginName = currentResult.shopName || storedAccount.name || storedAccount.username || '';
+      storeSet('lastShopAccountId', targetAccountId);
+      console.log(`[店铺环境] 当前账号[${targetAccountId}]保持原查询环境`);
+      return { success: true, loggedIn: true, shopName: shopLoginName, environmentReused: true };
+    }
+    if (currentResult.validationError) {
+      return {
+        success: false,
+        loggedIn: false,
+        validationError: true,
+        error: '店铺登录状态验证失败，请稍后重试'
+      };
+    }
+    destroyShopEnvironment(targetAccountId);
+    return { success: true, loggedIn: false, needLogin: true };
+  }
+
   clearShopGoodsResumeCheckpoint();
 
-  // 先销毁旧的 shop 窗口
+  // 登录窗口不能跨账号保留；已登录的后台窗口按账号独立放入缓存。
   if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
     shopLoginWindow.destroy();
     shopLoginWindow = null;
   }
-  if (shopPageWindow && !shopPageWindow.isDestroyed()) {
-    shopPageWindow.destroy();
-    shopPageWindow = null;
-  }
-  shopSffContextHeaders = null;
+  stashActiveShopEnvironment();
 
   // 切换活跃账号
-  activeShopAccountId = storedAccount.id;
+  activeShopAccountId = targetAccountId;
   shopLoggedIn = false;
   shopLoginName = storedAccount.name || storedAccount.username || '';
-  storeSet('lastShopAccountId', storedAccount.id);
+  storeSet('lastShopAccountId', targetAccountId);
+  const environmentReused = restoreShopEnvironment(targetAccountId);
 
-  // 检查 cookie 文件是否有效
-  if (cookieManager.validateCookieFile('shop', storedAccount.id)) {
-    const shopPartition = getShopPartition();
-    const ses = session.fromPartition(shopPartition);
+  const shopPartition = getShopPartition();
+  const ses = session.fromPartition(shopPartition);
+  let sessionCookies = await ses.cookies.get({ domain: 'jd.com' });
 
-    // 从文件导入 cookie
-    const imported = await cookieManager.importCookies(ses, 'shop', storedAccount.id);
-    if (imported) {
-      // 验证 session 有效性
-      const result = await validateShopSession();
-      if (result.loggedIn) {
-        console.log(`[店铺状态] 账号[${storedAccount.id}]服务器验证成功`);
-        return { success: true, loggedIn: true, shopName: result.shopName };
-      }
-      if (result.validationError) {
-        console.warn(`[店铺状态] 账号[${storedAccount.id}]暂时无法验证，保留 Cookie 文件`);
-        return {
-          success: false,
-          loggedIn: false,
-          validationError: true,
-          error: '店铺登录状态验证失败，请稍后重试'
-        };
-      }
+  // 缓存页面对应的实时 Cookie 已不存在时，该页面环境也必须一起作废。
+  if (environmentReused && sessionCookies.length === 0) {
+    destroyShopEnvironment(targetAccountId);
+  }
+  if (sessionCookies.length === 0 && cookieManager.validateCookieFile('shop', targetAccountId)) {
+    const imported = await cookieManager.importCookies(ses, 'shop', targetAccountId);
+    if (imported) sessionCookies = await ses.cookies.get({ domain: 'jd.com' });
+  }
+
+  if (sessionCookies.length > 0) {
+    const result = await validateShopSession();
+    if (result.loggedIn) {
+      console.log(`[店铺状态] 账号[${targetAccountId}]服务器验证成功`);
+      return {
+        success: true,
+        loggedIn: true,
+        shopName: result.shopName,
+        environmentReused: environmentReused && isUsableShopEnvironmentWindow(shopPageWindow)
+      };
+    }
+    if (result.validationError) {
+      console.warn(`[店铺状态] 账号[${targetAccountId}]暂时无法验证，保留 Cookie 文件`);
+      return {
+        success: false,
+        loggedIn: false,
+        validationError: true,
+        error: '店铺登录状态验证失败，请稍后重试'
+      };
     }
   }
 
-  console.log(`[店铺状态] 账号[${storedAccount.id}]保存的登录状态已失效，需要重新登录`);
+  destroyShopEnvironment(targetAccountId);
+  console.log(`[店铺状态] 账号[${targetAccountId}]保存的登录状态已失效，需要重新登录`);
   return { success: true, loggedIn: false, needLogin: true };
 });
 
@@ -4239,8 +4754,14 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
  */
 async function ensureShopPageWindow(options = {}) {
   const shouldShow = options.show !== false;
+  const environmentAccountId = String(activeShopAccountId || '');
 
-  if (shopPageWindow && !shopPageWindow.isDestroyed()) {
+  if (!isUsableShopEnvironmentWindow(shopPageWindow) && environmentAccountId) {
+    restoreShopEnvironment(environmentAccountId);
+  }
+
+  if (isUsableShopEnvironmentWindow(shopPageWindow)) {
+    rememberShopEnvironment(environmentAccountId, shopPageWindow, shopSffContextHeaders);
     if (shouldShow) {
       if (shopPageWindow.isMinimized()) shopPageWindow.restore();
       shopPageWindow.show();
@@ -4273,11 +4794,7 @@ async function ensureShopPageWindow(options = {}) {
 
   // 导航到店铺首页（由用户自行导航到具体页面）
   shopPageWindow.loadURL('https://shop.jd.com/');
-
-  shopPageWindow.on('closed', () => {
-    shopSffContextHeaders = null;
-    shopPageWindow = null;
-  });
+  rememberShopEnvironment(environmentAccountId, shopPageWindow, null);
 
   return shopPageWindow;
 }
@@ -5055,7 +5572,7 @@ async function captureShopSffContextHeaders(win, timeoutMs = 35000) {
 
       // dsm-eid 是签名请求所依赖的当前页面设备上下文；缺少时不能复用该模板。
       if (!normalized['dsm-eid']) return;
-      shopSffContextHeaders = normalized;
+      updateActiveShopEnvironmentHeaders(normalized, win);
       console.log(
         `[店铺商品] 已捕获官方 DSM 请求环境: ` +
         `${Object.keys(normalized).sort().join(',')}（值不写入日志）`
@@ -5264,9 +5781,124 @@ async function executeShopSffRequest(win, api, requestBody, timeoutMs = 30000) {
   return responseBody;
 }
 
+function createShopBatchRequestError(message, code = 'JD_BATCH_REQUEST_FAILED') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function getShopBatchUserAgent(shopSession) {
+  const source = shopPageWindow && !shopPageWindow.isDestroyed()
+    ? shopPageWindow.webContents.getUserAgent()
+    : shopSession.getUserAgent();
+  return String(source || '')
+    .replace(/\s*Electron\/[\d.]+/g, '')
+    .replace(/\s*cloud-warehouse-assistant\/[\d.]+/g, '')
+    .replace(/\s*ychelper\/[\d.]+/g, '');
+}
+
+async function requestShopBatchJson(url, body, timeoutMs = 30000) {
+  const requestUrl = String(url || '');
+  if (![SHOP_BATCH_PRODUCT_URL, SHOP_BATCH_SKU_URL].includes(requestUrl)) {
+    throw new Error('店铺批量查询地址不在固定白名单内');
+  }
+
+  const shopSession = getShopSession();
+  const cookies = await shopSession.cookies.get({ url: requestUrl });
+  if (!Array.isArray(cookies) || cookies.length === 0) {
+    shopLoggedIn = false;
+    throw createShopBatchRequestError('店铺登录已失效，请重新登录店铺后台', 'JD_SESSION_EXPIRED');
+  }
+  const cookieHeader = cookies
+    .filter(cookie => cookie && cookie.name)
+    .map(cookie => `${cookie.name}=${cookie.value || ''}`)
+    .join('; ');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await globalThis.fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        'content-type': 'application/json;charset=UTF-8',
+        referer: 'https://shop.jd.com/jdm/ware/manage/list/OnsaleWare',
+        'user-agent': getShopBatchUserAgent(shopSession),
+        'dsm-platform': 'pc',
+        cookie: cookieHeader
+      },
+      body: JSON.stringify(body),
+      cache: 'no-store',
+      redirect: 'follow',
+      signal: controller.signal
+    });
+
+    if (/passport\.jd\.com|login\.jd\.com|passport\.shop\.jd\.com/i.test(String(response.url || ''))) {
+      shopLoggedIn = false;
+      throw createShopBatchRequestError('店铺登录已失效，请重新登录店铺后台', 'JD_SESSION_EXPIRED');
+    }
+    if (response.status === 429) {
+      const error = createShopBatchRequestError('京东接口请求过于频繁', 'JD_RATE_LIMIT');
+      error.httpStatus = 429;
+      throw error;
+    }
+    if (response.status === 401 || response.status === 403) {
+      shopLoggedIn = false;
+      throw createShopBatchRequestError(
+        `店铺登录已失效(HTTP ${response.status})，请重新登录`,
+        'JD_SESSION_EXPIRED'
+      );
+    }
+    if (!response.ok) {
+      throw createShopBatchRequestError(`京东店铺接口请求失败(HTTP ${response.status || '未知'})`);
+    }
+
+    const text = await response.text();
+    if (/^\s*</.test(text)) {
+      shopLoggedIn = false;
+      throw createShopBatchRequestError('京东返回了登录页面，请重新登录店铺后台', 'JD_SESSION_EXPIRED');
+    }
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw createShopBatchRequestError('京东店铺接口返回格式异常');
+    }
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw createShopBatchRequestError('京东店铺接口请求超时，请稍后重试', 'JD_BATCH_TIMEOUT');
+    }
+    if (!error || !error.code || /^UND_ERR_|^E(?:CONN|HOST|NET|AI_)/.test(error.code)) {
+      const requestError = createShopBatchRequestError(
+        `京东店铺接口网络请求失败：${error && error.message || '未知错误'}`,
+        'JD_BATCH_NETWORK_ERROR'
+      );
+      requestError.cause = error;
+      throw requestError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function assertShopBatchApiSuccess(payload, label) {
+  const parsed = validateShopBatchResponse(payload, label);
+  if (parsed.success) return parsed.json;
+  const code = Number(parsed.code);
+  if (code === 401 || code === 403) shopLoggedIn = false;
+  const error = createShopBatchRequestError(
+    `${label}失败：${parsed.error || '京东接口返回错误'}`,
+    code === -3010 ? 'JD_RATE_LIMIT' : 'JD_BATCH_REQUEST_FAILED'
+  );
+  error.jdCode = Number.isFinite(code) ? code : null;
+  throw error;
+}
+
 /**
- * 复用已登录店铺页生成签名，并按老款实测顺序由主进程请求：
- * 每取一页 SPU，立即按 productId 串行取完该页 SKU，再进入下一页。
+ * 复用当前店铺账号的 Electron session 执行批量查询：
+ * 每页 100 个 SPU，随后一次性查询本页全部 SKU；页间固定等待 4 秒。
+ * “售卖中”商品直接使用商家后台批量 SPU 接口；“已下架/全部商品”暂时
+ * 保留原 SFF 商品列表筛选，但 SKU 同样改为整页批量查询。
  */
 async function queryShopGoodsDirect(params, onProgress = () => {}) {
   if (shopQueryInProgress) {
@@ -5280,11 +5912,11 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     }
   };
   const emitProgress = progress => {
-    try { onProgress(progress); } catch (error) {}
+    try { onProgress({ ...progress, accountId: queryAccountId }); } catch (error) {}
   };
 
   try {
-    emitProgress({ stage: 'preparing', message: '正在准备店铺商品页…' });
+    emitProgress({ stage: 'preparing', message: '正在准备店铺商品批量查询…' });
     const queryOptions = {
       pageSize: 100,
       productState: getProductState(params.goodsStatus),
@@ -5303,108 +5935,128 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
         message: `正在恢复上次已完成的 ${checkpoint.completedProductIds.size} 个 SPU…`
       });
     }
-    const firstProductRequestBody = buildProductListRequest({ ...queryOptions, pageNum: 1 });
-    console.log('[店铺商品] 开始查询（复用已登录页面）, params:', JSON.stringify(queryOptions));
-
-    const win = await ensureShopPageWindow({ show: false });
-    await ensureShopGoodsPageReady(win);
-    assertQueryAccountUnchanged();
-    emitProgress({ stage: 'preparing', message: '商品页已就绪，正在查询第1页…' });
-
-    lastShopSffResponseFinishedAt = 0;
+    const useBatchProductList = shouldUseShopBatchProductList(queryOptions);
     console.log(
-      `[店铺商品] 使用老款实测流程：每页SPU后查询本页SKU，` +
-      `每次响应后等待${SHOP_REQUEST_RESPONSE_DELAY_MS}ms`
+      `[店铺商品] 开始批量查询：每页${SHOP_BATCH_QUERY_POLICY.pageSize}个SPU，` +
+      `页间${SHOP_BATCH_QUERY_POLICY.pageIntervalMs}ms，` +
+      `商品列表=${useBatchProductList ? 'data.shop批量接口' : 'SFF状态/日期筛选接口'}，` +
+      'SKU=data.shop整页批量接口'
     );
-    const queryResult = await queryProductPagesPageMajor({
+
+    let win = null;
+    if (!useBatchProductList) {
+      win = await ensureShopPageWindow({ show: false });
+      await ensureShopGoodsPageReady(win);
+      lastShopSffResponseFinishedAt = 0;
+    }
+    assertQueryAccountUnchanged();
+
+    const runWithRateLimitRetry = (label, operation) => withShopBatchRateLimitRetry(operation, {
+      label,
+      onProgress: progress => emitProgress(progress)
+    });
+    let streamedSkuTotal = 0;
+
+    const queryResult = await queryShopProductPagesBatch({
       pageSize: queryOptions.pageSize,
       completedProductIds: checkpoint.completedProductIds,
       cachedSkuMap: checkpoint.cachedSkuMap,
       fetchProductPage: async pageNum => {
         assertQueryAccountUnchanged();
-        const requestBody = pageNum === 1
-          ? firstProductRequestBody
-          : buildProductListRequest({ ...queryOptions, pageNum });
-        const responseBody = await executeShopSffRequest(win, PRODUCT_LIST_API, requestBody);
-        const page = extractProductPage(responseBody);
-        if (!page.success) {
-          if (isShopSffAuthenticationFailure(page)) shopLoggedIn = false;
-          logShopApiFailure(page, `商品列表第${pageNum}页`);
-          const error = new Error(formatShopApiError(page, `商品列表第${pageNum}页`));
-          error.shopApiCode = Number(page.code) || 0;
-          throw error;
+        let page;
+        if (useBatchProductList) {
+          page = await runWithRateLimitRetry(`商品列表第${pageNum}页`, async () => {
+            const payload = await requestShopBatchJson(
+              SHOP_BATCH_PRODUCT_URL,
+              buildShopBatchProductRequest({ ...queryOptions, pageNum })
+            );
+            assertShopBatchApiSuccess(payload, `商品列表第${pageNum}页`);
+            const result = extractShopBatchProductPage(payload);
+            if (!result.success) {
+              throw createShopBatchRequestError(result.error || `商品列表第${pageNum}页响应结构异常`);
+            }
+            return result;
+          });
+        } else {
+          const requestBody = buildProductListRequest({ ...queryOptions, pageNum });
+          const responseBody = await executeShopSffRequest(win, PRODUCT_LIST_API, requestBody);
+          page = extractProductPage(responseBody);
+          if (!page.success) {
+            if (isShopSffAuthenticationFailure(page)) shopLoggedIn = false;
+            logShopApiFailure(page, `商品列表第${pageNum}页`);
+            const error = new Error(formatShopApiError(page, `商品列表第${pageNum}页`));
+            error.shopApiCode = Number(page.code) || 0;
+            throw error;
+          }
         }
-        return page;
-      },
-      fetchSkuList: async productId => {
-        assertQueryAccountUnchanged();
-        const skuResponseBody = await executeShopSffRequest(
-          win,
-          SKU_LIST_API,
-          buildSkuListRequest(productId),
-          SKU_REQUEST_TIMEOUT_MS
-        );
-        const skuResult = extractSkuList(skuResponseBody);
-        if (!skuResult.success) {
-          if (isShopSffAuthenticationFailure(skuResult)) shopLoggedIn = false;
-          logShopApiFailure(skuResult, `商品${productId}的SKU查询`);
-          const error = new Error(formatShopApiError(skuResult, `商品${productId}的SKU查询`));
-          error.shopApiCode = Number(skuResult.code) || 0;
-          throw error;
-        }
-        return skuResult.items;
-      },
-      onProductPage: ({ pageNum, totalPages, totalCount, completed, items, allProducts }) => {
-        checkpoint.totalCount = totalCount;
+        checkpoint.totalCount = page.totalCount;
         checkpoint.updatedAt = Date.now();
         console.log(
-          `[店铺商品] SPU第${pageNum}/${totalPages}页：` +
-          `本页${items.length}个，累计${allProducts.length}/${totalCount}`
+          `[店铺商品] SPU第${pageNum}页：本页${page.items.length}个，总数${page.totalCount}`
         );
-        emitProgress({
-          stage: 'sku',
-          completed,
-          total: totalCount,
-          pageNum,
-          totalPages,
-          pageCompleted: 0,
-          pageTotal: items.length
-        });
+        return page;
       },
-      onMissingProductId: ({ productNumber, totalCount, pageNum, totalPages, pageIndex, pageSize }) => {
-        console.warn(`[店铺商品] 第${productNumber}个商品没有 productId，无法查询 SKU`);
-        emitProgress({
-          stage: 'sku',
-          completed: productNumber,
-          total: totalCount,
-          pageNum,
-          totalPages,
-          pageCompleted: pageIndex + 1,
-          pageTotal: pageSize
-        });
-      },
-      onSku: ({ productNumber, totalCount, totalPages, pageNum, pageIndex, pageSize, productId, skuItems, resumed }) => {
-        checkpoint.updatedAt = Date.now();
-        if (!resumed && skuItems.length === 0) {
-          console.warn(`[店铺商品] 商品${productId}的SKU接口返回0条，将保留商品列表附带的SKU`);
-        }
-        if (!resumed) {
-          console.log(
-            `[店铺商品] SKU ${productNumber}/${totalCount}（第${pageNum}页 ` +
-            `${pageIndex + 1}/${pageSize}）：商品${productId}共${skuItems.length}个`
+      fetchSkuBatch: async (productIds, context) => {
+        assertQueryAccountUnchanged();
+        return runWithRateLimitRetry(`第${context.pageNum}页SKU批量查询`, async () => {
+          const payload = await requestShopBatchJson(
+            SHOP_BATCH_SKU_URL,
+            buildShopBatchSkuRequest(productIds),
+            SKU_REQUEST_TIMEOUT_MS
           );
-        }
-        // 恢复断点时避免瞬间向渲染进程发送数百条历史进度；每页末尾更新一次即可。
-        if (!resumed || pageIndex + 1 >= pageSize || productNumber >= totalCount) {
+          assertShopBatchApiSuccess(payload, `第${context.pageNum}页SKU批量查询`);
+          const result = extractShopBatchSkuMap(payload, productIds);
+          if (!result.success) {
+            throw createShopBatchRequestError(
+              result.error || `第${context.pageNum}页SKU批量响应结构异常`
+            );
+          }
+          if (result.unexpectedProductIds.length > 0) {
+            console.warn(
+              `[店铺商品] 第${context.pageNum}页SKU响应含` +
+              `${result.unexpectedProductIds.length}个非本页商品，已忽略`
+            );
+          }
+          return result;
+        });
+      },
+      onProgress: progress => {
+        checkpoint.updatedAt = Date.now();
+        if (progress.stage === 'page-complete') {
+          const pageResponse = JSON.stringify({ code: 200, data: { data: progress.pageProducts } });
+          const pageParsed = parseProductListResponse(
+            pageResponse,
+            progress.pageSkuMap,
+            queryOptions.productState
+          );
+          if (!pageParsed.success) {
+            throw new Error(pageParsed.error || `第${progress.pageNum}页商品与SKU数据组合失败`);
+          }
+          const batchGoods = filterGoodsByPriceRange(
+            pageParsed.goods,
+            params.priceMin,
+            params.priceMax
+          );
+          streamedSkuTotal += batchGoods.length;
+          console.log(
+            `[店铺商品] 第${progress.pageNum}/${progress.totalPages}页完成：` +
+            `${progress.completed}/${progress.total}个SPU，本页${progress.skuTotal}个SKU`
+          );
           emitProgress({
-            stage: 'sku',
-            completed: productNumber,
-            total: totalCount,
-            pageNum,
-            totalPages,
-            pageCompleted: pageIndex + 1,
-            pageTotal: pageSize
+            stage: 'page-complete',
+            completed: progress.completed,
+            total: progress.total,
+            pageNum: progress.pageNum,
+            totalPages: progress.totalPages,
+            pageCompleted: progress.pageTotal,
+            pageTotal: progress.pageTotal,
+            batchGoods,
+            batchSkuTotal: batchGoods.length,
+            loadedSkuTotal: streamedSkuTotal
           });
+        } else {
+          const { pageProducts, pageSkuMap, ...safeProgress } = progress;
+          emitProgress({ ...safeProgress, loadedSkuTotal: streamedSkuTotal });
         }
       }
     });
@@ -5425,6 +6077,7 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
       completed: queryResult.totalCount,
       total: queryResult.totalCount,
       skuTotal: goods.length,
+      loadedSkuTotal: goods.length,
       message
     });
     if (shopGoodsResumeCheckpoint && shopGoodsResumeCheckpoint.key === checkpointKey) {
@@ -5432,8 +6085,11 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     }
     return { success: true, goods, total: goods.length, productTotal: allProducts.length, message };
   } catch (error) {
+    if (!shopLoggedIn) destroyShopEnvironment(queryAccountId);
     const isRiskControl = Number(error && error.shopApiCode) === 601;
-    if (isRiskControl && shopGoodsResumeCheckpoint) {
+    const isRateLimited = error && error.code === 'JD_RATE_LIMIT';
+    const isResumable = isRiskControl || isRateLimited;
+    if (isResumable && shopGoodsResumeCheckpoint) {
       const completed = shopGoodsResumeCheckpoint.completedProductIds.size;
       const total = shopGoodsResumeCheckpoint.totalCount;
       error.message += `；已保存 ${completed}${total > 0 ? `/${total}` : ''} 个 SPU 的查询进度`;
@@ -5444,18 +6100,18 @@ async function queryShopGoodsDirect(params, onProgress = () => {}) {
     emitProgress({
       stage: 'error',
       message: error.message,
-      completed: isRiskControl && shopGoodsResumeCheckpoint
+      completed: isResumable && shopGoodsResumeCheckpoint
         ? shopGoodsResumeCheckpoint.completedProductIds.size
         : 0,
-      total: isRiskControl && shopGoodsResumeCheckpoint
+      total: isResumable && shopGoodsResumeCheckpoint
         ? shopGoodsResumeCheckpoint.totalCount
         : 0
     });
     return {
       success: false,
       error: error.message,
-      resumable: isRiskControl,
-      resumeCompleted: isRiskControl && shopGoodsResumeCheckpoint
+      resumable: isResumable,
+      resumeCompleted: isResumable && shopGoodsResumeCheckpoint
         ? shopGoodsResumeCheckpoint.completedProductIds.size
         : 0
     };

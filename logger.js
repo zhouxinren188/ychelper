@@ -3,6 +3,7 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { sanitize, truncateLogMessage } = require('./src/js/logSanitizer');
 
 const logDir = path.join(app.getPath('userData'), 'logs');
 const MAX_LOG_SIZE = 10 * 1024 * 1024;
@@ -55,39 +56,6 @@ function formatValue(value) {
 
 function formatArgs(args) {
   return args.map(formatValue).join(' ');
-}
-
-function maskSecret(value) {
-  const text = String(value || '');
-  if (!text) return '***';
-  return `${text.slice(0, Math.min(6, text.length))}***`;
-}
-
-function sanitize(input) {
-  let text = String(input == null ? '' : input);
-  const keyNames = 'cookie|cookies|token|access[_-]?token|refresh[_-]?token|pt_key|authorization|jwt|password|passwd|pwd|用户密码|密码|口令';
-
-  // 完整请求头可能包含空格或分号，先整体处理。
-  text = text.replace(/\b(set-cookie|cookie|authorization)\s*:\s*([^\r\n]+)/gi,
-    (match, key, value) => `${key}: ${maskSecret(value.trim())}`);
-  text = text.replace(/\b(cookie|cookies)\s*=\s*([^\r\n]+)/gi,
-    (match, key, value) => `${key}=${maskSecret(value.trim())}`);
-
-  // JSON/对象字符串中的敏感字段。
-  const quotedPattern = new RegExp(`((?:["']?)(?:${keyNames})(?:["']?)\\s*[:=]\\s*["'])([^"']*)(["'])`, 'gi');
-  text = text.replace(quotedPattern, (match, prefix, value, suffix) => `${prefix}${maskSecret(value)}${suffix}`);
-
-  // 查询参数、表单字段以及未加引号的键值。
-  const plainPattern = new RegExp(`(\\b(?:${keyNames})\\b\\s*[:=]\\s*)(?!["'])([^\\s,;}&\\]]+)`, 'gi');
-  text = text.replace(plainPattern, (match, prefix, value) => `${prefix}${maskSecret(value)}`);
-  text = text.replace(/((?:用户密码|密码|口令)\s*[:=]\s*["']?)([^\s,"';}&\]]+)/g,
-    (match, prefix, value) => `${prefix}${maskSecret(value)}`);
-
-  text = text.replace(/(pt_key=)([^\s;'"&]+)/gi, (match, prefix, value) => `${prefix}${maskSecret(value)}`);
-  text = text.replace(/(\bBearer\s+)([A-Za-z0-9._~+\/-]+)/gi, (match, prefix, value) => `${prefix}${maskSecret(value)}`);
-  text = text.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-    value => maskSecret(value));
-  return text;
 }
 
 function ensureLogDirectory() {
@@ -195,7 +163,7 @@ function writeLog(name, level, source, message) {
   try {
     const safeLevel = String(level || 'INFO').toUpperCase();
     const safeSource = sanitize(source || 'main').replace(/[\r\n]+/g, ' ');
-    const safeMessage = sanitize(message);
+    const safeMessage = truncateLogMessage(sanitize(message));
     writePreparedLine(name, `[${getTimestamp()}] [${safeLevel}] [${safeSource}] ${safeMessage}\n`);
   } catch (_) {
     // 日志系统自身的错误绝不能影响主程序。

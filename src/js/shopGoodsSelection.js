@@ -95,6 +95,25 @@
     return skus;
   }
 
+  function mergeGoodsBySku(currentGoods, incomingGoods) {
+    const merged = [];
+    const indexBySku = new Map();
+    for (const item of [
+      ...(Array.isArray(currentGoods) ? currentGoods : []),
+      ...(Array.isArray(incomingGoods) ? incomingGoods : [])
+    ]) {
+      const sku = String(item && item.sku || '').trim();
+      if (!sku) continue;
+      if (indexBySku.has(sku)) {
+        merged[indexBySku.get(sku)] = item;
+      } else {
+        indexBySku.set(sku, merged.length);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }
+
   function removeGoodsByTarget(goods, target = {}) {
     const source = Array.isArray(goods) ? goods : [];
     const targetItem = target.item;
@@ -117,5 +136,11 @@
     });
   }
 
-  return { collectUniqueSkuValues, groupGoodsByProduct, removeGoodsByTarget, selectGoodsPerProduct };
+  return {
+    collectUniqueSkuValues,
+    groupGoodsByProduct,
+    mergeGoodsBySku,
+    removeGoodsByTarget,
+    selectGoodsPerProduct
+  };
 });

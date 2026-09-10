@@ -4,6 +4,15 @@ const SHOP_SFF_APP_ID = '3MC69M4R3HFKCQ4S01DN';
 const SHOP_H5ST_APP_ID = '73806';
 const PRODUCT_LIST_API = 'dsm.product.manage.ProductInfoReadViewService.queryValidProductList';
 const SKU_LIST_API = 'dsm.product.manage.SkuInfoReadViewService.querySkuList';
+const SHOP_BATCH_PRODUCT_URL = 'https://data.shop.jd.com/fullQuery/querySpu';
+const SHOP_BATCH_SKU_URL = 'https://data.shop.jd.com/fullQuery/querySkuBySpuIds';
+const SHOP_BATCH_QUERY_POLICY = Object.freeze({
+  pageSize: 100,
+  initialDelayMs: 1000,
+  pageIntervalMs: 4000,
+  rateLimitWaitMs: 60000,
+  rateLimitRetries: 1
+});
 // 老款蚂蚁工具箱抓包实测：上一个业务响应完成约 300ms 后才发起下一次请求。
 const SHOP_REQUEST_RESPONSE_DELAY_MS = 300;
 const SKU_REQUEST_TIMEOUT_MS = 30000;
@@ -187,6 +196,445 @@ function buildSkuListRequest(productId) {
   };
 }
 
+/**
+ * 与京东商家后台“在售商品”列表保持同一批量查询结构。
+ * 价格仍在本地按 SKU 精确筛选，避免 SPU 价格提前过滤掉有效 SKU。
+ */
+function buildShopBatchProductRequest(options = {}) {
+  const dateFrom = String(options.dateFrom || '').trim();
+  const dateTo = String(options.dateTo || '').trim();
+  if (Boolean(dateFrom) !== Boolean(dateTo)) {
+    throw new Error('请同时选择上架开始时间和结束时间');
+  }
+  const startOnlineTime = dateFrom ? normalizeShopDateTime(dateFrom, false) : '';
+  const endOnlineTime = dateTo ? normalizeShopDateTime(dateTo, true) : '';
+  if ((dateFrom && !startOnlineTime) || (dateTo && !endOnlineTime)) {
+    throw new Error('上架时间格式无效，请重新选择');
+  }
+  if (startOnlineTime && endOnlineTime && startOnlineTime > endOnlineTime) {
+    throw new Error('上架开始时间不能晚于结束时间');
+  }
+
+  return {
+    category: [],
+    colType: -1,
+    columns: ['jdPrice', 'stockNum', 'onlineTime'],
+    filterByVenderCode: false,
+    itemNum: '',
+    locType: -1,
+    minJdPrice: '',
+    maxJdPrice: '',
+    maxStockNum: '',
+    minStockNum: '',
+    name: '',
+    pageNo: Math.max(1, Number.parseInt(options.pageNum, 10) || 1),
+    pageSize: Math.min(
+      100,
+      Math.max(1, Number.parseInt(options.pageSize, 10) || SHOP_BATCH_QUERY_POLICY.pageSize)
+    ),
+    skuIdList: [],
+    spuIdList: [],
+    startOnlineTime,
+    endOnlineTime,
+    status: 1,
+    tyingType: 0,
+    xnztType: 0,
+    xpType: -1
+  };
+}
+
+/**
+ * data.shop 的在售商品批量接口在部分店铺会静默忽略上架时间范围。
+ * 有日期时必须改用能实际执行时间筛选的 SFF 商品列表；SKU 仍保持整页批量查询。
+ */
+function shouldUseShopBatchProductList(options = {}) {
+  const productState = options.productState == null ? null : String(options.productState);
+  const hasDateRange = Boolean(
+    String(options.dateFrom || '').trim() || String(options.dateTo || '').trim()
+  );
+  return productState === '4' && !hasDateRange;
+}
+
+function buildShopBatchSkuRequest(productIds) {
+  const normalizedIds = [...new Set((Array.isArray(productIds) ? productIds : [])
+    .map(value => String(value == null ? '' : value).trim())
+    .filter(Boolean))];
+  if (normalizedIds.length === 0) {
+    throw new Error('SKU批量查询缺少商品编号');
+  }
+  if (normalizedIds.length > SHOP_BATCH_QUERY_POLICY.pageSize) {
+    throw new Error(`SKU批量查询每次最多${SHOP_BATCH_QUERY_POLICY.pageSize}个商品`);
+  }
+  const spuIdList = normalizedIds.map(value => {
+    if (!/^\d+$/.test(value)) return value;
+    const number = Number(value);
+    return Number.isSafeInteger(number) ? number : value;
+  });
+  return { spuIdList, xnztQuery: false };
+}
+
+function parseShopBatchJson(response) {
+  if (typeof response !== 'string') return response;
+  try {
+    return JSON.parse(response);
+  } catch (error) {
+    return null;
+  }
+}
+
+function getShopBatchResponseCode(payload) {
+  const value = payload && (payload.code ?? payload.subCode);
+  const number = Number(value);
+  return Number.isFinite(number) ? number : value;
+}
+
+function getShopBatchResponseMessage(payload, fallback) {
+  return String(
+    payload && (payload.subMsg || payload.message || payload.msg || payload.errorMessage) || fallback
+  );
+}
+
+function validateShopBatchResponse(response, label) {
+  const payload = parseShopBatchJson(response);
+  if (!payload || typeof payload !== 'object') {
+    return { success: false, error: `${label}响应不是有效 JSON`, json: null };
+  }
+  const code = getShopBatchResponseCode(payload);
+  if (payload.success === false || Number(code) !== 200) {
+    return {
+      success: false,
+      code,
+      error: getShopBatchResponseMessage(payload, `${label}返回错误 code=${code}`),
+      json: payload
+    };
+  }
+  return { success: true, code: 200, json: payload };
+}
+
+function normalizeShopBatchProduct(item) {
+  const source = item && typeof item === 'object' ? item : {};
+  const productId = getProductId(source) || String(source.id || '');
+  const productName = String(
+    source.productName || source.spuName || source.wareName || source.name || source.title || ''
+  );
+  const rawOnlineTime = source.onlineTime ?? source.onSaleTime ?? source.listTime ?? '';
+  const onlineTime = normalizeShopBatchOnlineTime(rawOnlineTime);
+  const rawLogo = source.logo || source.imgUrl || source.imageUrl || source.image || source.pictureUrl || '';
+  const logo = String(rawLogo).startsWith('//') ? `https:${rawLogo}` : rawLogo;
+  const rawPrice = source.priceDetailVO && source.priceDetailVO.jdPrice != null
+    ? source.priceDetailVO.jdPrice
+    : source.jdPrice ?? source.price ?? source.salePrice;
+  const priceDetailVO = source.priceDetailVO || (rawPrice == null ? undefined : { jdPrice: rawPrice });
+  const firstSkuId = source.skuId ?? source.itemId ?? source.productSkuInfoVO?.skuId;
+
+  return {
+    ...source,
+    productId,
+    productName,
+    onlineTime,
+    logo,
+    productState: source.productState ?? source.productStatus ?? source.status ?? 4,
+    ...(priceDetailVO ? { priceDetailVO } : {}),
+    ...(source.productSkuInfoVO
+      ? { productSkuInfoVO: source.productSkuInfoVO }
+      : firstSkuId != null
+        ? { productSkuInfoVO: { skuId: String(firstSkuId) } }
+        : {})
+  };
+}
+
+function extractShopBatchProductPage(response) {
+  const parsed = validateShopBatchResponse(response, '商品列表');
+  if (!parsed.success) return parsed;
+  const data = parsed.json.data ?? parsed.json;
+  const candidates = [
+    data && data.dataList,
+    data && data.list,
+    data && data.result,
+    data && data.data,
+    data && data.spuList,
+    data && data.rows
+  ];
+  const rawItems = candidates.find(Array.isArray);
+  if (!rawItems) {
+    return { success: false, error: '商品列表响应结构异常', json: parsed.json };
+  }
+  const items = rawItems.map(normalizeShopBatchProduct);
+  const totalValue = data.total ?? data.totalCount ?? data.count ?? data.recordsTotal;
+  const totalCount = Number(totalValue);
+  return {
+    success: true,
+    items,
+    totalCount: Number.isFinite(totalCount) ? totalCount : items.length,
+    pageNo: Number(data.pageNo || data.pageNum) || 1,
+    pageSize: Number(data.pageSize) || items.length || SHOP_BATCH_QUERY_POLICY.pageSize,
+    json: parsed.json
+  };
+}
+
+function getShopBatchSkuId(item) {
+  const source = item && typeof item === 'object' ? item : {};
+  return String(source.skuId ?? source.id ?? source.itemId ?? '').trim();
+}
+
+function getShopBatchSkuProductId(item, fallbackProductId = '') {
+  const source = item && typeof item === 'object' ? item : {};
+  return String(
+    source.productId ?? source.spuId ?? source.wareId ?? source.parentId ?? source.id ?? fallbackProductId ?? ''
+  ).trim();
+}
+
+function normalizeShopBatchOnlineTime(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string' && /[-/:T]/.test(value)) {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : value;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return value;
+  return number < 1e12 ? number * 1000 : number;
+}
+
+function normalizeShopBatchSku(item, fallbackProductId = '') {
+  const source = item && typeof item === 'object' ? item : {};
+  const skuId = getShopBatchSkuId(source);
+  const productId = getShopBatchSkuProductId(source, fallbackProductId);
+  return {
+    ...source,
+    skuId,
+    productId,
+    skuName: source.skuName || source.name || source.wareName || '',
+    onlineTime: normalizeShopBatchOnlineTime(
+      source.onlineTime ?? source.onSaleTime ?? source.listTime ?? ''
+    ),
+    jdPrice: source.jdPrice ?? source.price ?? source.salePrice ?? source.priceDetailVO?.jdPrice
+  };
+}
+
+function getShopBatchSkuGroupItems(group) {
+  if (Array.isArray(group)) return group;
+  if (!group || typeof group !== 'object') return null;
+  const candidates = [group.skuList, group.skuInfoList, group.children, group.list, group.dataList, group.data];
+  return candidates.find(Array.isArray) || null;
+}
+
+function extractShopBatchSkuMap(response, requestedProductIds = []) {
+  const parsed = validateShopBatchResponse(response, 'SKU批量查询');
+  if (!parsed.success) return parsed;
+  const requestedIds = [...new Set((Array.isArray(requestedProductIds) ? requestedProductIds : [])
+    .map(value => String(value == null ? '' : value).trim())
+    .filter(Boolean))];
+  const requestedSet = new Set(requestedIds);
+  const skuMap = new Map();
+  const data = parsed.json.data ?? parsed.json;
+
+  const addGroup = (productId, items, present = true) => {
+    const normalizedProductId = String(productId == null ? '' : productId).trim();
+    if (!normalizedProductId || !Array.isArray(items)) return;
+    const normalizedItems = items
+      .map(item => normalizeShopBatchSku(item, normalizedProductId))
+      .filter(item => item.skuId);
+    if (present || normalizedItems.length > 0) skuMap.set(normalizedProductId, normalizedItems);
+  };
+
+  const consumeArray = list => {
+    for (const entry of list) {
+      const groupedItems = getShopBatchSkuGroupItems(entry);
+      if (groupedItems) {
+        const productId = getShopBatchSkuProductId(entry);
+        addGroup(productId, groupedItems);
+        continue;
+      }
+      const productId = getShopBatchSkuProductId(entry);
+      const sku = normalizeShopBatchSku(entry, productId);
+      if (!productId || !sku.skuId) continue;
+      const current = skuMap.get(productId) || [];
+      current.push(sku);
+      skuMap.set(productId, current);
+    }
+  };
+
+  if (Array.isArray(data)) {
+    consumeArray(data);
+  } else if (data && typeof data === 'object') {
+    const container = [data.dataList, data.list, data.result, data.rows].find(Array.isArray);
+    if (container) {
+      consumeArray(container);
+    } else {
+      for (const [entryProductId, entry] of Object.entries(data)) {
+        const groupedItems = getShopBatchSkuGroupItems(entry);
+        if (groupedItems) {
+          addGroup(getShopBatchSkuProductId(entry, entryProductId), groupedItems);
+        }
+      }
+    }
+  }
+
+  const unexpectedProductIds = [...skuMap.keys()].filter(productId => (
+    requestedSet.size > 0 && !requestedSet.has(productId)
+  ));
+  const missingProductIds = requestedIds.filter(productId => !skuMap.has(productId));
+  return { success: true, skuMap, missingProductIds, unexpectedProductIds, json: parsed.json };
+}
+
+function isShopBatchRateLimitError(error) {
+  return Boolean(error) && (
+    error.code === 'JD_RATE_LIMIT' ||
+    Number(error.jdCode) === -3010 ||
+    Number(error.httpStatus) === 429
+  );
+}
+
+async function withShopBatchRateLimitRetry(operation, options = {}) {
+  if (typeof operation !== 'function') throw new TypeError('缺少批量查询函数');
+  const delay = typeof options.delay === 'function'
+    ? options.delay
+    : ms => new Promise(resolve => setTimeout(resolve, ms));
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  const label = String(options.label || '京东批量查询');
+
+  for (let attempt = 0; attempt <= SHOP_BATCH_QUERY_POLICY.rateLimitRetries; attempt++) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      if (!isShopBatchRateLimitError(error) || attempt >= SHOP_BATCH_QUERY_POLICY.rateLimitRetries) {
+        throw error;
+      }
+      onProgress({
+        stage: 'rate-limit',
+        message: `${label}触发京东限流，等待60秒后重试一次…`,
+        waitMs: SHOP_BATCH_QUERY_POLICY.rateLimitWaitMs,
+        attempt: attempt + 1
+      });
+      await delay(SHOP_BATCH_QUERY_POLICY.rateLimitWaitMs);
+    }
+  }
+  throw new Error(`${label}重试失败`);
+}
+
+/**
+ * 页内固定为“1次 SPU + 1次整页 SKU”，页间等待，不并发、不逐 SKU 请求。
+ */
+async function queryShopProductPagesBatch(options = {}) {
+  if (typeof options.fetchProductPage !== 'function' || typeof options.fetchSkuBatch !== 'function') {
+    throw new TypeError('缺少商品页或SKU批量查询函数');
+  }
+  const pageSize = Math.min(
+    100,
+    Math.max(1, Number.parseInt(options.pageSize, 10) || SHOP_BATCH_QUERY_POLICY.pageSize)
+  );
+  const delay = typeof options.delay === 'function'
+    ? options.delay
+    : ms => new Promise(resolve => setTimeout(resolve, ms));
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  const completedProductIds = options.completedProductIds instanceof Set
+    ? options.completedProductIds
+    : new Set();
+  const cachedSkuMap = options.cachedSkuMap instanceof Map ? options.cachedSkuMap : new Map();
+  const allProducts = [];
+  const skuMap = new Map();
+  let totalCount = 0;
+  let totalPages = 1;
+  let effectivePageSize = pageSize;
+  let completed = 0;
+
+  onProgress({
+    stage: 'initial-wait',
+    message: '等待1秒后开始批量查询…',
+    waitMs: SHOP_BATCH_QUERY_POLICY.initialDelayMs
+  });
+  await delay(SHOP_BATCH_QUERY_POLICY.initialDelayMs);
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    if (pageNum > 1) {
+      onProgress({
+        stage: 'page-wait',
+        message: `等待4秒后查询第${pageNum}页…`,
+        waitMs: SHOP_BATCH_QUERY_POLICY.pageIntervalMs,
+        pageNum,
+        totalPages,
+        completed,
+        total: totalCount
+      });
+      await delay(SHOP_BATCH_QUERY_POLICY.pageIntervalMs);
+    }
+
+    const page = await options.fetchProductPage(pageNum);
+    if (!page || !Array.isArray(page.items)) {
+      throw new Error(`商品列表第${pageNum}页响应结构异常`);
+    }
+    if (pageNum === 1) {
+      totalCount = Math.max(0, Number(page.totalCount) || 0);
+      effectivePageSize = Math.max(1, Number.parseInt(page.pageSize, 10) || pageSize);
+      totalPages = Math.max(1, Math.ceil(totalCount / effectivePageSize));
+    }
+
+    const pageProducts = page.items;
+    const productIds = pageProducts.map(getProductId);
+    const missingIdCount = productIds.filter(productId => !productId).length;
+    if (missingIdCount > 0) {
+      throw new Error(`商品列表第${pageNum}页有${missingIdCount}条记录缺少商品编号，已停止以免漏查SKU`);
+    }
+    if (pageProducts.length === 0 && totalCount > completed) {
+      throw new Error(`商品列表第${pageNum}页为空，已停止以免遗漏商品`);
+    }
+
+    const pendingProductIds = productIds.filter(productId => !completedProductIds.has(productId));
+    if (pendingProductIds.length > 0) {
+      const batchResult = await options.fetchSkuBatch(pendingProductIds, {
+        pageNum,
+        totalPages,
+        totalCount,
+        completed,
+        pageSize: pageProducts.length
+      });
+      if (!batchResult || !(batchResult.skuMap instanceof Map)) {
+        throw new Error(`SKU批量查询第${pageNum}页响应结构异常`);
+      }
+      const missingProductIds = pendingProductIds.filter(productId => !batchResult.skuMap.has(productId));
+      if (missingProductIds.length > 0) {
+        throw new Error(
+          `SKU批量查询第${pageNum}页缺少${missingProductIds.length}个商品结果，已停止以免遗漏SKU`
+        );
+      }
+      for (const productId of pendingProductIds) {
+        const items = batchResult.skuMap.get(productId);
+        if (!Array.isArray(items)) {
+          throw new Error(`商品${productId}的SKU批量响应结构异常`);
+        }
+        cachedSkuMap.set(productId, items);
+        completedProductIds.add(productId);
+      }
+    }
+
+    for (const productId of productIds) {
+      const items = cachedSkuMap.get(productId);
+      if (!Array.isArray(items)) {
+        throw new Error(`商品${productId}缺少已完成的SKU数据`);
+      }
+      skuMap.set(productId, items);
+    }
+    allProducts.push(...pageProducts);
+    completed += pageProducts.length;
+    onProgress({
+      stage: 'page-complete',
+      message: `第${pageNum}/${totalPages}页查询完成`,
+      pageNum,
+      totalPages,
+      completed,
+      total: totalCount,
+      pageTotal: pageProducts.length,
+      skuTotal: productIds.reduce((sum, productId) => sum + skuMap.get(productId).length, 0),
+      // 只交给主进程内的回调做当前页数据转换；IPC 层会改成普通数组，
+      // 不直接传递 Map 或原始京东响应。
+      pageProducts,
+      pageSkuMap: new Map(productIds.map(productId => [productId, skuMap.get(productId)]))
+    });
+  }
+
+  return { allProducts, skuMap, totalCount, totalPages, pageSize: effectivePageSize, completed };
+}
+
 function parseSffResponse(responseText) {
   let json;
   try {
@@ -224,22 +672,36 @@ function extractProductPage(responseText) {
   if (!parsed.success) return parsed;
 
   const data = parsed.json.data;
-  const items = data && Array.isArray(data.data)
-    ? data.data
-    : data && Array.isArray(data.list)
-      ? data.list
-      : [];
+  const totalValue = data && typeof data === 'object'
+    ? data.totalCount ?? data.total ?? data.count ?? data.recordsTotal
+    : undefined;
+  const explicitTotal = Number(totalValue);
+  const items = Array.isArray(data)
+    ? data
+    : data && Array.isArray(data.data)
+      ? data.data
+      : data && Array.isArray(data.list)
+        ? data.list
+        : data && Array.isArray(data.rows)
+          ? data.rows
+          : data && Array.isArray(data.records)
+            ? data.records
+            : null;
+  const explicitEmpty = data == null || (
+    data && typeof data === 'object' && Number.isFinite(explicitTotal) && explicitTotal === 0
+  );
 
-  if (!data || (!Array.isArray(data.data) && !Array.isArray(data.list))) {
+  if (!Array.isArray(items) && !explicitEmpty) {
     return { success: false, error: '商品列表响应结构异常', json: parsed.json };
   }
+  const normalizedItems = Array.isArray(items) ? items : [];
 
   return {
     success: true,
-    items,
-    totalCount: Number(data.totalCount) || items.length,
-    pageNo: Number(data.pageNo || data.pageNum) || 1,
-    pageSize: Number(data.pageSize) || items.length || 100,
+    items: normalizedItems,
+    totalCount: Number.isFinite(explicitTotal) ? explicitTotal : normalizedItems.length,
+    pageNo: Number(data && (data.pageNo || data.pageNum)) || 1,
+    pageSize: Number(data && data.pageSize) || normalizedItems.length || 100,
     json: parsed.json
   };
 }
@@ -474,16 +936,23 @@ async function queryProductPagesPageMajor(options = {}) {
 
 module.exports = {
   PRODUCT_LIST_API,
+  SHOP_BATCH_PRODUCT_URL,
+  SHOP_BATCH_QUERY_POLICY,
+  SHOP_BATCH_SKU_URL,
   SHOP_H5ST_APP_ID,
   SHOP_REQUEST_RESPONSE_DELAY_MS,
   SHOP_SFF_APP_ID,
   SKU_LIST_API,
   SKU_REQUEST_TIMEOUT_MS,
   buildShopCookieHeader,
+  buildShopBatchProductRequest,
+  buildShopBatchSkuRequest,
   buildProductListRequest,
   buildShopSffRequestHeaders,
   buildSkuListRequest,
   extractProductPage,
+  extractShopBatchProductPage,
+  extractShopBatchSkuMap,
   extractSkuList,
   filterGoodsByPriceRange,
   getProductId,
@@ -492,8 +961,13 @@ module.exports = {
   getShopProductStatus,
   getShopSkuDisplayName,
   isShopSffAuthenticationFailure,
+  isShopBatchRateLimitError,
   normalizeShopDirectUserAgent,
   normalizeShopDateTime,
   parseSffResponse,
-  queryProductPagesPageMajor
+  queryShopProductPagesBatch,
+  queryProductPagesPageMajor,
+  shouldUseShopBatchProductList,
+  validateShopBatchResponse,
+  withShopBatchRateLimitRetry
 };
