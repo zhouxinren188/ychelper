@@ -242,9 +242,10 @@ async function main() {
     }
   }
 
+  let recoverySessionQuery = '';
   if (baselines.includes('1.0.83')) {
     const recoveryVerificationSession = crypto.randomBytes(16).toString('hex');
-    const recoverySessionQuery = `verification-session=${encodeURIComponent(recoveryVerificationSession)}`;
+    recoverySessionQuery = `verification-session=${encodeURIComponent(recoveryVerificationSession)}`;
     const recoveryUserAgent = 'Mozilla/5.0 cloud-warehouse-assistant/1.0.83 Electron/35.7.5';
     const recoveryFullCheck = await expectResponse(`${BASE_URL}/api/update/full-check?version=1.0.83&${recoverySessionQuery}`, {
       headers: { 'User-Agent': recoveryUserAgent },
@@ -331,7 +332,10 @@ async function main() {
           }
         }
       : { cache: 'no-store' };
-    const check = await expectResponse(`${BASE_URL}/api/update/full-check?version=${encodeURIComponent(baseline)}`, fullCheckOptions, 200, '跨版本更新检测');
+    const baselineRecoveryQuery = baseline === '1.0.83' && recoverySessionQuery
+      ? `&${recoverySessionQuery}`
+      : '';
+    const check = await expectResponse(`${BASE_URL}/api/update/full-check?version=${encodeURIComponent(baseline)}${baselineRecoveryQuery}`, fullCheckOptions, 200, '跨版本更新检测');
     const data = await check.json();
     const legacyBridgeRequired = baseline === '1.0.66';
     const legacyFullFallbackDisabled = compareVersions(baseline, '1.0.67') < 0 && !legacyBridgeRequired;

@@ -145,6 +145,8 @@ assert.match(onlineVerifier, /data\.version !== '1\.0\.68'/);
 assert.match(onlineVerifier, /data\.bridge !== true/);
 assert.match(onlineVerifier, /verification-session=/,
   'v1.0.83 发布验收必须使用独立会话，避免连续验收复用公网 IP 状态');
+assert.match(onlineVerifier, /baseline === '1\.0\.83'[\s\S]{0,180}recoverySessionQuery[\s\S]{0,260}full-check/,
+  'v1.0.83 完成桥接后的基线检测必须继续使用同一验收会话');
 assert.doesNotMatch(onlineVerifier, /changelog\.includes\('自动更新'\)/,
   'UTF-8 中文校验不得依赖某个固定更新文案');
 
