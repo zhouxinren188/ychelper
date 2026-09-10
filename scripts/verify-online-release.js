@@ -16,7 +16,14 @@ function arg(name, fallback = '') {
 }
 
 async function expectResponse(url, options, expectedStatus, label) {
-  const response = await fetch(url, options);
+  const requestOptions = { ...(options || {}) };
+  if (!requestOptions.signal) requestOptions.signal = AbortSignal.timeout(30000);
+  let response;
+  try {
+    response = await fetch(url, requestOptions);
+  } catch (err) {
+    throw new Error(`${label}: 请求失败或超时: ${err.message}`);
+  }
   if (response.status !== expectedStatus) {
     throw new Error(`${label}: 期望 HTTP ${expectedStatus}，实际 ${response.status}`);
   }
