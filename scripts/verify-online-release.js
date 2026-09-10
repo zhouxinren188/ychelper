@@ -243,8 +243,10 @@ async function main() {
   }
 
   if (baselines.includes('1.0.83')) {
+    const recoveryVerificationSession = crypto.randomBytes(16).toString('hex');
+    const recoverySessionQuery = `verification-session=${encodeURIComponent(recoveryVerificationSession)}`;
     const recoveryUserAgent = 'Mozilla/5.0 cloud-warehouse-assistant/1.0.83 Electron/35.7.5';
-    const recoveryFullCheck = await expectResponse(`${BASE_URL}/api/update/full-check?version=1.0.83`, {
+    const recoveryFullCheck = await expectResponse(`${BASE_URL}/api/update/full-check?version=1.0.83&${recoverySessionQuery}`, {
       headers: { 'User-Agent': recoveryUserAgent },
       cache: 'no-store'
     }, 200, 'v1.0.83 安装器修复前完整更新保持');
@@ -254,7 +256,7 @@ async function main() {
       throw new Error('v1.0.83 未在安装器修复前保持完整更新');
     }
 
-    const recoveryLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?installer-recovery=${Date.now()}`, {
+    const recoveryLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?installer-recovery=${Date.now()}&${recoverySessionQuery}`, {
       headers: { 'User-Agent': 'electron-builder' },
       cache: 'no-store'
     }, 200, 'v1.0.83 安装器修复前 latest.yml 保持');
@@ -266,7 +268,7 @@ async function main() {
       throw new Error('v1.0.83 的差分更新入口未保持在当前完整版本');
     }
 
-    const recoveryCheck = await expectResponse(`${BASE_URL}/api/update/check?version=1.0.83`, {
+    const recoveryCheck = await expectResponse(`${BASE_URL}/api/update/check?version=1.0.83&${recoverySessionQuery}`, {
       headers: { 'User-Agent': recoveryUserAgent },
       cache: 'no-store'
     }, 200, 'v1.0.83 安装器启动热修检测');
@@ -277,7 +279,7 @@ async function main() {
       throw new Error('v1.0.83 未获得 v1.0.83.1 安装器启动热修');
     }
 
-    const recoveryDownload = await expectResponse(`${BASE_URL}/api/update/download`, {
+    const recoveryDownload = await expectResponse(`${BASE_URL}/api/update/download?${recoverySessionQuery}`, {
       headers: { 'User-Agent': recoveryUserAgent },
       cache: 'no-store'
     }, 200, 'v1.0.83.1 安装器启动热修下载');
@@ -296,7 +298,7 @@ async function main() {
       throw new Error('v1.0.83.1 安装器启动热修缺少兼容别名或正式 NSIS 启动参数');
     }
 
-    const recoveredLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?installer-recovery-complete=${Date.now()}`, {
+    const recoveredLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?installer-recovery-complete=${Date.now()}&${recoverySessionQuery}`, {
       headers: { 'User-Agent': 'electron-builder' },
       cache: 'no-store'
     }, 200, 'v1.0.83 安装器热修后 latest.yml 放行');
