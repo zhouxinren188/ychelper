@@ -21,11 +21,20 @@ assert.match(preload, /openCpWorkspace:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('open
 assert.match(main, /const MERCHANT_WORKSPACE_URL = 'https:\/\/o\.jdl\.com';/);
 assert.match(main, /const CP_WORKSPACE_URL = 'https:\/\/cp\.jdl\.com';/);
 assert.match(main, /ipcMain\.handle\('open-merchant-workspace'/);
-assert.match(main, /const target = jdPageWindow;/);
-assert.match(main, /await target\.loadURL\(MERCHANT_WORKSPACE_URL\);/);
+assert.match(main, /let merchantWorkspaceWindow = null;/);
+assert.match(main, /merchantWorkspaceWindow = new BrowserWindow\(/);
+assert.match(main, /const target = merchantWorkspaceWindow;/);
+assert.match(main, /if \(shouldLoad[\s\S]*?await target\.loadURL\(MERCHANT_WORKSPACE_URL\);/);
 assert.match(main, /ipcMain\.handle\('open-cp-workspace'/);
 assert.match(main, /const merchantPartition = getMerchantPartition\(\);/);
 assert.match(main, /await target\.loadURL\(CP_WORKSPACE_URL\);/);
 assert.match(main, /preservedJdPageWindow\.on\('close',[\s\S]*?event\.preventDefault\(\);[\s\S]*?preservedJdPageWindow\.hide\(\);/);
+assert.match(preload, /cancelJdLabelRequest:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('cancel-jd-label-request'\)/);
+assert.match(main, /const JD_LABEL_AJAX_TIMEOUT_MS = 30000;/);
+assert.match(main, /const JD_LABEL_EXECUTION_TIMEOUT_MS = 35000;/);
+assert.match(main, /timeout:\s*\$\{JD_LABEL_AJAX_TIMEOUT_MS\}/);
+assert.match(main, /ipcMain\.handle\('cancel-jd-label-request'/);
+assert.match(renderer, /cancelJdLabelRequest\(\)/);
+assert.match(renderer, /if \(stopRequested \|\| result\.cancelled\) return;/);
 
-console.log('商家端入口测试通过：商家端与 CP 端入口共用当前账号会话，隐藏 o.jdl.com 窗口继续保持后台环境');
+console.log('商家端入口测试通过：商家端与 CP 端共享当前账号会话，但可见商家端与隐藏打标环境相互隔离');

@@ -993,6 +993,7 @@ let loginWindow = null;
 let webLoginWindow = null;
 let mainWindow = null;
 let jdPageWindow = null; // 登录后保留的隐藏窗口，用于h5st签名的API调用
+let merchantWorkspaceWindow = null; // 独立的可见商家端窗口，避免干扰后台打标环境
 let cpPageWindow = null; // 与当前商家端账号共享 Session 的 CP 端窗口
 let isLoggingIn = false; // 防止重复处理登录
 let activeMerchantAccountId = ''; // 当前活跃的商家端账号ID
@@ -1032,6 +1033,11 @@ function isMerchantLoginPageUrl(url) {
 
 const MERCHANT_WORKSPACE_URL = 'https://o.jdl.com';
 const CP_WORKSPACE_URL = 'https://cp.jdl.com';
+
+function destroyMerchantWorkspaceWindow() {
+  if (merchantWorkspaceWindow && !merchantWorkspaceWindow.isDestroyed()) merchantWorkspaceWindow.destroy();
+  merchantWorkspaceWindow = null;
+}
 
 function destroyCpPageWindow() {
   if (cpPageWindow && !cpPageWindow.isDestroyed()) cpPageWindow.destroy();
@@ -1096,6 +1102,7 @@ async function createWebLoginWindow() {
     return { success: false, alreadyOpen: true };
   }
 
+  destroyMerchantWorkspaceWindow();
   destroyCpPageWindow();
 
   // 设置当前登录用户名
@@ -1992,6 +1999,7 @@ function createMainWindow() {
       jdPageWindow.destroy();
       jdPageWindow = null;
     }
+    destroyMerchantWorkspaceWindow();
     destroyCpPageWindow();
     destroyAllShopEnvironments();
     if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
@@ -3055,6 +3063,7 @@ app.on('before-quit', () => {
     jdPageWindow.close();
     jdPageWindow = null;
   }
+  destroyMerchantWorkspaceWindow();
   destroyCpPageWindow();
 });
 
@@ -3096,13 +3105,37 @@ ipcMain.handle('open-merchant-workspace', async event => {
     if (!mainWindow || mainWindow.isDestroyed() || !event.sender || event.sender.id !== mainWindow.webContents.id) {
       return { success: false, error: '商家端窗口来源校验失败' };
     }
-    const target = jdPageWindow;
-    if (!target || target.isDestroyed()) {
+    if (!jdPageWindow || jdPageWindow.isDestroyed()) {
       return { success: false, error: '商家端运行环境不可用，请重新登录云仓助手' };
     }
-    target.show();
-    target.focus();
-    await target.loadURL(MERCHANT_WORKSPACE_URL);
+
+    let shouldLoad = false;
+    if (!merchantWorkspaceWindow || merchantWorkspaceWindow.isDestroyed()) {
+      const webPreferences = {
+        contextIsolation: true,
+        nodeIntegration: false
+      };
+      const merchantPartition = getMerchantPartition();
+      if (merchantPartition) webPreferences.partition = merchantPartition;
+
+      merchantWorkspaceWindow = new BrowserWindow({
+        width: 1200,
+        height: 800,
+        center: true,
+        show: false,
+        title: '京东物流 - 商家端',
+        webPreferences
+      });
+      merchantWorkspaceWindow.on('closed', () => {
+        merchantWorkspaceWindow = null;
+      });
+      shouldLoad = true;
+    }
+
+    const target = merchantWorkspaceWindow;
+    if (shouldLoad || !target.webContents.getURL() || target.webContents.getURL() === 'about:blank') {
+      await target.loadURL(MERCHANT_WORKSPACE_URL);
+    }
     if (target.isDestroyed()) {
       return { success: false, error: '商家端窗口已关闭，请重新登录云仓助手' };
     }
@@ -3333,6 +3366,7 @@ ipcMain.handle('delete-merchant-account', async (event, id) => {
   await cookieManager.clearPartition(cookieManager.getPartitionName('merchant', id));
 
   if (activeMerchantAccountId === id) {
+    destroyMerchantWorkspaceWindow();
     destroyCpPageWindow();
     activeMerchantAccountId = '';
   }
@@ -3350,6 +3384,7 @@ ipcMain.handle('switch-merchant-account', async (event, account) => {
     return { success: false, error: '商家端账号不存在' };
   }
 
+  destroyMerchantWorkspaceWindow();
   destroyCpPageWindow();
   activeMerchantAccountId = storedAccount.id;
   storeSet('lastMerchantAccountId', storedAccount.id);
@@ -6792,6 +6827,19 @@ ipcMain.handle('batch-toggle-master-data', async (event, { ids, action }) => {
 
 // ========== 京配打标生效/取消（复用登录窗口，h5st自动签名） ==========
 
+const JD_LABEL_AJAX_TIMEOUT_MS = 30000;
+const JD_LABEL_EXECUTION_TIMEOUT_MS = 35000;
+
+function withJdLabelTimeout(promise, timeoutMs = JD_LABEL_EXECUTION_TIMEOUT_MS) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('京配接口请求超时，已结束本次等待')), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function ensureJdPageReady() {
   if (!jdPageWindow || jdPageWindow.isDestroyed()) {
     throw new Error('JD页面窗口未就绪，请重新登录后再试');
@@ -6858,7 +6906,7 @@ ipcMain.handle('jd-label-goods', async (event, { goodArray, enable }) => {
     const storedCsrfToken = storeGet('csrfToken', '');
 
     // 在JD页面上下文中用jQuery.ajax发起请求（h5st自动添加resParams）
-    const resultText = await win.webContents.executeJavaScript(`
+    const executionPromise = win.webContents.executeJavaScript(`
       (function() {
         return new Promise(function(resolve) {
           var goodArray = ${JSON.stringify(formattedArray)};
@@ -6879,26 +6927,48 @@ ipcMain.handle('jd-label-goods', async (event, { goodArray, enable }) => {
             pageTitle: document.title
           };
 
-          jQuery.ajax({
+          var xhrRequest = jQuery.ajax({
             url: '/shopGoods/handleShopGoodsDelivers.do?_r=' + Math.random(),
             type: 'POST',
+            timeout: ${JD_LABEL_AJAX_TIMEOUT_MS},
             data: {
               csrfToken: csrfToken,
               goodArray: JSON.stringify(goodArray)
             },
-            complete: function(xhr) {
+            complete: function(xhr, statusText) {
               debugInfo.httpStatus = xhr.status;
-              resolve(JSON.stringify({ _debug: debugInfo, response: xhr.responseText || '' }));
+              debugInfo.statusText = statusText || '';
+              if (window.__ychelperJdLabelRequest === xhrRequest) {
+                window.__ychelperJdLabelRequest = null;
+              }
+              resolve(JSON.stringify({
+                _debug: debugInfo,
+                response: xhr.responseText || '',
+                cancelled: statusText === 'ychelper-stop' || statusText === 'abort',
+                timedOut: statusText === 'timeout'
+              }));
             }
           });
+          window.__ychelperJdLabelRequest = xhrRequest;
         });
       })()
     `);
+    const resultText = await withJdLabelTimeout(executionPromise);
 
     console.log(`京配打标${label}响应:`, resultText.substring(0, 300));
 
     try {
       const parsed = JSON.parse(resultText);
+      if (parsed.cancelled) {
+        return { success: false, cancelled: true, error: '任务已停止' };
+      }
+      if (parsed.timedOut) {
+        return { success: false, transient: true, error: '京配接口请求超时' };
+      }
+      if (!parsed.response) {
+        const statusText = parsed._debug?.statusText || '空响应';
+        return { success: false, transient: true, error: `京配接口未返回有效结果（${statusText}）` };
+      }
       let respData;
       try { respData = JSON.parse(parsed.response); } catch(e) { respData = { resultMessage: parsed.response || '空响应' }; }
       return { success: respData.resultCode === 1, data: respData };
@@ -6907,7 +6977,32 @@ ipcMain.handle('jd-label-goods', async (event, { goodArray, enable }) => {
     }
   } catch (err) {
     console.error('京配打标异常:', err.message);
-    return { success: false, error: err.message };
+    const transient = /超时|navigation|context|frame|destroyed|script failed/i.test(err.message || '');
+    return { success: false, transient, error: err.message };
+  }
+});
+
+ipcMain.handle('cancel-jd-label-request', async event => {
+  if (!mainWindow || mainWindow.isDestroyed() || !event.sender || event.sender.id !== mainWindow.webContents.id) {
+    return { success: false, aborted: false, error: '停止请求来源校验失败' };
+  }
+  if (!jdPageWindow || jdPageWindow.isDestroyed()) {
+    return { success: true, aborted: false };
+  }
+  try {
+    const aborted = await jdPageWindow.webContents.executeJavaScript(`
+      (() => {
+        const request = window.__ychelperJdLabelRequest;
+        if (!request || typeof request.abort !== 'function') return false;
+        request.abort('ychelper-stop');
+        return true;
+      })()
+    `);
+    if (aborted) console.log('京配打标: 已按用户请求中止当前接口调用');
+    return { success: true, aborted: !!aborted };
+  } catch (error) {
+    console.warn('中止京配请求失败:', error.message);
+    return { success: false, aborted: false, error: error.message };
   }
 });
 

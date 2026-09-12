@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 京配打标生效/取消
   jdLabelGoods: (params) => ipcRenderer.invoke('jd-label-goods', params),
+  cancelJdLabelRequest: () => ipcRenderer.invoke('cancel-jd-label-request'),
 
   // WMS 仓库端
   openWmsLogin: (cred) => ipcRenderer.invoke('open-wms-login', cred),

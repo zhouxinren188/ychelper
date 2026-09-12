@@ -353,10 +353,18 @@ function initEventListeners() {
   });
 
   // 停止任务确认弹窗
-  $('#stopTaskYes').addEventListener('click', () => {
+  $('#stopTaskYes').addEventListener('click', async () => {
     stopRequested = true;
     $('#stopTaskModal').style.display = 'none';
-    addLog('warn', '正在停止任务，等待当前步骤完成...');
+    addLog('warn', '正在停止任务并中止当前请求...');
+    try {
+      const cancelResult = await window.electronAPI.cancelJdLabelRequest();
+      if (cancelResult?.aborted) {
+        addLog('info', '当前京配请求已中止');
+      }
+    } catch (_) {
+      // 当前步骤不是京配请求时无需额外处理，执行循环仍会在步骤结束后停止。
+    }
   });
   $('#stopTaskNo').addEventListener('click', () => {
     $('#stopTaskModal').style.display = 'none';
@@ -835,6 +843,8 @@ async function executeTasks() {
         addLog('info', `[${skuLabel}] ${step.name}...`);
 
         await executeStep(step, task);
+
+        if (stopRequested) { stopped = true; break; }
 
         addLog('success', `[${skuLabel}] ${step.name} 完成`);
 
@@ -1438,6 +1448,7 @@ async function executeStep(step, task) {
       if (!csgResult.success) {
         throw new Error(`店铺商品查询失败: ${csgResult.error}`);
       }
+      if (stopRequested) return;
       if (csgResult.failed && csgResult.failed.length > 0) {
         addLog('warn', `[${skuLabel}] 以下SKU未查询到: ${csgResult.failed.join(', ')}`);
       }
@@ -1482,14 +1493,22 @@ async function executeStep(step, task) {
       const failedSkus = []; // 追踪具体失败的SKU
 
       for (let i = 0; i < batches.length; i++) {
+        if (stopRequested) return;
         const batchLabel = batches.length > 1 ? `批次${i + 1}/${batches.length} ` : '';
         let retryOk = false;
 
         for (let attempt = 0; attempt <= JD_MAX_RETRIES; attempt++) {
+          if (stopRequested) return;
           if (attempt > 0) {
             const waitSec = attempt * 15; // 15s, 30s, 45s 递增退避
             addLog('warn', `[${skuLabel}] ${batchLabel}重试第${attempt}次，等待${waitSec}秒...`);
-            await sleep(waitSec * 1000);
+            let elapsed = 0;
+            while (elapsed < waitSec * 1000 && !stopRequested) {
+              const waitMs = Math.min(200, waitSec * 1000 - elapsed);
+              await sleep(waitMs);
+              elapsed += waitMs;
+            }
+            if (stopRequested) return;
           }
 
           addLog('info', `[${skuLabel}] ${batchLabel}正在调用京配${label}接口 (${batches[i].length}个)...`);
@@ -1497,6 +1516,8 @@ async function executeStep(step, task) {
             goodArray: batches[i],
             enable
           });
+
+          if (stopRequested || result.cancelled) return;
 
           if (result.success && result.data && result.data.resultCode === 1) {
             addLog('success', `[${skuLabel}] ${batchLabel}京配${label}成功`);
@@ -1508,8 +1529,10 @@ async function executeStep(step, task) {
           const errMsg = result.error || (result.data && result.data.resultMessage) || '未知错误';
           const isRateLimit = errMsg.includes('频繁') || errMsg.includes('重试');
           const isPermissionErr = errMsg.includes('无权限') || errMsg.includes('无权');
-          // 频控错误或权限错误均重试（权限错误可能因csrfToken未初始化导致）
-          const shouldRetry = (isRateLimit || isPermissionErr) && attempt < JD_MAX_RETRIES;
+          const isTransientError = result.transient
+            || /超时|网络|空响应|页面.*中断|导航|context|frame|destroyed/i.test(errMsg);
+          // 频控、权限或暂时性页面/网络错误均重试。
+          const shouldRetry = (isRateLimit || isPermissionErr || isTransientError) && attempt < JD_MAX_RETRIES;
           if (shouldRetry) {
             continue; // 进入下次重试
           }
@@ -1535,7 +1558,12 @@ async function executeStep(step, task) {
 
         // 批次间等待
         if (i < batches.length - 1) {
-          await sleep(JD_BATCH_DELAY);
+          let elapsed = 0;
+          while (elapsed < JD_BATCH_DELAY && !stopRequested) {
+            const waitMs = Math.min(200, JD_BATCH_DELAY - elapsed);
+            await sleep(waitMs);
+            elapsed += waitMs;
+          }
         }
       }
 
