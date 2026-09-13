@@ -35,6 +35,20 @@ assert.match(main, /const MAX_SHOP_ACCOUNTS = 1000;/,
   '快速打标应允许保存最多1000个店铺账号');
 assert.match(main, /list\.length >= MAX_SHOP_ACCOUNTS[\s\S]*最多保存\$\{MAX_SHOP_ACCOUNTS\}个店铺账号/,
   '新增店铺必须使用统一的快速打标店铺上限');
+assert.match(main, /NavigationFacade\.findShopInfo/,
+  '登录店铺后必须通过官方店铺资料接口获取真实名称');
+assert.match(main, /officialLoginAccount: officialInfo\.loginAccount[\s\S]*vendorId: vendorIdentity\.vendorId[\s\S]*officialShopId: officialInfo\.officialShopId/,
+  '店铺账号必须分别保存登录账号、商家ID和店铺ID');
+assert.match(main, /const vendorId = String\(identity\?\.currentVendor\?\.vendorId \|\| ''\)\.trim\(\)/,
+  '商品导入所需商家ID必须来自免h5st的登录身份接口');
+assert.match(main, /const vendorIdMap = \{\};[\s\S]*老版本账号没有单独保存 vendorId[\s\S]*\{ \.\.\.account, vendorId \}/,
+  '在线状态检测必须为旧账号自动补齐vendorId');
+assert.doesNotMatch(main, /MyShopInfoProvider\.getShopCardInfo|SHOP_CARD_H5ST_APP_ID/,
+  '登录资料获取不得依赖需要h5st的资料卡接口');
+assert.doesNotMatch(main, /shop-base-name|shop-base__right-title-name/,
+  '店铺名称不得再从页面DOM读取');
+assert.doesNotMatch(main, /shopLoginName = name \|\| \(pendingShopCredentials/,
+  '官方接口未返回店名时不得使用手工名称或登录名兜底');
 assert.match(renderer, /let smShopSaveInProgress = false;/,
   '店铺保存流程必须具备防重复提交状态');
 assert.match(renderer, /runSmShopSubmission\(saveSmShop\)/,
@@ -122,6 +136,13 @@ assert.strictEqual(findMatchingShopValue('测试店铺', [
 assert.strictEqual(findMatchingShopValue('测试店', [
   { value: 'target-1', label: '测试店铺（商家编号1）' }
 ]), '', '相似店名不得被自动误匹配');
+assert.strictEqual(findMatchingShopValue('已经改名的店铺', [
+  { value: 'CSP0020000456983', spShopNo: '156339671', label: '锦选社日用品店（156339671）' },
+  { value: 'CSP0020000543757', spShopNo: '157816689', label: '兔乐兔店（157816689）' }
+], '157816689'), 'CSP0020000543757', '商家ID应通过spShopNo精确匹配商家端目标店铺');
+assert.strictEqual(findMatchingShopValue('不存在的店铺名称', [
+  { value: '157816689', spShopNo: '999999999', label: '其他店铺（999999999）' }
+], '157816689'), '', '店铺ID与商家ID不能混用进行目标店铺匹配');
 const warehouseOptions = [
   { value: 'warehouse-1', label: '一号仓' },
   { value: 'warehouse-2', label: '二号仓' }
@@ -299,8 +320,10 @@ assert.match(renderer, /task\.publishStatus = 'publish_failed'/,
   '单店发布失败后必须保留可重试状态');
 assert.match(renderer, /task\.publishStatus = 'published'[\s\S]*smSelectedTaskIds\.delete\(task\.id\)/,
   '成功发布的店铺必须标记完成并防止被默认重复发布');
-assert.match(renderer, /smSendShop\.value = findSmMatchingTargetShop\(sourceShopName\)/,
-  '单次发送必须按商品所属源店铺自动匹配目标店铺');
+assert.match(renderer, /smSendShop\.value = findSmMatchingTargetShop\([\s\S]*sourceShopName,[\s\S]*sourceAccount\?\.vendorId[\s\S]*\)/,
+  '单次发送必须优先按商品所属源店铺的商家ID自动匹配目标店铺');
+assert.match(renderer, /缺少商家ID（vendorId），跳过上传/,
+  '商品导入缺少vendorId时必须明确阻止上传');
 assert.match(renderer, /smSendWarehouse\.value = findSmDefaultWarehouse\(sourceAccount, warehouseOptions\)/,
   '单次发送必须采用源店铺预设的默认仓库');
 assert.match(renderer, /sourceAccountMap\.get\(String\(task\.accountId\)\)[\s\S]*task\.publishConfig\?\.targetWarehouseId/,

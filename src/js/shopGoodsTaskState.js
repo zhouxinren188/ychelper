@@ -251,7 +251,15 @@
       .toLowerCase();
   }
 
-  function findMatchingShopValue(sourceName, options = []) {
+  function findMatchingShopValue(sourceName, options = [], vendorId = '') {
+    const normalizedVendorId = normalizeText(vendorId);
+    if (normalizedVendorId) {
+      const idMatch = (Array.isArray(options) ? options : []).find(option => (
+        normalizeText(option?.spShopNo) === normalizedVendorId
+      ));
+      if (idMatch) return normalizeText(idMatch.value);
+    }
+
     const normalizedSource = normalizeShopMatchName(sourceName);
     if (!normalizedSource) return '';
     const match = (Array.isArray(options) ? options : []).find(option =>
@@ -382,7 +390,7 @@
           </label>
           <label class="sm-auto-config-field">
             <span>目标店铺（商家端）</span>
-            <select id="smAutoTargetShop"><option value="">登录后按店铺名称自动匹配</option></select>
+            <select id="smAutoTargetShop"><option value="">登录后按商家ID或名称自动匹配</option></select>
           </label>
         </div>`;
       autoSendGroup.parentNode.insertBefore(config, autoSendGroup.nextSibling);

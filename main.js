@@ -15,6 +15,7 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const https = require('https');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
 const excelGen = require('./src/js/excelGenerator');
@@ -93,7 +94,9 @@ const {
   classifyShopIdentityResponse,
   findDuplicateShopAccount,
   isShopLoginUrl,
-  isTrustedShopLoginFrameUrl
+  isTrustedShopLoginFrameUrl,
+  parseShopOfficialInfoResponse,
+  parseShopIdentityJsonp
 } = require('./src/js/shopSessionState');
 const {
   DIFFERENTIAL_FALLBACK_MESSAGE,
@@ -4388,6 +4391,10 @@ let activeShopAccountId = ''; // 当前活跃的店铺账号ID
 let shopPageWindow = null;           // 店铺后台浏览窗口
 let shopQueryInProgress = false;     // 自动查询任务锁
 let shopSffContextHeaders = null;    // 商品页官方请求生成的 DSM 环境头（仅保存在内存）
+const SHOP_OFFICIAL_INFO_URL = 'https://sff.jd.com/api?v=1.0&appId=ZSCUMIUH2ZNF8Z2PVU1J&api=dsm.shop.center.pageframe.navigation.NavigationFacade.findShopInfo';
+const SHOP_OFFICIAL_INFO_BODY = JSON.stringify({ param: { belongParam: { client: 'web' } } });
+const SHOP_OFFICIAL_INFO_TIMEOUT_MS = 8000;
+const SHOP_OFFICIAL_INFO_RETRY_COUNT = 3;
 const SHOP_ENVIRONMENT_CACHE_LIMIT = 3;
 const shopEnvironmentCache = new Map();
 const trackedShopEnvironmentWindows = new WeakSet();
@@ -4572,6 +4579,84 @@ function applyShopBrowserUserAgent(win) {
   win.webContents.setUserAgent(cleanUA);
 }
 
+async function requestShopOfficialInfo(sourceSession, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : SHOP_OFFICIAL_INFO_TIMEOUT_MS;
+  const cookies = await sourceSession.cookies.get({ url: SHOP_OFFICIAL_INFO_URL });
+  const cookieHeader = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+  if (!cookieHeader) return { success: false, message: '没有可用于店铺资料接口的Cookie' };
+
+  return new Promise(resolve => {
+    let settled = false;
+    let timer = null;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    const target = new URL(SHOP_OFFICIAL_INFO_URL);
+    const request = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || 443,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        Cookie: cookieHeader,
+        'Content-Type': 'application/json;charset=UTF-8',
+        'Content-Length': Buffer.byteLength(SHOP_OFFICIAL_INFO_BODY),
+        'dsm-platform': 'pc',
+        Accept: 'application/json, text/plain, */*',
+        'User-Agent': String(options.userAgent || sourceSession.getUserAgent() || '')
+      }
+    }, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => {
+        if (body.length <= 1024 * 1024) body += chunk;
+      });
+      response.on('error', error => finish({
+        success: false,
+        message: error.message,
+        statusCode: response.statusCode || 0
+      }));
+      response.on('end', () => {
+        const statusCode = Number(response.statusCode || 0);
+        if (statusCode !== 200) {
+          finish({ success: false, message: `HTTP ${statusCode || '未知'}`, statusCode });
+          return;
+        }
+        finish({ ...parseShopOfficialInfoResponse(body), statusCode });
+      });
+    });
+    request.on('error', error => finish({ success: false, message: error.message, statusCode: 0 }));
+    timer = setTimeout(() => {
+      try { request.destroy(); } catch (_) {}
+      finish({ success: false, message: `请求超时（${timeoutMs}ms）`, statusCode: 0 });
+    }, timeoutMs);
+    request.write(SHOP_OFFICIAL_INFO_BODY);
+    request.end();
+  });
+}
+
+async function requestShopOfficialInfoWithRetry(sourceSession, options = {}) {
+  const attempts = Math.max(1, Number(options.attempts) || SHOP_OFFICIAL_INFO_RETRY_COUNT);
+  let lastResult = { success: false, message: '店铺资料接口未执行' };
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      lastResult = await requestShopOfficialInfo(sourceSession, options);
+    } catch (error) {
+      lastResult = { success: false, message: error.message || '店铺资料接口请求失败', statusCode: 0 };
+    }
+    if (lastResult.success) return { ...lastResult, attempts: attempt };
+    console.warn(`[店铺登录] 官方店铺资料接口第${attempt}/${attempts}次未就绪:`, lastResult.message);
+    if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  return { ...lastResult, attempts };
+}
+
 // 探测指定店铺账号，不切换当前账号，也不创建或加载浏览器窗口。
 async function probeShopAccountSession(accountId) {
   if (!accountId) return { state: 'login', reason: 'no_account', durationMs: 0 };
@@ -4628,9 +4713,11 @@ async function probeShopAccountSession(accountId) {
         url: response.url,
         body
       });
+      const identity = parseShopIdentityJsonp(body);
+      const vendorId = String(identity?.currentVendor?.vendorId || '').trim();
       const durationMs = Date.now() - startedAt;
       console.log(`[店铺状态] 账号[${accountId}]轻量检测完成: state=${state}, HTTP=${response.status}, duration=${durationMs}ms`);
-      return { state, status: response.status, durationMs, hasSavedCookie };
+      return { state, status: response.status, durationMs, hasSavedCookie, vendorId };
     } catch (error) {
       const message = error && error.name === 'AbortError' ? '请求超时' : error.message;
       console.warn(`[店铺状态] 账号[${accountId}]轻量检测失败，保留 Cookie 文件:`, message);
@@ -4660,14 +4747,46 @@ async function validateShopSession() {
   }
 
   if (probe.state === 'authenticated') {
+    const shopSession = session.fromPartition(cookieManager.getPartitionName('shop', validatingAccountId));
+    const officialInfo = await requestShopOfficialInfoWithRetry(shopSession, { attempts: 1 });
+    if (activeShopAccountId !== validatingAccountId) {
+      return { loggedIn: false, shopName: '', stale: true };
+    }
+    if (!officialInfo.success) {
+      console.warn(`[店铺状态] 账号[${validatingAccountId}]已登录，但官方接口未返回店铺名称:`, officialInfo.message);
+      return {
+        loggedIn: false,
+        shopName: '',
+        validationError: true,
+        error: `官方店铺资料获取失败：${officialInfo.message}`
+      };
+    }
+
     shopLoggedIn = true;
-    const activeAccount = storeGet('shopAccounts', [])
-      .find(account => account.id === validatingAccountId);
-    shopLoginName = shopLoginName || activeAccount?.name || activeAccount?.username || '';
+    shopLoginName = officialInfo.shopName;
+    storeUpdate(data => {
+      data.lastShopName = shopLoginName;
+      const accounts = Array.isArray(data.shopAccounts) ? data.shopAccounts : [];
+      const index = accounts.findIndex(account => account.id === validatingAccountId);
+      if (index >= 0) {
+        accounts[index] = {
+          ...accounts[index],
+          name: shopLoginName,
+          officialLoginAccount: officialInfo.loginAccount || accounts[index].officialLoginAccount || '',
+          vendorId: probe.vendorId || accounts[index].vendorId || '',
+          officialShopId: officialInfo.officialShopId || accounts[index].officialShopId || '',
+          shopInfoUrl: officialInfo.shopInfoUrl || accounts[index].shopInfoUrl || ''
+        };
+      }
+      data.shopAccounts = accounts;
+    });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('shop-login-success', {
         shopName: shopLoginName,
-        accountId: validatingAccountId
+        accountId: validatingAccountId,
+        loginAccount: officialInfo.loginAccount || '',
+        vendorId: probe.vendorId || '',
+        officialShopId: officialInfo.officialShopId || ''
       });
     }
     return { loggedIn: true, shopName: shopLoginName };
@@ -4843,7 +4962,7 @@ async function createShopLoginWindow() {
     activeShopAccountId = accountId;
     destroyShopEnvironment(accountId);
     shopLoggedIn = false;
-    shopLoginName = pendingShopCredentials.name || pendingShopCredentials.username || '';
+    shopLoginName = '';
   }
   shopPageWindow = null;
   shopSffContextHeaders = null;
@@ -4895,6 +5014,8 @@ async function createShopLoginWindow() {
   let shopAutofillAttemptCount = 0;
   let shopAutofillTimer = null;
   let shopAutofillDeadline = 0;
+  let shopLoginFinalizing = false;
+  let shopLoginFinalized = false;
 
   const stopShopCredentialAutofill = () => {
     if (shopAutofillTimer) {
@@ -5014,84 +5135,110 @@ async function createShopLoginWindow() {
     }
     // 登录成功后URL会跳转到 shop.jd.com 的管理页面（非 passport/login）
     if (url.includes('shop.jd.com') && !url.includes('passport') && !url.includes('login')) {
+      if (shopLoginFinalizing || shopLoginFinalized) return;
+      shopLoginFinalizing = true;
       stopShopCredentialAutofill();
-      console.log('店铺登录: 检测到登录成功');
-      shopLoggedIn = true;
+      shopLoggedIn = false;
+      shopLoginName = '';
+      console.log('店铺登录: 已进入后台，等待官方接口确认店铺资料');
 
-      // 等待页面完全加载后再提取店铺名称
-      shopLoginWindow.webContents.once('did-finish-load', async () => {
-        if (!shopLoginWindow || shopLoginWindow.isDestroyed()) return;
-
-        // 延迟一小段时间，等待SPA异步渲染店铺名称
-        await new Promise(r => setTimeout(r, 2000));
-        if (!shopLoginWindow || shopLoginWindow.isDestroyed()) return;
-
-        // 从页面提取店铺名称
-        try {
-          const name = await shopLoginWindow.webContents.executeJavaScript(`
-            (function() {
-              var el = document.getElementById('shop-base-name')
-                || document.querySelector('.shop-base__right-title-name');
-              if (el && el.textContent.trim()) return el.textContent.trim();
-              // 兜底：从 document.title 提取
-              var title = document.title || '';
-              if (title && title.includes('-')) return title.split('-')[0].trim();
-              return '';
-            })();
-          `);
-          shopLoginName = name || (pendingShopCredentials ? pendingShopCredentials.name || '' : '');
-          storeSet('lastShopName', shopLoginName);
-          console.log('店铺登录: 提取到店铺名称:', shopLoginName);
-        } catch (e) {
-          shopLoginName = pendingShopCredentials ? pendingShopCredentials.name || '' : '';
-          console.log('店铺登录: 提取名称失败:', e.message);
-        }
-
-        // 关闭登录窗口前导出 cookie 到文件
-        if (activeShopAccountId) {
-          const ses = session.fromPartition(getShopPartition());
-          await cookieManager.exportCookies(ses, 'shop', activeShopAccountId);
-          storeUpdate(data => {
-            data.lastShopAccountId = activeShopAccountId;
-            data.lastShopName = shopLoginName;
-            const accounts = Array.isArray(data.shopAccounts) ? data.shopAccounts : [];
-            const index = accounts.findIndex(account => account.id === activeShopAccountId);
-            if (index >= 0) {
-              accounts[index] = {
-                ...accounts[index],
-                name: shopLoginName || accounts[index].name || '',
-                lastLogin: Date.now()
-              };
-            }
-            data.shopAccounts = accounts;
-          });
-        }
-
-        // 保留刚完成登录的正常页面上下文，后续商品查询继续复用同一会话。
-        // 旧软件也是在已登录的内嵌页面环境中完成签名和请求；销毁后重建会丢失
-        // 页面侧的本地状态与签名环境，容易被京东判定为异常请求。
-        if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
-          const retainedAccountId = String(activeShopAccountId || '');
-          destroyShopEnvironment(retainedAccountId);
-          const retainedShopWindow = shopLoginWindow;
-          shopPageWindow = retainedShopWindow;
-          shopSffContextHeaders = null;
-          shopLoginWindow = null;
-          retainedShopWindow.setTitle('店铺后台 - ' + (shopLoginName || ''));
-          retainedShopWindow.hide();
-          rememberShopEnvironment(retainedAccountId, retainedShopWindow, null);
-          console.log('店铺登录: 已保留当前页面会话供商品查询复用');
-        }
-
-        // 通知渲染进程
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('shop-login-success', {
-            shopName: shopLoginName,
-            accountId: pendingShopCredentials ? pendingShopCredentials.id || '' : ''
-          });
-        }
-        pendingShopCredentials = null;
+      // 接口刚登录时可能短暂未就绪，只重试同一个官方接口，不读取页面或猜测店名。
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (!shopLoginWindow || shopLoginWindow.isDestroyed() || activeShopAccountId !== accountId) {
+        shopLoginFinalizing = false;
+        return;
+      }
+      const completingWindow = shopLoginWindow;
+      const ses = session.fromPartition(getShopPartition());
+      const officialInfo = await requestShopOfficialInfoWithRetry(ses, {
+        userAgent: completingWindow.webContents.getUserAgent()
       });
+      if (!shopLoginWindow || shopLoginWindow.isDestroyed() || shopLoginWindow !== completingWindow) return;
+
+      const vendorIdentity = officialInfo.success
+        ? await probeShopAccountSession(accountId)
+        : { state: 'unknown', vendorId: '' };
+      if (!shopLoginWindow || shopLoginWindow.isDestroyed() || shopLoginWindow !== completingWindow) return;
+
+      if (!officialInfo.success || vendorIdentity.state !== 'authenticated' || !vendorIdentity.vendorId) {
+        shopLoginFinalizing = false;
+        const profileError = officialInfo.success
+          ? '登录身份接口未返回vendorId'
+          : officialInfo.message;
+        console.error('店铺登录: 官方接口获取店铺资料失败，已阻止保存:', profileError);
+        dialog.showMessageBox(completingWindow, {
+          type: 'warning',
+          title: '获取店铺资料失败',
+          message: '店铺已经登录，但官方接口暂未返回店铺资料。',
+          detail: `未保存页面名称或登录名。请刷新店铺后台后重试。\n\n接口结果：${profileError}`,
+          buttons: ['知道了'],
+          defaultId: 0
+        }).catch(() => {});
+        return;
+      }
+
+      shopLoginFinalized = true;
+      shopLoggedIn = true;
+      shopLoginName = officialInfo.shopName;
+      storeSet('lastShopName', shopLoginName);
+      console.log(
+        '店铺登录: 官方接口获取到店铺名称:', shopLoginName,
+        'loginAccount:', officialInfo.loginAccount ? '已获取' : '无',
+        'vendorId:', vendorIdentity.vendorId ? '已获取' : '无',
+        'officialShopId:', officialInfo.officialShopId ? '已获取' : '无',
+        '返回字段:', (officialInfo.fields || []).join(',') || '无'
+      );
+
+      // 关闭登录窗口前导出 cookie 到文件
+      if (activeShopAccountId) {
+        await cookieManager.exportCookies(ses, 'shop', activeShopAccountId);
+        storeUpdate(data => {
+          data.lastShopAccountId = activeShopAccountId;
+          data.lastShopName = shopLoginName;
+          const accounts = Array.isArray(data.shopAccounts) ? data.shopAccounts : [];
+          const index = accounts.findIndex(account => account.id === activeShopAccountId);
+          if (index >= 0) {
+            accounts[index] = {
+              ...accounts[index],
+              name: shopLoginName,
+              officialLoginAccount: officialInfo.loginAccount || accounts[index].officialLoginAccount || '',
+              vendorId: vendorIdentity.vendorId || accounts[index].vendorId || '',
+              officialShopId: officialInfo.officialShopId || accounts[index].officialShopId || '',
+              shopInfoUrl: officialInfo.shopInfoUrl || accounts[index].shopInfoUrl || '',
+              lastLogin: Date.now()
+            };
+          }
+          data.shopAccounts = accounts;
+        });
+      }
+
+      // 保留刚完成登录的正常页面上下文，后续商品查询继续复用同一会话。
+      // 旧软件也是在已登录的内嵌页面环境中完成签名和请求；销毁后重建会丢失
+      // 页面侧的本地状态与签名环境，容易被京东判定为异常请求。
+      if (shopLoginWindow && !shopLoginWindow.isDestroyed()) {
+        const retainedAccountId = String(activeShopAccountId || '');
+        destroyShopEnvironment(retainedAccountId);
+        const retainedShopWindow = shopLoginWindow;
+        shopPageWindow = retainedShopWindow;
+        shopSffContextHeaders = null;
+        shopLoginWindow = null;
+        retainedShopWindow.setTitle('店铺后台 - ' + shopLoginName);
+        retainedShopWindow.hide();
+        rememberShopEnvironment(retainedAccountId, retainedShopWindow, null);
+        console.log('店铺登录: 已保留当前页面会话供商品查询复用');
+      }
+
+      // 通知渲染进程
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('shop-login-success', {
+          shopName: shopLoginName,
+          accountId,
+          loginAccount: officialInfo.loginAccount || '',
+          vendorId: vendorIdentity.vendorId || '',
+          officialShopId: officialInfo.officialShopId || ''
+        });
+      }
+      pendingShopCredentials = null;
     }
   });
 
@@ -5155,6 +5302,7 @@ ipcMain.handle('check-shop-accounts-status', async () => {
   const statusMap = {};
   const stateMap = {};
   const savedCookieMap = {};
+  const vendorIdMap = {};
   for (const account of accounts) {
     statusMap[account.id] = false;
     stateMap[account.id] = 'checking';
@@ -5171,9 +5319,11 @@ ipcMain.handle('check-shop-accounts-status', async () => {
         : probe.state === 'login' ? 'offline' : 'error';
       stateMap[account.id] = state;
       statusMap[account.id] = state === 'online';
+      if (state === 'online' && probe.vendorId) {
+        vendorIdMap[account.id] = probe.vendorId;
+      }
 
       if (account.id === activeShopAccountId) {
-        if (state === 'online') shopLoggedIn = true;
         if (state === 'offline') {
           shopLoggedIn = false;
           destroyShopEnvironment(account.id);
@@ -5184,6 +5334,18 @@ ipcMain.handle('check-shop-accounts-status', async () => {
   const workerCount = Math.min(4, accounts.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
+  // 老版本账号没有单独保存 vendorId；状态检测成功后直接补齐，不要求用户重新登录。
+  if (Object.keys(vendorIdMap).length > 0) {
+    storeUpdate(data => {
+      data.shopAccounts = (Array.isArray(data.shopAccounts) ? data.shopAccounts : []).map(account => {
+        const vendorId = vendorIdMap[account.id];
+        return vendorId && account.vendorId !== vendorId
+          ? { ...account, vendorId }
+          : account;
+      });
+    });
+  }
+
   const onlineCount = Object.values(stateMap).filter(state => state === 'online').length;
   const errorCount = Object.values(stateMap).filter(state => state === 'error').length;
   console.log(`[店铺状态] 批量检测完成: 在线 ${onlineCount}/${accounts.length}, 检测失败 ${errorCount}`);
@@ -5192,6 +5354,7 @@ ipcMain.handle('check-shop-accounts-status', async () => {
     statusMap,
     stateMap,
     savedCookieMap,
+    vendorIdMap,
     activeAccountId: activeShopAccountId
   };
 });
@@ -5215,7 +5378,7 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   if (targetAccountId === activeShopAccountId) {
     const currentResult = await validateShopSession();
     if (currentResult.loggedIn) {
-      shopLoginName = currentResult.shopName || storedAccount.name || storedAccount.username || '';
+      shopLoginName = currentResult.shopName;
       storeSet('lastShopAccountId', targetAccountId);
       console.log(`[店铺环境] 当前账号[${targetAccountId}]保持原查询环境`);
       return { success: true, loggedIn: true, shopName: shopLoginName, environmentReused: true };
@@ -5244,7 +5407,7 @@ ipcMain.handle('switch-shop-account', async (event, account) => {
   // 切换活跃账号
   activeShopAccountId = targetAccountId;
   shopLoggedIn = false;
-  shopLoginName = storedAccount.name || storedAccount.username || '';
+  shopLoginName = '';
   storeSet('lastShopAccountId', targetAccountId);
   const environmentReused = restoreShopEnvironment(targetAccountId);
 

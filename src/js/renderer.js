@@ -435,6 +435,7 @@ function enqueueLabelTasks({
   const shopOpt = allShopOptions.find(o => o.value === shopId)
     || shopOptions.find(o => o.value === shopId);
   const shopName = shopOpt ? shopOpt.label : '';
+  // 商家端列表字段名为 spShopNo，但商品导入接口要求的实际业务值是 vendorId。
   const spShopNo = shopOpt ? shopOpt.spShopNo : '';
   const shopDeptId = shopOpt ? shopOpt.deptId : '';
   const shopDeptName = shopOpt ? shopOpt.deptName : '';
@@ -1065,7 +1066,7 @@ async function executeStep(step, task) {
     case 'importShopProduct': {
       const spShopNo = task.spShopNo || '';
       if (!spShopNo) {
-        addLog('warn', `[${skuLabel}] 缺少销售平台店铺编号，跳过上传`);
+        addLog('warn', `[${skuLabel}] 缺少商家ID（vendorId），跳过上传`);
         break;
       }
       const batches = splitBatches(task.skus, BATCH_SIZE);
@@ -3446,7 +3447,11 @@ function validateSmAutomaticAccount(account, modes, warehouses, windowEnd) {
     mode?.name === config.modeName && mode?.config?.jdLabel && !mode?.config?.cancelJdLabel
   ));
   if (!targetMode) return { success: false, error: '快捷模式不存在或不是入仓打标模式' };
-  const targetShopId = findSmMatchingTargetShop(account?.name || account?.username || '', config.targetShopId);
+  const targetShopId = findSmMatchingTargetShop(
+    account?.name || account?.username || '',
+    config.targetShopId,
+    account?.vendorId
+  );
   if (!targetShopId) return { success: false, error: '没有匹配到商家端目标店铺' };
   const targetWarehouseId = findSmDefaultWarehouse(account, warehouses);
   if (!targetWarehouseId) return { success: false, error: '未设置可用的默认仓库' };
@@ -4273,9 +4278,13 @@ async function populateSmAutoLabelConfig(account, loadVersion) {
   const targetShop = $('#smAutoTargetShop');
   if (targetShop) {
     targetShop.innerHTML = '';
-    appendSmPublishSelectOption(targetShop, '', '登录后按店铺名称自动匹配');
+    appendSmPublishSelectOption(targetShop, '', '登录后按商家ID或名称自动匹配');
     allShopOptions.forEach(option => appendSmPublishSelectOption(targetShop, option.value, option.label));
-    targetShop.value = findSmMatchingTargetShop(account?.name || '', config.targetShopId || '');
+    targetShop.value = findSmMatchingTargetShop(
+      account?.name || '',
+      config.targetShopId || '',
+      account?.vendorId
+    );
   }
 
   const modeSelectEl = $('#smAutoMode');
@@ -4807,14 +4816,21 @@ function normalizeSmShopMatchName(value) {
     .toLowerCase();
 }
 
-function findSmMatchingTargetShop(sourceName, preferredId = '') {
+function findSmMatchingTargetShop(sourceName, preferredId = '', vendorId = '') {
   const normalizedPreferredId = String(preferredId || '');
   if (normalizedPreferredId && allShopOptions.some(option => String(option.value) === normalizedPreferredId)) {
     return normalizedPreferredId;
   }
   const api = getSmTaskStateApi();
   if (api?.findMatchingShopValue) {
-    return api.findMatchingShopValue(sourceName, allShopOptions);
+    return api.findMatchingShopValue(sourceName, allShopOptions, vendorId);
+  }
+  const normalizedVendorId = String(vendorId || '').trim();
+  if (normalizedVendorId) {
+    const idMatch = allShopOptions.find(option => (
+      String(option.spShopNo || '').trim() === normalizedVendorId
+    ));
+    if (idMatch) return idMatch.value;
   }
   const sourceNameNormalized = normalizeSmShopMatchName(sourceName);
   const exact = allShopOptions.find(option =>
@@ -4823,8 +4839,12 @@ function findSmMatchingTargetShop(sourceName, preferredId = '') {
   return exact?.value || '';
 }
 
-function findSmDefaultTargetShop(task) {
-  return findSmMatchingTargetShop(task.shopName, task.publishConfig?.targetShopId);
+function findSmDefaultTargetShop(task, account) {
+  return findSmMatchingTargetShop(
+    task.shopName,
+    task.publishConfig?.targetShopId,
+    account?.vendorId
+  );
 }
 
 function findSmDefaultWarehouse(account, warehouses, preferredId = '') {
@@ -4929,7 +4949,10 @@ async function openSmBatchPublishModal(publishType = '打标') {
     modeSelectEl.value = task.publishConfig?.publishType === smBatchPublishType
       ? task.publishConfig?.modeName || defaultMode?.name || ''
       : defaultMode?.name || '';
-    shopSelectEl.value = findSmDefaultTargetShop(task);
+    shopSelectEl.value = findSmDefaultTargetShop(
+      task,
+      sourceAccountMap.get(String(task.accountId))
+    );
     warehouseSelectEl.value = findSmDefaultWarehouse(
       sourceAccountMap.get(String(task.accountId)),
       warehouses,
@@ -6188,7 +6211,11 @@ async function handleSmSend(type) {
     o.textContent = opt.label;
     smSendShop.appendChild(o);
   });
-  smSendShop.value = findSmMatchingTargetShop(sourceShopName);
+  smSendShop.value = findSmMatchingTargetShop(
+    sourceShopName,
+    '',
+    sourceAccount?.vendorId
+  );
 
   // 加载仓库列表
   const smSendWarehouse = $('#smSendWarehouse');

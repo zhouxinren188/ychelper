@@ -77,6 +77,52 @@ function classifyShopIdentityResponse(response = {}) {
   return 'unknown';
 }
 
+function normalizeOfficialShopName(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+}
+
+function extractOfficialShopId(data = {}) {
+  // vendorId（商家ID）与 shopId（店铺ID）不是同一个业务字段；部分店铺
+  // 两者数值恰好相同，不能因此用 vendorId 兜底店铺ID。
+  const directId = data.shopId;
+  if (directId != null && String(directId).trim()) return String(directId).trim();
+
+  const match = String(data.shopInfoUrl || '').match(/index-([^./?]+)\.html/i);
+  return match ? match[1] : '';
+}
+
+function parseShopOfficialInfoResponse(rawBody) {
+  let payload;
+  try {
+    payload = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+  } catch (error) {
+    return { success: false, message: `响应解析失败: ${error.message}` };
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return { success: false, message: '店铺资料接口响应为空' };
+  }
+
+  const data = payload.data || (payload.result && payload.result.data) || payload.result || {};
+  const shopName = normalizeOfficialShopName(data.shopName || data.venderName || data.vendorName);
+  if (!shopName) {
+    return {
+      success: false,
+      message: String(payload.message || payload.msg || '接口未返回店铺名称'),
+      fields: data && typeof data === 'object' ? Object.keys(data) : []
+    };
+  }
+
+  return {
+    success: true,
+    shopName,
+    loginAccount: normalizeOfficialShopName(data.account),
+    officialShopId: extractOfficialShopId(data),
+    shopInfoUrl: String(data.shopInfoUrl || ''),
+    fields: Object.keys(data)
+  };
+}
+
 function normalizeShopUsername(value) {
   return String(value == null ? '' : value)
     .normalize('NFKC')
@@ -98,9 +144,12 @@ function findDuplicateShopAccount(accounts, candidate = {}) {
 module.exports = {
   classifyShopIdentityResponse,
   classifyShopValidationSnapshot,
+  extractOfficialShopId,
   findDuplicateShopAccount,
   isShopLoginUrl,
   isTrustedShopLoginFrameUrl,
+  normalizeOfficialShopName,
   normalizeShopUsername,
+  parseShopOfficialInfoResponse,
   parseShopIdentityJsonp
 };
