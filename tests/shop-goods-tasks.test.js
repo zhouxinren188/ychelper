@@ -27,6 +27,7 @@ const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const taskUiSource = fs.readFileSync(path.join(root, 'src', 'js', 'shopGoodsTaskState.js'), 'utf8');
 const taskStyles = fs.readFileSync(path.join(root, 'src', 'css', 'shop-goods-tasks.css'), 'utf8');
+const appStyles = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 
@@ -215,6 +216,8 @@ assert(dom.window.document.getElementById('smBatchPublishBtn'),
   '任务列表必须提供批量打标按钮');
 assert.strictEqual(dom.window.document.getElementById('smBatchPublishBtn').textContent, '批量打标',
   '批量操作按钮名称必须保持简洁');
+assert.strictEqual(dom.window.document.getElementById('smBatchDownBtn').textContent, '批量下标',
+  '任务列表必须提供独立的批量下标入口');
 assert(dom.window.document.querySelector('#smTasksPanel .sm-task-panel-note'),
   '串行采集说明必须放在任务列表下方');
 assert(!dom.window.document.querySelector('#smTaskPanelActions > span'),
@@ -225,6 +228,8 @@ assert(dom.window.document.getElementById('smBatchPublishRows'),
   '批量发布弹窗必须提供逐店配置表格');
 assert(dom.window.document.getElementById('smBatchPublishConfirm'),
   '批量发布弹窗必须提供确认入口');
+assert(dom.window.document.getElementById('smBatchPublishTitle'),
+  '批量发布弹窗标题必须能随打标或下标操作切换');
 assert(dom.window.document.getElementById('smDefaultWarehouse'),
   '编辑店铺弹窗必须提供默认仓库下拉框');
 assert.match(indexHtml, /id="smShopUsername"[\s\S]*id="smShopPassword"[\s\S]*id="smShopName"/,
@@ -284,6 +289,12 @@ assert.doesNotMatch(renderer, /Promise\.all\([^)]*enqueueLabelTasks/,
   '多个店铺的打标任务不得并发创建');
 assert.match(renderer, /mode\?\.config\?\.jdLabel && !mode\?\.config\?\.cancelJdLabel/,
   '批量发布只能选择实际执行入仓打标的快捷模式');
+assert.match(renderer, /const isDownMode = mode =>[\s\S]*config\.cancelJdLabel[\s\S]*clearsStock[\s\S]*disableMasterData[\s\S]*disableShopProduct/,
+  '批量下标必须按取消京配或清库停用配置识别快捷模式，不能依赖模式名称');
+assert.match(renderer, /publishType === '下标'[\s\S]*availableModes\.filter\(isDownMode\)/,
+  '批量下标只能展示实际执行下标步骤的快捷模式');
+assert.match(renderer, /smBatchDownBtn\.addEventListener\('click', \(\) => openSmBatchPublishModal\('下标'\)\)/,
+  '批量下标按钮必须打开下标发布流程');
 assert.match(renderer, /task\.publishStatus = 'publish_failed'/,
   '单店发布失败后必须保留可重试状态');
 assert.match(renderer, /task\.publishStatus = 'published'[\s\S]*smSelectedTaskIds\.delete\(task\.id\)/,
@@ -376,6 +387,38 @@ assert.doesNotMatch(taskStyles, /#smEditShopModal\.has-auto-label-config \.modal
   '开启自动打标时不得突然改变店铺编辑弹窗宽度');
 assert(taskStyles.includes('#page-shopManage .ao-header-stats'),
   '自动打标状态必须与右侧今日处理统计使用同一居中对齐容器');
+assert.match(renderer, /mode-edit-btn[\s\S]*applyConfig\(mode\.config\)[\s\S]*setModeEditingState\(mode\.name\)/,
+  '模式管理必须提供编辑入口，并把原模式配置载入主界面');
+assert.match(renderer, /editingModeName \? '保存修改' : '保存模式'/,
+  '编辑模式时保存按钮必须明确显示为保存修改');
+assert.match(renderer, /nameInput\.readOnly = false;[\s\S]{0,100}editingModeName[\s\S]{0,80}nameInput\.select\(\)/,
+  '编辑模式时必须允许直接修改并选中原名称');
+assert.match(renderer, /saveMode\(\{ name, previousName, config \}\)/,
+  '重命名模式时必须把原名称交给主进程原子更新');
+assert.match(main, /autoLabelConfig:\s*\{ \.\.\.account\.autoLabelConfig, modeName: name \}/,
+  '模式重命名后必须同步更新店铺自动打标配置引用');
+assert.match(main, /publishConfig:\s*\{ \.\.\.task\.publishConfig, modeName: name \}/,
+  '模式重命名后必须同步更新快速打标任务引用');
+assert.match(main, /task\?\.modeName === previousName \? \{ \.\.\.task, modeName: name \}/,
+  '模式重命名后必须同步更新打标任务引用');
+assert.match(indexHtml, /id="modeSortHint">按住左侧拖动手柄可调整模式顺序/,
+  '模式管理必须明确提示支持拖动排序');
+assert.match(renderer, /function getModeDragAfterElement\(container, pointerY\)[\s\S]*\.mode-list-item:not\(\.is-dragging\)/,
+  '模式管理必须根据拖动位置计算新的插入顺序');
+assert.match(renderer, /mode-drag-handle[\s\S]*addEventListener\('pointerdown'[\s\S]*addEventListener\('pointermove'[\s\S]*addEventListener\('pointerup'/,
+  '模式管理必须通过指针跟随的拖动手柄平滑排序');
+assert.match(renderer, /function activateModePointerDrag\(state\)[\s\S]*mode-list-placeholder[\s\S]*function updateModePointerDrag/,
+  '拖动排序必须使用占位元素，避免原生拖影与列表闪烁');
+assert.match(renderer, /function persistRenderedModeOrder\(\)[\s\S]*saveModeOrder\(nextOrder\)/,
+  '拖动完成后必须持久化新的模式顺序');
+assert.match(main, /ipcMain\.handle\('save-mode-order'[\s\S]*requestedNames[\s\S]*data\.modes = orderedModes/,
+  '主进程必须校验并持久化完整的模式排序');
+assert.match(appStyles, /\.mode-list-actions \.mode-action-btn\s*\{[\s\S]{0,180}width:\s*54px;[\s\S]{0,120}height:\s*30px;/,
+  '模式编辑和删除按钮必须使用一致的固定尺寸');
+assert.match(appStyles, /\.mode-list-item\.is-dragging\s*\{[\s\S]*position:\s*fixed;[\s\S]*will-change:\s*transform;/,
+  '拖动项必须作为浮层通过 transform 跟随指针');
+assert.match(renderer, /purchaseQty\.value = config\.purchaseQty[\s\S]*autoAccept[^\n]*config\.autoAccept/,
+  '应用模式时必须恢复采购数量和自动验收配置');
 
 [
   'getShopGoodsTasks',
@@ -397,6 +440,8 @@ assert.match(main, /safeStorage\.encryptString\(json\)/,
   '任务商品结果不得明文落盘');
 assert.match(main, /ipcMain\.handle\('save-shop-goods-tasks'/,
   '主进程必须持久化任务元数据');
+assert.match(main, /publishType: publishConfig\.publishType === '下标' \? '下标' : '打标'/,
+  '主进程必须保留下标任务类型，重启或更新后不得退回打标显示');
 assert.match(main, /publishStatus:[\s\S]*publishConfig:[\s\S]*publishedTaskCount:/,
   '主进程必须持久化逐店发布状态和目标配置');
 assert.match(main, /const defaultWarehouseId =[\s\S]*defaultWarehouseId[\s\S]*\};/,

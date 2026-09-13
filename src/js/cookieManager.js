@@ -10,6 +10,7 @@ const fs = require('fs');
 // Cookie 文件存储目录
 const COOKIE_DIR = path.join(app.getPath('userData'), 'cookies');
 const ENCRYPTED_COOKIE_PREFIX = 'YCH-COOKIE-ENC-V1:';
+const COOKIE_RECOVERY_SUFFIX = '.recovery-backup';
 
 function encodeCookieData(data) {
   const json = JSON.stringify(data);
@@ -19,7 +20,7 @@ function encodeCookieData(data) {
   return ENCRYPTED_COOKIE_PREFIX + safeStorage.encryptString(json).toString('base64');
 }
 
-function writeCookieFileAtomic(filePath, content) {
+function writeTextFileAtomic(filePath, content) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.writeFileSync(tempPath, content, 'utf-8');
@@ -29,6 +30,27 @@ function writeCookieFileAtomic(filePath, content) {
       try { fs.unlinkSync(tempPath); } catch (_) {}
     }
   }
+}
+
+function preserveCookieFileByPath(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    // 历史明文 Cookie 不额外复制；迁移后的加密文件本身已是安全恢复源。
+    if (!raw.startsWith(ENCRYPTED_COOKIE_PREFIX)) return false;
+    const data = decodeCookieData(raw);
+    if (!Array.isArray(data.cookies) || data.cookies.length === 0) return false;
+    writeTextFileAtomic(`${filePath}${COOKIE_RECOVERY_SUFFIX}`, raw);
+    return true;
+  } catch (error) {
+    console.error(`Cookie 恢复副本创建失败 [${path.basename(filePath)}]:`, error.message);
+    return false;
+  }
+}
+
+function writeCookieFileAtomic(filePath, content) {
+  preserveCookieFileByPath(filePath);
+  writeTextFileAtomic(filePath, content);
 }
 
 function decodeCookieData(raw, filePath) {
@@ -99,6 +121,7 @@ function migrateLegacyCookieFiles() {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
       if (raw.startsWith(ENCRYPTED_COOKIE_PREFIX)) {
+        preserveCookieFileByPath(filePath);
         result.skipped++;
         continue;
       }
@@ -306,9 +329,23 @@ function deleteCookieFile(type, id) {
       fs.unlinkSync(filePath);
       console.log(`Cookie 文件已删除: ${type}-${id}`);
     }
+    const recoveryPath = `${filePath}${COOKIE_RECOVERY_SUFFIX}`;
+    if (fs.existsSync(recoveryPath)) fs.unlinkSync(recoveryPath);
     return true;
   } catch (err) {
     console.error(`Cookie 文件删除失败 [${type}-${id}]:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * 为仍可能重新生效的 Cookie 保留加密恢复副本，不删除当前文件。
+ */
+function preserveCookieFile(type, id) {
+  try {
+    return preserveCookieFileByPath(getCookieFilePath(type, id));
+  } catch (error) {
+    console.error(`Cookie 保留失败 [${type}-${id}]:`, error.message);
     return false;
   }
 }
@@ -335,6 +372,7 @@ module.exports = {
   exportCookies,
   importCookies,
   validateCookieFile,
+  preserveCookieFile,
   deleteCookieFile,
   clearPartition,
   COOKIE_DIR,

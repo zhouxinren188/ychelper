@@ -878,13 +878,88 @@ body {
 .mode-list-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
+  gap: 8px;
+  min-height: 46px;
+  padding: 7px 10px;
   background: #f9f9f9;
+  border: 1px solid transparent;
   border-radius: 4px;
   font-size: 13px;
+  box-sizing: border-box;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .mode-list-item:hover { background: #f0f0f0; }
+.mode-list-item.is-dragging {
+  position: fixed;
+  z-index: 3000;
+  margin: 0;
+  pointer-events: none;
+  border-color: #71bce9;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(35, 84, 116, 0.2);
+  will-change: transform;
+  transition: box-shadow 0.12s ease;
+}
+.mode-list-placeholder {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  border: 1px dashed #71bce9;
+  border-radius: 4px;
+  background: #edf8fe;
+}
+.mode-list.is-sorting {
+  cursor: grabbing;
+}
+.mode-drag-handle {
+  width: 22px;
+  height: 30px;
+  flex: 0 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa5ad;
+  cursor: grab;
+  border-radius: 4px;
+  touch-action: none;
+  user-select: none;
+}
+.mode-drag-handle:hover { color: #3498db; background: #e8f4fb; }
+.mode-drag-handle:active { cursor: grabbing; }
+.mode-drag-handle svg { width: 12px; height: 18px; fill: currentColor; }
+.mode-sort-active,
+.mode-sort-active * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.mode-list-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mode-list-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+.mode-list-actions .mode-action-btn {
+  width: 54px;
+  height: 30px;
+  min-width: 54px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  box-sizing: border-box;
+}
+.mode-sort-hint {
+  margin-top: 10px;
+  color: #8c98a4;
+  font-size: 12px;
+  text-align: center;
+}
 .mode-empty {
   text-align: center;
   color: #999;

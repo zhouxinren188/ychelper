@@ -536,54 +536,228 @@ async function selectDepartment(deptPairs) {
 // 简易本地存储（JSON 文件）
 const storePath = path.join(app.getPath('userData'), 'config.json');
 const ENCRYPTED_STORE_PREFIX = 'YCH-ENC-V1:';
+const STORE_RECOVERY_SNAPSHOT_PATH = `${storePath}.recovery-backup`;
+const STORE_READ_RETRY_DELAYS_MS = [0, 25, 75];
+const STORE_TRANSIENT_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
 let storeReadBlocked = false;
 let storeReadBlockedReason = '';
 
-function loadStore() {
-  let raw = '';
+function waitForStoreReadRetry(delayMs) {
+  if (!delayMs) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+}
+
+function hasStoreRecoveryArtifact() {
   try {
-    if (fs.existsSync(storePath)) {
-      raw = fs.readFileSync(storePath, 'utf-8');
-      if (raw.startsWith(ENCRYPTED_STORE_PREFIX)) {
-        if (!safeStorage.isEncryptionAvailable()) {
-          storeReadBlocked = true;
-          storeReadBlockedReason = '系统安全存储当前不可用';
-          console.error('[存储] 系统安全存储当前不可用，暂不读取加密配置');
-          return {};
-        }
-        try {
-          const encrypted = Buffer.from(raw.slice(ENCRYPTED_STORE_PREFIX.length), 'base64');
-          const data = JSON.parse(safeStorage.decryptString(encrypted));
-          storeReadBlocked = false;
-          storeReadBlockedReason = '';
-          return data;
-        } catch (decryptError) {
-          // 加密文件可能属于另一 Windows 用户或系统安全存储暂时异常，保留原文件以便恢复。
-          storeReadBlocked = true;
-          storeReadBlockedReason = `无法解密本地配置: ${decryptError.message}`;
-          console.error('[存储] 无法解密本地配置，已保留原文件:', decryptError.message);
-          return {};
-        }
+    const storeName = path.basename(storePath);
+    return fs.readdirSync(path.dirname(storePath))
+      .some(name => name.startsWith(`${storeName}.`));
+  } catch (_) {
+    return false;
+  }
+}
+
+function readStoreFileWithRetry() {
+  let lastError = null;
+  for (const delayMs of STORE_READ_RETRY_DELAYS_MS) {
+    waitForStoreReadRetry(delayMs);
+    try {
+      return { exists: true, raw: fs.readFileSync(storePath, 'utf-8') };
+    } catch (error) {
+      lastError = error;
+      if (!STORE_TRANSIENT_ERROR_CODES.has(error?.code)) throw error;
+    }
+  }
+
+  // 首次安装确实没有配置文件时允许创建；若已有临时/恢复文件，则视为并发读写异常并禁止覆盖。
+  if (lastError?.code === 'ENOENT' && !hasStoreRecoveryArtifact()) {
+    return { exists: false, raw: '' };
+  }
+  throw lastError;
+}
+
+function decodeStoreRaw(raw) {
+  if (raw.startsWith(ENCRYPTED_STORE_PREFIX)) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('系统安全存储当前不可用');
+    }
+    const encrypted = Buffer.from(raw.slice(ENCRYPTED_STORE_PREFIX.length), 'base64');
+    return JSON.parse(safeStorage.decryptString(encrypted));
+  }
+  return JSON.parse(raw);
+}
+
+function hasMeaningfulStoreAccountData(data) {
+  if (!data || typeof data !== 'object') return false;
+  const accountLists = ['credentialList', 'merchantAccounts', 'wmsAccounts', 'shopAccounts'];
+  if (accountLists.some(key => Array.isArray(data[key]) && data[key].length > 0)) return true;
+  if (String(data.credentials?.username || '').trim()) return true;
+  if (String(data.wmsCredentials?.username || '').trim()) return true;
+  return Boolean(data.userProfiles && typeof data.userProfiles === 'object'
+    && Object.keys(data.userProfiles).length > 0);
+}
+
+function writeStoreRawAtomically(targetPath, raw, suffix) {
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${suffix}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, raw, 'utf-8');
+    fs.renameSync(tempPath, targetPath);
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
+  }
+}
+
+function saveStoreRecoverySnapshot(raw, data) {
+  if (!hasMeaningfulStoreAccountData(data)) return;
+  try {
+    let snapshotRaw = raw;
+    if (!snapshotRaw.startsWith(ENCRYPTED_STORE_PREFIX)) {
+      if (!safeStorage.isEncryptionAvailable()) {
+        console.warn('[存储] 系统安全存储不可用，跳过明文配置恢复快照');
+        return;
       }
-      const data = JSON.parse(raw);
-      storeReadBlocked = false;
-      storeReadBlockedReason = '';
-      return data;
+      const json = JSON.stringify(data, null, 2);
+      snapshotRaw = ENCRYPTED_STORE_PREFIX + safeStorage.encryptString(json).toString('base64');
+    }
+    writeStoreRawAtomically(STORE_RECOVERY_SNAPSHOT_PATH, snapshotRaw, 'snapshot');
+  } catch (error) {
+    console.error('[存储] 创建账号配置恢复快照失败:', error.message);
+  }
+}
+
+function listLegacyCorruptStoreBackups() {
+  try {
+    const storeName = path.basename(storePath);
+    const prefix = `${storeName}.corrupt.`;
+    return fs.readdirSync(path.dirname(storePath))
+      .filter(name => name.startsWith(prefix))
+      .sort((a, b) => Number(b.slice(prefix.length)) - Number(a.slice(prefix.length)))
+      .map(name => path.join(path.dirname(storePath), name));
+  } catch (_) {
+    return [];
+  }
+}
+
+function inspectStoreRecoveryCandidate(candidatePath) {
+  try {
+    const raw = fs.readFileSync(candidatePath, 'utf-8');
+    const data = decodeStoreRaw(raw);
+    return hasMeaningfulStoreAccountData(data) ? { candidatePath, raw, data } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function recoverStoreAtStartup() {
+  let currentRaw = '';
+  let currentData = null;
+  let currentExists = false;
+  let currentValid = false;
+
+  try {
+    currentExists = fs.existsSync(storePath);
+    if (currentExists) {
+      currentRaw = fs.readFileSync(storePath, 'utf-8');
+      currentData = decodeStoreRaw(currentRaw);
+      currentValid = true;
+    }
+  } catch (error) {
+    console.error('[存储] 当前配置需要恢复检查:', error.message);
+  }
+
+  if (currentValid && hasMeaningfulStoreAccountData(currentData)) {
+    saveStoreRecoverySnapshot(currentRaw, currentData);
+    return false;
+  }
+
+  // 有效但无账号的配置只从旧版误标的 corrupt 文件恢复，避免恢复用户主动删除的账号。
+  // 当前文件缺失或已损坏时，可优先使用新版本维护的最近一次有效恢复快照。
+  const candidatePaths = currentValid
+    ? listLegacyCorruptStoreBackups()
+    : [STORE_RECOVERY_SNAPSHOT_PATH, ...listLegacyCorruptStoreBackups()];
+  const candidate = candidatePaths
+    .filter(candidatePath => candidatePath !== storePath && fs.existsSync(candidatePath))
+    .map(inspectStoreRecoveryCandidate)
+    .find(Boolean);
+  if (!candidate) return false;
+
+  try {
+    if (currentExists) {
+      const preservedPath = `${storePath}.before-auto-recovery.${Date.now()}`;
+      fs.copyFileSync(storePath, preservedPath);
+    }
+    writeStoreRawAtomically(storePath, candidate.raw, 'recovery');
+    const verified = decodeStoreRaw(fs.readFileSync(storePath, 'utf-8'));
+    if (!hasMeaningfulStoreAccountData(verified)) {
+      throw new Error('恢复后的配置未通过账号数据校验');
     }
     storeReadBlocked = false;
     storeReadBlockedReason = '';
-  } catch (e) {
-    // 配置文件损坏时备份而非返回空对象覆盖
-    console.error('[存储] config.json 解析失败，备份损坏文件:', e.message);
+    saveStoreRecoverySnapshot(candidate.raw, candidate.data);
+    console.log(`[存储] 已从历史有效配置自动恢复账号数据: ${path.basename(candidate.candidatePath)}`);
+    return true;
+  } catch (error) {
+    storeReadBlocked = true;
+    storeReadBlockedReason = `自动恢复本地配置失败: ${error.message}`;
+    console.error('[存储] 自动恢复账号配置失败，已阻止后续写入:', error.message);
+    return false;
+  }
+}
+
+function loadStore() {
+  let storeFile;
+  try {
+    storeFile = readStoreFileWithRetry();
+  } catch (readError) {
+    storeReadBlocked = true;
+    storeReadBlockedReason = `无法读取本地配置: ${readError.message}`;
+    console.error('[存储] 配置文件读取失败，已保留原文件并阻止写入:', readError.message);
+    return {};
+  }
+
+  if (!storeFile.exists) {
+    storeReadBlocked = false;
+    storeReadBlockedReason = '';
+    return {};
+  }
+
+  const raw = storeFile.raw;
+  if (raw.startsWith(ENCRYPTED_STORE_PREFIX)) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      storeReadBlocked = true;
+      storeReadBlockedReason = '系统安全存储当前不可用';
+      console.error('[存储] 系统安全存储当前不可用，暂不读取加密配置');
+      return {};
+    }
     try {
-      const backupPath = storePath + '.corrupt.' + Date.now();
-      fs.renameSync(storePath, backupPath);
-      console.error('[存储] 损坏文件已备份至:', backupPath);
-    } catch (backupErr) {
-      console.error('[存储] 备份损坏文件失败:', backupErr.message);
+      const encrypted = Buffer.from(raw.slice(ENCRYPTED_STORE_PREFIX.length), 'base64');
+      const data = JSON.parse(safeStorage.decryptString(encrypted));
+      storeReadBlocked = false;
+      storeReadBlockedReason = '';
+      return data;
+    } catch (decryptError) {
+      // 加密文件可能属于另一 Windows 用户或系统安全存储暂时异常，保留原文件以便恢复。
+      storeReadBlocked = true;
+      storeReadBlockedReason = `无法解密本地配置: ${decryptError.message}`;
+      console.error('[存储] 无法解密本地配置，已保留原文件并阻止写入:', decryptError.message);
+      return {};
     }
   }
-  return {};
+
+  try {
+    const data = JSON.parse(raw);
+    storeReadBlocked = false;
+    storeReadBlockedReason = '';
+    return data;
+  } catch (parseError) {
+    // 不移动、不删除配置；任何解析异常都禁止后续迁移逻辑写入空配置。
+    storeReadBlocked = true;
+    storeReadBlockedReason = `无法解析本地配置: ${parseError.message}`;
+    console.error('[存储] 配置解析失败，已保留原文件并阻止写入:', parseError.message);
+    return {};
+  }
 }
 
 function saveStore(data) {
@@ -698,6 +872,7 @@ function sanitizeShopGoodsTaskMetadata(task) {
       ? source.publishStatus
       : 'unpublished',
     publishConfig: {
+      publishType: publishConfig.publishType === '下标' ? '下标' : '打标',
       modeName: text(publishConfig.modeName, 128),
       targetShopId: text(publishConfig.targetShopId, 128),
       targetWarehouseId: text(publishConfig.targetWarehouseId, 128)
@@ -3069,6 +3244,9 @@ if (!gotTheLock) {
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 
 app.whenReady().then(async () => {
+  // 先修复旧版本把有效加密配置误标为 corrupt 后又生成空配置的情况。
+  recoverStoreAtStartup();
+
   // 将历史明文 config.json 迁移为系统安全存储加密格式。
   if (fs.existsSync(storePath) && safeStorage.isEncryptionAvailable()) {
     try {
@@ -3756,15 +3934,72 @@ ipcMain.handle('get-modes', async () => {
 });
 
 ipcMain.handle('save-mode', async (event, mode) => {
-  const modes = storeGet('modes', DEFAULT_MODES);
-  const existIndex = modes.findIndex(m => m.name === mode.name);
-  if (existIndex >= 0) {
-    modes[existIndex] = mode;
-  } else {
-    modes.push(mode);
+  const name = String(mode?.name || '').trim().slice(0, 128);
+  const previousName = String(mode?.previousName || '').trim().slice(0, 128);
+  if (!name) throw new Error('请输入模式名称');
+  if (!mode?.config || typeof mode.config !== 'object') throw new Error('模式配置无效');
+
+  let savedModes = [];
+  const saved = storeUpdate(data => {
+    const modes = (Array.isArray(data.modes) ? data.modes : DEFAULT_MODES)
+      .map(item => ({ ...item, config: { ...(item.config || {}) } }));
+    const targetIndex = previousName
+      ? modes.findIndex(item => item.name === previousName)
+      : modes.findIndex(item => item.name === name);
+
+    if (previousName && targetIndex < 0) throw new Error('原模式不存在，请刷新后重试');
+    const duplicateIndex = modes.findIndex(item => item.name === name);
+    if (previousName && name !== previousName && duplicateIndex >= 0) {
+      throw new Error(`模式“${name}”已存在，请使用其他名称`);
+    }
+
+    const savedMode = { name, config: mode.config };
+    if (targetIndex >= 0) modes[targetIndex] = savedMode;
+    else modes.push(savedMode);
+    data.modes = modes;
+    savedModes = modes;
+
+    if (previousName && name !== previousName) {
+      data.shopAccounts = (Array.isArray(data.shopAccounts) ? data.shopAccounts : []).map(account => (
+        account?.autoLabelConfig?.modeName === previousName
+          ? { ...account, autoLabelConfig: { ...account.autoLabelConfig, modeName: name } }
+          : account
+      ));
+      data.shopGoodsTasks = (Array.isArray(data.shopGoodsTasks) ? data.shopGoodsTasks : []).map(task => (
+        task?.publishConfig?.modeName === previousName
+          ? { ...task, publishConfig: { ...task.publishConfig, modeName: name } }
+          : task
+      ));
+      data.labelTasks = (Array.isArray(data.labelTasks) ? data.labelTasks : []).map(task => (
+        task?.modeName === previousName ? { ...task, modeName: name } : task
+      ));
+    }
+  });
+  if (!saved) throw new Error(storeReadBlockedReason || '模式保存失败');
+  return savedModes;
+});
+
+ipcMain.handle('save-mode-order', async (event, modeNames) => {
+  const requestedNames = (Array.isArray(modeNames) ? modeNames : [])
+    .map(name => String(name || '').trim())
+    .filter(Boolean);
+  if (requestedNames.length === 0 || new Set(requestedNames).size !== requestedNames.length) {
+    throw new Error('模式排序数据无效');
   }
-  storeSet('modes', modes);
-  return modes;
+
+  let orderedModes = [];
+  const saved = storeUpdate(data => {
+    const modes = Array.isArray(data.modes) ? data.modes : DEFAULT_MODES;
+    const modeMap = new Map(modes.map(mode => [mode.name, mode]));
+    if (requestedNames.length !== modes.length
+        || requestedNames.some(name => !modeMap.has(name))) {
+      throw new Error('模式列表已发生变化，请刷新后重新排序');
+    }
+    orderedModes = requestedNames.map(name => modeMap.get(name));
+    data.modes = orderedModes;
+  });
+  if (!saved) throw new Error(storeReadBlockedReason || '模式排序保存失败');
+  return orderedModes;
 });
 
 ipcMain.handle('delete-mode', async (event, modeName) => {
@@ -7314,7 +7549,10 @@ function getActiveWmsAccount() {
 async function clearInvalidWmsSessionAndOpenLogin(account) {
   const partition = getWmsPartition();
   await cookieManager.clearPartition(partition);
-  if (activeWmsAccountId) cookieManager.deleteCookieFile('wms', activeWmsAccountId);
+  if (activeWmsAccountId) {
+    cookieManager.preserveCookieFile('wms', activeWmsAccountId);
+    console.warn('WMS: 登录校验未通过，已清空当前会话，但保留加密 Cookie 文件及恢复副本');
+  }
 
   wmsLoggedIn = false;
   activeWmsWarehouseName = '';

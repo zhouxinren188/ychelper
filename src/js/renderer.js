@@ -397,6 +397,9 @@ function initEventListeners() {
   // 模式选择变更
   modeSelect.classList.add('placeholder');
   modeSelect.addEventListener('change', () => {
+    if (editingModeName && modeSelect.value !== editingModeName) {
+      setModeEditingState('');
+    }
     modeSelect.classList.toggle('placeholder', !modeSelect.value);
     applyMode();
   });
@@ -661,6 +664,8 @@ function applyConfig(config) {
   $('#logHeight').value = config.logHeight || $('#logHeight').value || '100';
   $('#logWeight').value = config.logWeight || $('#logWeight').value || '0.5';
   $('#stepDelay').value = config.stepDelay || $('#stepDelay').value || 10;
+  if (purchaseQty && config.purchaseQty != null) purchaseQty.value = config.purchaseQty;
+  $('#autoAccept').checked = config.autoAccept !== false;
   saveLogisticsPrefs();
 }
 
@@ -1600,16 +1605,31 @@ async function executeStep(step, task) {
 }
 
 // ========== 快捷模式 ==========
+let editingModeName = '';
+let modeDragState = null;
+let modeOrderBeforeDrag = [];
+let modeOrderSaveInProgress = false;
+
+function setModeEditingState(modeName = '') {
+  editingModeName = String(modeName || '');
+  const saveButton = $('#modeSaveBtn');
+  if (saveButton) saveButton.textContent = editingModeName ? '保存修改' : '保存模式';
+}
+
 async function loadModes() {
+  const selectedModeName = modeSelect.value;
   const modes = await window.electronAPI.getModes();
   modeSelect.innerHTML = '<option value="">请选择（可下拉选择）</option>';
-  modeSelect.classList.toggle('placeholder', !modeSelect.value);
   modes.forEach(mode => {
     const opt = document.createElement('option');
     opt.value = mode.name;
     opt.textContent = mode.name;
     modeSelect.appendChild(opt);
   });
+  if (modes.some(mode => mode.name === selectedModeName)) {
+    modeSelect.value = selectedModeName;
+  }
+  modeSelect.classList.toggle('placeholder', !modeSelect.value);
 }
 
 function applyMode() {
@@ -1625,7 +1645,93 @@ function applyMode() {
   });
 }
 
+function getRenderedModeOrder() {
+  return Array.from($('#modeList')?.querySelectorAll('.mode-list-item') || [])
+    .map(item => item.dataset.modeName || '')
+    .filter(Boolean);
+}
+
+function getModeDragAfterElement(container, pointerY) {
+  return Array.from(container.querySelectorAll('.mode-list-item:not(.is-dragging)'))
+    .reduce((closest, item) => {
+      const rect = item.getBoundingClientRect();
+      const offset = pointerY - rect.top - rect.height / 2;
+      return offset < 0 && offset > closest.offset ? { offset, item } : closest;
+    }, { offset: Number.NEGATIVE_INFINITY, item: null }).item;
+}
+
+function activateModePointerDrag(state) {
+  const { item, list, startRect } = state;
+  const placeholder = document.createElement('div');
+  placeholder.className = 'mode-list-placeholder';
+  placeholder.style.height = `${startRect.height}px`;
+  item.after(placeholder);
+
+  state.placeholder = placeholder;
+  state.active = true;
+  item.classList.add('is-dragging');
+  item.style.width = `${startRect.width}px`;
+  item.style.height = `${startRect.height}px`;
+  item.style.left = `${startRect.left}px`;
+  item.style.top = `${startRect.top}px`;
+  list.classList.add('is-sorting');
+  document.body.classList.add('mode-sort-active');
+}
+
+function updateModePointerDrag(state, clientY) {
+  if (!state.active) activateModePointerDrag(state);
+  state.item.style.transform = `translate3d(0, ${clientY - state.startY}px, 0)`;
+
+  const afterElement = getModeDragAfterElement(state.list, clientY);
+  if (afterElement) {
+    if (state.placeholder.nextElementSibling !== afterElement) {
+      state.list.insertBefore(state.placeholder, afterElement);
+    }
+  } else if (state.list.lastElementChild !== state.placeholder) {
+    state.list.appendChild(state.placeholder);
+  }
+}
+
+async function finishModePointerDrag(state, shouldSave) {
+  if (!state || modeDragState !== state) return;
+  modeDragState = null;
+  if (state.frameId) cancelAnimationFrame(state.frameId);
+  try {
+    if (state.handle.hasPointerCapture?.(state.pointerId)) {
+      state.handle.releasePointerCapture(state.pointerId);
+    }
+  } catch (_) {}
+
+  if (!state.active) return;
+  if (shouldSave) state.placeholder.replaceWith(state.item);
+  else state.placeholder.remove();
+  state.item.classList.remove('is-dragging');
+  state.item.removeAttribute('style');
+  state.list.classList.remove('is-sorting');
+  document.body.classList.remove('mode-sort-active');
+  if (shouldSave) await persistRenderedModeOrder();
+}
+
+async function persistRenderedModeOrder() {
+  const nextOrder = getRenderedModeOrder();
+  if (nextOrder.length === 0 || nextOrder.join('\n') === modeOrderBeforeDrag.join('\n')) return;
+  if (modeOrderSaveInProgress) return;
+  modeOrderSaveInProgress = true;
+  try {
+    await window.electronAPI.saveModeOrder(nextOrder);
+    await loadModes();
+    modeOrderBeforeDrag = nextOrder;
+    addLog('success', '快捷模式顺序已保存');
+  } catch (error) {
+    showToast(error?.message || '模式排序保存失败');
+    openModeModal();
+  } finally {
+    modeOrderSaveInProgress = false;
+  }
+}
+
 function openModeModal() {
+  if (modeDragState) void finishModePointerDrag(modeDragState, false);
   const modal = $('#modeModal');
   modal.style.display = 'flex';
 
@@ -1636,20 +1742,90 @@ function openModeModal() {
     if (modes.length === 0) {
       list.style.display = 'none';
       empty.style.display = 'block';
+      $('#modeSortHint').style.display = 'none';
     } else {
       list.style.display = 'flex';
       empty.style.display = 'none';
+      $('#modeSortHint').style.display = modes.length > 1 ? 'block' : 'none';
       list.innerHTML = '';
+      modeOrderBeforeDrag = modes.map(mode => mode.name);
+      modeDragState = null;
 
       modes.forEach(mode => {
         const item = document.createElement('div');
         item.className = 'mode-list-item';
+        item.dataset.modeName = mode.name;
         item.innerHTML = `
-          <span>${escapeHtml(mode.name)}</span>
-          <button class="btn btn-danger" data-name="${escapeHtml(mode.name)}">删除</button>
+          <span class="mode-drag-handle" title="拖动排序" aria-label="拖动“${escapeHtml(mode.name)}”排序">
+            <svg viewBox="0 0 12 18" aria-hidden="true">
+              <circle cx="3" cy="3" r="1.2"></circle><circle cx="9" cy="3" r="1.2"></circle>
+              <circle cx="3" cy="9" r="1.2"></circle><circle cx="9" cy="9" r="1.2"></circle>
+              <circle cx="3" cy="15" r="1.2"></circle><circle cx="9" cy="15" r="1.2"></circle>
+            </svg>
+          </span>
+          <span class="mode-list-name" title="${escapeHtml(mode.name)}">${escapeHtml(mode.name)}</span>
+          <span class="mode-list-actions">
+            <button class="btn btn-primary mode-action-btn mode-edit-btn" type="button">编辑</button>
+            <button class="btn btn-danger mode-action-btn mode-delete-btn" type="button">删除</button>
+          </span>
         `;
-        item.querySelector('button').addEventListener('click', async () => {
+        const dragHandle = item.querySelector('.mode-drag-handle');
+        dragHandle.addEventListener('pointerdown', event => {
+          if (event.button !== 0 || modeOrderSaveInProgress || modeDragState) return;
+          event.preventDefault();
+          modeOrderBeforeDrag = getRenderedModeOrder();
+          const state = {
+            item,
+            list,
+            handle: dragHandle,
+            pointerId: event.pointerId,
+            startY: event.clientY,
+            latestY: event.clientY,
+            startRect: item.getBoundingClientRect(),
+            active: false,
+            placeholder: null,
+            frameId: 0
+          };
+          modeDragState = state;
+          dragHandle.setPointerCapture?.(event.pointerId);
+        });
+        dragHandle.addEventListener('pointermove', event => {
+          const state = modeDragState;
+          if (!state || state.handle !== dragHandle || event.pointerId !== state.pointerId) return;
+          state.latestY = event.clientY;
+          if (!state.active && Math.abs(state.latestY - state.startY) < 4) return;
+          if (state.frameId) return;
+          state.frameId = requestAnimationFrame(() => {
+            state.frameId = 0;
+            if (modeDragState === state) updateModePointerDrag(state, state.latestY);
+          });
+        });
+        dragHandle.addEventListener('pointerup', event => {
+          const state = modeDragState;
+          if (!state || state.handle !== dragHandle || event.pointerId !== state.pointerId) return;
+          state.latestY = event.clientY;
+          if (state.active || Math.abs(state.latestY - state.startY) >= 4) {
+            updateModePointerDrag(state, state.latestY);
+          }
+          void finishModePointerDrag(state, true);
+        });
+        dragHandle.addEventListener('pointercancel', event => {
+          const state = modeDragState;
+          if (!state || state.handle !== dragHandle || event.pointerId !== state.pointerId) return;
+          void finishModePointerDrag(state, false);
+        });
+        item.querySelector('.mode-edit-btn').addEventListener('click', () => {
+          applyConfig(mode.config);
+          modeSelect.value = mode.name;
+          modeSelect.classList.remove('placeholder');
+          setModeEditingState(mode.name);
+          closeModeModal();
+          showToast(`已载入“${mode.name}”，修改配置后点击“保存修改”`);
+          addLog('info', `正在编辑模式：${mode.name}`);
+        });
+        item.querySelector('.mode-delete-btn').addEventListener('click', async () => {
           await window.electronAPI.deleteMode(mode.name);
+          if (editingModeName === mode.name) setModeEditingState('');
           await loadModes();
           openModeModal(); // 刷新列表
           addLog('info', `已删除模式：${mode.name}`);
@@ -1661,13 +1837,19 @@ function openModeModal() {
 }
 
 function closeModeModal() {
+  if (modeDragState) void finishModePointerDrag(modeDragState, false);
   $('#modeModal').style.display = 'none';
 }
 
 function openSaveModal() {
   $('#saveModal').style.display = 'flex';
-  $('#modeNameInput').value = '';
-  $('#modeNameInput').focus();
+  const title = $('#saveModalTitle');
+  const nameInput = $('#modeNameInput');
+  title.textContent = editingModeName ? '编辑模式' : '保存模式';
+  nameInput.value = editingModeName || '';
+  nameInput.readOnly = false;
+  nameInput.focus();
+  if (editingModeName) nameInput.select();
 }
 
 function closeSaveModal() {
@@ -1682,10 +1864,32 @@ async function confirmSaveMode() {
   }
 
   const config = getCurrentConfig();
-  await window.electronAPI.saveMode({ name, config });
-  await loadModes();
-  closeSaveModal();
-  addLog('success', `模式"${name}"已保存`);
+  const previousName = editingModeName;
+  const wasEditing = Boolean(previousName);
+  try {
+    await window.electronAPI.saveMode({ name, previousName, config });
+    if (wasEditing && name !== previousName) {
+      tasks.forEach(task => {
+        if (task.modeName === previousName) task.modeName = name;
+      });
+      smTasks.forEach(task => {
+        if (task?.publishConfig?.modeName === previousName) task.publishConfig.modeName = name;
+      });
+    }
+    await loadModes();
+    modeSelect.value = name;
+    modeSelect.classList.remove('placeholder');
+    setModeEditingState('');
+    closeSaveModal();
+    const actionText = wasEditing
+      ? (name === previousName ? '已更新' : `已由“${previousName}”重命名并更新为`)
+      : '已保存为';
+    addLog('success', wasEditing && name !== previousName
+      ? `模式“${previousName}”已重命名并更新为“${name}”`
+      : `模式“${name}”${actionText}`);
+  } catch (error) {
+    showToast(error?.message || '模式保存失败');
+  }
 }
 
 // ========== 日志 ==========
@@ -2823,6 +3027,7 @@ let smTaskRenderTimer = null;
 let smTaskPersistenceChain = Promise.resolve();
 let smBatchPublishRunning = false;
 let smBatchPublishTaskIds = [];
+let smBatchPublishType = '打标';
 let smAutomationSettings = {
   enabled: false,
   startTime: '02:00',
@@ -2866,7 +3071,9 @@ const smTaskPanelActions = $('#smTaskPanelActions');
 const smProductContext = $('#smProductContext');
 const smTaskSelectAll = $('#smTaskSelectAll');
 const smBatchPublishBtn = $('#smBatchPublishBtn');
+const smBatchDownBtn = $('#smBatchDownBtn');
 const smBatchPublishModal = $('#smBatchPublishModal');
+const smBatchPublishTitle = $('#smBatchPublishTitle');
 const smBatchPublishRows = $('#smBatchPublishRows');
 const smBatchPublishInfo = $('#smBatchPublishInfo');
 const smBatchPublishConfirm = $('#smBatchPublishConfirm');
@@ -3700,7 +3907,8 @@ function initSmEventListeners() {
     smTaskTableBody.addEventListener('change', handleSmTaskSelectionChange);
   }
   if (smTaskSelectAll) smTaskSelectAll.addEventListener('change', handleSmTaskSelectAll);
-  if (smBatchPublishBtn) smBatchPublishBtn.addEventListener('click', openSmBatchPublishModal);
+  if (smBatchPublishBtn) smBatchPublishBtn.addEventListener('click', () => openSmBatchPublishModal('打标'));
+  if (smBatchDownBtn) smBatchDownBtn.addEventListener('click', () => openSmBatchPublishModal('下标'));
   const batchPublishClose = $('#smBatchPublishClose');
   const batchPublishCancel = $('#smBatchPublishCancel');
   if (batchPublishClose) batchPublishClose.addEventListener('click', closeSmBatchPublishModal);
@@ -4455,7 +4663,11 @@ function updateSmTaskActionState() {
   }
   if (smBatchPublishBtn) {
     smBatchPublishBtn.disabled = smTaskQueueRunning || smBatchPublishRunning || selectedCount === 0;
-    smBatchPublishBtn.textContent = smBatchPublishRunning ? '正在发布...' : '批量打标';
+    smBatchPublishBtn.textContent = smBatchPublishRunning && smBatchPublishType === '打标' ? '正在发布...' : '批量打标';
+  }
+  if (smBatchDownBtn) {
+    smBatchDownBtn.disabled = smTaskQueueRunning || smBatchPublishRunning || selectedCount === 0;
+    smBatchDownBtn.textContent = smBatchPublishRunning && smBatchPublishType === '下标' ? '正在发布...' : '批量下标';
   }
 }
 
@@ -4518,7 +4730,7 @@ function renderSmTaskTable() {
     return `
       <tr data-task-id="${escapeHtml(task.id)}">
         <td><input type="checkbox" class="sm-task-select" data-task-id="${escapeHtml(task.id)}"
-                   aria-label="选择${escapeHtml(task.shopName)}发布打标"
+                   aria-label="选择${escapeHtml(task.shopName)}发布任务"
                    ${smSelectedTaskIds.has(task.id) ? 'checked' : ''}${selectionDisabled} /></td>
         <td>${index + 1}</td>
         <td><div class="sm-task-shop-name" title="${escapeHtml(task.shopName)}">${escapeHtml(task.shopName)}${sourceBadge}</div></td>
@@ -4632,8 +4844,26 @@ function findSmDefaultWarehouse(account, warehouses, preferredId = '') {
   return availableIds.length === 1 ? availableIds[0] : '';
 }
 
-async function openSmBatchPublishModal() {
+function getSmBatchPublishModes(modes, publishType) {
+  const availableModes = Array.isArray(modes) ? modes : [];
+  const isDownMode = mode => {
+    const config = mode?.config || {};
+    const clearsStock = Boolean(config.inventoryRatio)
+      && Number(config.inventoryRatioValue) === 0;
+    return Boolean(config.cancelJdLabel
+      || (clearsStock && (config.disableMasterData || config.disableShopProduct)));
+  };
+  if (publishType === '下标') {
+    return availableModes.filter(isDownMode);
+  }
+  return availableModes.filter(mode => (
+    mode?.config?.jdLabel && !mode?.config?.cancelJdLabel && !isDownMode(mode)
+  ));
+}
+
+async function openSmBatchPublishModal(publishType = '打标') {
   if (!requireTier('shopManage')) return;
+  smBatchPublishType = publishType === '下标' ? '下标' : '打标';
   if (smBatchPublishRunning || smTaskQueueRunning) {
     showToast('请等待当前任务完成');
     return;
@@ -4650,10 +4880,9 @@ async function openSmBatchPublishModal() {
   }
 
   const modes = await window.electronAPI.getModes();
-  const availableModes = (Array.isArray(modes) ? modes : [])
-    .filter(mode => mode?.config?.jdLabel && !mode?.config?.cancelJdLabel);
+  const availableModes = getSmBatchPublishModes(modes, smBatchPublishType);
   if (availableModes.length === 0) {
-    showToast('没有可用的快捷模式，请先在店铺打标中创建模式');
+    showToast(`没有可用的${smBatchPublishType}快捷模式，请先在店铺打标中创建模式`);
     return;
   }
   if (allShopOptions.length === 0) {
@@ -4666,7 +4895,9 @@ async function openSmBatchPublishModal() {
     return;
   }
 
-  const defaultMode = availableModes.find(mode => mode.name === '入仓打标')
+  const defaultMode = availableModes.find(mode => mode.name === (
+    smBatchPublishType === '下标' ? '下标（取消京配）' : '入仓打标'
+  ))
     || availableModes[0];
   const sourceAccounts = await window.electronAPI.getShopAccounts();
   const sourceAccountMap = new Map(
@@ -4695,7 +4926,9 @@ async function openSmBatchPublishModal() {
     appendSmPublishSelectOption(warehouseSelectEl, '', '请选择目标仓库');
     warehouses.forEach(option => appendSmPublishSelectOption(warehouseSelectEl, option.value, option.label));
 
-    modeSelectEl.value = task.publishConfig?.modeName || defaultMode?.name || '';
+    modeSelectEl.value = task.publishConfig?.publishType === smBatchPublishType
+      ? task.publishConfig?.modeName || defaultMode?.name || ''
+      : defaultMode?.name || '';
     shopSelectEl.value = findSmDefaultTargetShop(task);
     warehouseSelectEl.value = findSmDefaultWarehouse(
       sourceAccountMap.get(String(task.accountId)),
@@ -4709,8 +4942,9 @@ async function openSmBatchPublishModal() {
   });
 
   if (smBatchPublishInfo) {
-    smBatchPublishInfo.textContent = `已选择 ${selectedTasks.length} 个店铺任务。每家配置独立，确认后按顺序逐个创建打标任务。`;
+    smBatchPublishInfo.textContent = `已选择 ${selectedTasks.length} 个店铺任务。每家配置独立，确认后按顺序逐个创建${smBatchPublishType}任务。`;
   }
+  if (smBatchPublishTitle) smBatchPublishTitle.textContent = `批量${smBatchPublishType}`;
   if (smBatchPublishModal) smBatchPublishModal.style.display = 'flex';
 }
 
@@ -4743,8 +4977,7 @@ async function confirmSmBatchPublish() {
     return;
   }
   const modes = await window.electronAPI.getModes();
-  const availableModes = (Array.isArray(modes) ? modes : [])
-    .filter(mode => mode?.config?.jdLabel && !mode?.config?.cancelJdLabel);
+  const availableModes = getSmBatchPublishModes(modes, smBatchPublishType);
   const configuredTasks = [];
   let firstInvalid = null;
 
@@ -4771,6 +5004,7 @@ async function confirmSmBatchPublish() {
     }
     if (!modeSelectEl.value || !shopSelectEl.value || !warehouseSelectEl.value || !targetMode) return;
     task.publishConfig = {
+      publishType: smBatchPublishType,
       modeName: modeSelectEl.value,
       targetShopId: shopSelectEl.value,
       targetWarehouseId: warehouseSelectEl.value
@@ -4797,6 +5031,7 @@ async function confirmSmBatchPublish() {
 
 async function publishSmLabelTasksSequentially(configuredTasks) {
   if (smBatchPublishRunning) return;
+  const publishType = smBatchPublishType;
   smBatchPublishRunning = true;
   updateSmTaskActionState();
   renderSmTaskTable();
@@ -4827,7 +5062,7 @@ async function publishSmLabelTasksSequentially(configuredTasks) {
           sourceFileName: `采集任务-${task.shopName}`,
           sourceTaskId: task.id
         });
-        if (!result.success) throw new Error(result.error || '打标任务创建失败');
+        if (!result.success) throw new Error(result.error || `${publishType}任务创建失败`);
         await confirmEnqueuedLabelTasksPersisted(result);
 
         task.publishStatus = 'published';
@@ -4840,7 +5075,7 @@ async function publishSmLabelTasksSequentially(configuredTasks) {
         smSelectedTaskIds.delete(task.id);
       } catch (error) {
         task.publishStatus = 'publish_failed';
-        task.publishError = String(error?.message || '打标任务创建失败');
+        task.publishError = String(error?.message || `${publishType}任务创建失败`);
         task.publishedTaskCount = 0;
         failedCount += 1;
       }
@@ -4859,9 +5094,9 @@ async function publishSmLabelTasksSequentially(configuredTasks) {
   }
 
   if (failedCount > 0) {
-    showToast(`批量发布完成：成功 ${successCount} 家，失败 ${failedCount} 家；可勾选失败项重试`, 5000);
+    showToast(`批量${publishType}完成：成功 ${successCount} 家，失败 ${failedCount} 家；可勾选失败项重试`, 5000);
   } else {
-    showToast(`已逐个发布 ${successCount} 家店铺，共 ${successSkuCount} 个SKU`, 5000);
+    showToast(`已逐个创建${publishType}任务：${successCount} 家店铺，共 ${successSkuCount} 个SKU`, 5000);
   }
 }
 
@@ -5075,7 +5310,8 @@ async function handleSmTaskTableAction(event) {
     return;
   }
   if (action === 'republish') {
-    if (!confirm(`“${task.shopName}”已经发布过打标任务，确定允许再次发布吗？`)) return;
+    const publishType = task.publishConfig?.publishType === '下标' ? '下标' : '打标';
+    if (!confirm(`“${task.shopName}”已经发布过${publishType}任务，确定允许再次发布吗？`)) return;
     task.publishStatus = 'unpublished';
     task.publishError = '';
     task.publishedAt = '';
@@ -5084,7 +5320,7 @@ async function handleSmTaskTableAction(event) {
     smSelectedTaskIds.add(task.id);
     await persistSmTasks();
     renderSmTaskTable();
-    await openSmBatchPublishModal();
+    await openSmBatchPublishModal(publishType);
     return;
   }
   if (action === 'delete') {

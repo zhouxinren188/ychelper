@@ -71,6 +71,7 @@
       resultSaved: Boolean(task.resultSaved),
       publishStatus: normalizedPublishStatus,
       publishConfig: {
+        publishType: publishConfig.publishType === '下标' ? '下标' : '打标',
         modeName: normalizeText(publishConfig.modeName),
         targetShopId: normalizeText(publishConfig.targetShopId),
         targetWarehouseId: normalizeText(publishConfig.targetWarehouseId)
@@ -193,17 +194,18 @@
   }
 
   function getPublishDetail(task) {
-    if (task?.executionStatus === 'running') return '正在执行打标任务';
-    if (task?.executionStatus === 'success') return '打标任务已全部完成';
-    if (task?.executionStatus === 'partial') return '部分打标任务失败';
-    if (task?.executionStatus === 'failed') return '打标任务执行失败';
+    const publishType = task?.publishConfig?.publishType === '下标' ? '下标' : '打标';
+    if (task?.executionStatus === 'running') return `正在执行${publishType}任务`;
+    if (task?.executionStatus === 'success') return `${publishType}任务已全部完成`;
+    if (task?.executionStatus === 'partial') return `部分${publishType}任务失败`;
+    if (task?.executionStatus === 'failed') return `${publishType}任务执行失败`;
     if (task?.executionStatus === 'queued') return '等待统一执行';
     if (task?.publishStatus === 'skipped') return '本次没有符合条件的SKU';
     if (task?.publishStatus === 'published') {
-      return task.publishedTaskCount > 1 ? `已创建${task.publishedTaskCount}条任务` : '已创建打标任务';
+      return task.publishedTaskCount > 1 ? `已创建${task.publishedTaskCount}条任务` : `已创建${publishType}任务`;
     }
     if (task?.publishStatus === 'publish_failed') return task.publishError || '可重新发布';
-    if (task?.publishStatus === 'publishing') return '正在创建打标任务';
+    if (task?.publishStatus === 'publishing') return `正在创建${publishType}任务`;
     return '等待选择';
   }
 
@@ -464,6 +466,7 @@
     taskActions.hidden = true;
     taskActions.innerHTML = `
       <button type="button" class="btn btn-sm sm-batch-publish-btn" id="smBatchPublishBtn" disabled>批量打标</button>
+      <button type="button" class="btn btn-sm sm-batch-publish-btn" id="smBatchDownBtn" disabled>批量下标</button>
       <button type="button" class="btn btn-primary btn-sm" id="smStartTasksBtn" disabled>开始采集</button>`;
     header.appendChild(taskActions);
 
@@ -488,7 +491,7 @@
               <th>时间范围</th>
               <th>任务配置</th>
               <th>进度</th>
-              <th>打标发布</th>
+              <th>任务发布</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -512,7 +515,7 @@
     publishModal.innerHTML = `
       <div class="modal sm-batch-publish-modal">
         <div class="modal-header">
-          <span>批量打标</span>
+          <span id="smBatchPublishTitle">批量打标</span>
           <button class="modal-close" id="smBatchPublishClose">&times;</button>
         </div>
         <div class="modal-body">

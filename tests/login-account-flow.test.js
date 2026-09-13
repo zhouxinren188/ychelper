@@ -45,6 +45,24 @@ assert.match(main, /系统安全存储不可用，已拒绝以明文保存账号
   '配置存储不得在安全存储不可用时降级为明文');
 assert.match(main, /if \(storeReadBlocked\) return false;/,
   '配置无法解密时必须阻止覆盖原文件');
+assert.match(main, /readStoreFileWithRetry\(\)/,
+  '配置读取必须处理临时文件占用或原子替换竞态');
+assert.match(main, /配置文件读取失败，已保留原文件并阻止写入/,
+  '配置读取失败时必须保留原文件并阻止写入');
+assert.match(main, /配置解析失败，已保留原文件并阻止写入/,
+  '配置解析失败时必须保留原文件并阻止写入');
+assert.doesNotMatch(main, /fs\.renameSync\(storePath,\s*backupPath\)/,
+  '配置读取或解析失败时不得移动当前配置文件');
+assert.match(main, /recoverStoreAtStartup\(\);[\s\S]{0,180}历史明文 config\.json/,
+  '账号配置自愈必须早于旧数据迁移，避免空配置先被持久化');
+assert.match(main, /currentValid\s*\?\s*listLegacyCorruptStoreBackups\(\)/,
+  '空壳配置只能从旧版误标但仍有效的 corrupt 配置恢复');
+assert.match(main, /config\.json\.before-auto-recovery|before-auto-recovery/,
+  '自动恢复前必须保留当前配置以便回退');
+assert.match(main, /saveStoreRecoverySnapshot\(currentRaw, currentData\)/,
+  '启动时必须为有效账号配置保留恢复快照');
+assert.match(main, /if \(!snapshotRaw\.startsWith\(ENCRYPTED_STORE_PREFIX\)\)[\s\S]{0,420}safeStorage\.encryptString\(json\)/,
+  '历史明文配置生成恢复快照前必须先使用系统安全存储加密');
 assert.match(main, /data\.csrfToken = profile\.csrfToken \|\| '';/,
   '切换商家账号时必须覆盖或清空 CSRF Token');
 assert.match(main, /data\.sellerId = profile\.sellerId \|\| '';/,
@@ -79,6 +97,16 @@ assert.match(main, /const timeoutId = setTimeout\(\(\) => controller\.abort\(\),
   'WMS API 验证必须设置主动超时');
 assert.match(cookieManager, /Cookie 加密不可用，已拒绝明文保存/,
   'Cookie 不得降级为明文保存');
+assert.match(cookieManager, /COOKIE_RECOVERY_SUFFIX\s*=\s*'\.recovery-backup'/,
+  'Cookie 文件覆盖前必须保留独立恢复副本');
+assert.match(cookieManager, /function preserveCookieFile\(type, id\)/,
+  'WMS 登录校验失败时必须能够保留 Cookie 文件');
+assert.match(cookieManager, /raw\.startsWith\(ENCRYPTED_COOKIE_PREFIX\)[\s\S]{0,100}preserveCookieFileByPath\(filePath\)/,
+  '启动迁移检查时必须为已有加密 Cookie 创建恢复副本');
+assert.match(main, /clearInvalidWmsSessionAndOpenLogin[\s\S]{0,240}preserveCookieFile\('wms', activeWmsAccountId\)/,
+  'WMS 登录校验失败时应保留 Cookie，而不是直接删除');
+assert.doesNotMatch(main, /clearInvalidWmsSessionAndOpenLogin[\s\S]{0,240}deleteCookieFile\('wms'/,
+  'WMS 登录校验失败不得删除仍可恢复的 Cookie 文件');
 
 async function verifyHotLoginRuntime() {
   const hotVersion = `${packageVersion}.1`;

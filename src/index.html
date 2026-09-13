@@ -825,6 +825,7 @@
       <div class="modal-body">
         <div class="mode-list" id="modeList"></div>
         <div class="mode-empty" id="modeEmpty">暂无保存的模式</div>
+        <div class="mode-sort-hint" id="modeSortHint">按住左侧拖动手柄可调整模式顺序</div>
       </div>
     </div>
   </div>
@@ -833,13 +834,13 @@
   <div class="modal-overlay workspace-centered" id="saveModal" style="display:none">
     <div class="modal modal-sm">
       <div class="modal-header">
-        <span>保存模式</span>
+        <span id="saveModalTitle">保存模式</span>
         <button class="modal-close" id="saveModalClose">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group-modal">
           <label>模式名称</label>
-          <input type="text" id="modeNameInput" placeholder="请输入模式名称" />
+          <input id="modeNameInput" placeholder="请输入模式名称">
         </div>
         <div class="modal-actions">
           <button class="btn btn-primary" id="confirmSaveMode">保存</button>

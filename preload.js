@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 快捷模式
   getModes: () => ipcRenderer.invoke('get-modes'),
   saveMode: (mode) => ipcRenderer.invoke('save-mode', mode),
+  saveModeOrder: (modeNames) => ipcRenderer.invoke('save-mode-order', modeNames),
   deleteMode: (modeName) => ipcRenderer.invoke('delete-mode', modeName),
 
   // 文件
