@@ -3155,3 +3155,285 @@ body {
   color: #666;
   margin-left: 12px;
 }
+
+/* ========== CP物流服务定时开关 ========== */
+.page-icon-cp-logistics {
+  color: #2f80bd;
+}
+.cp-logistics-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px 16px;
+  background: #f5f7fa;
+  box-sizing: border-box;
+}
+.cp-logistics-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #dce5ee;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(31, 45, 61, .04);
+}
+.cp-logistics-card {
+  padding: 15px 18px;
+  box-sizing: border-box;
+}
+.cp-logistics-settings-card {
+  flex: none;
+  border-bottom: 1px solid #e8edf2;
+}
+.cp-logistics-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cp-logistics-card-header h2 {
+  margin: 0;
+  color: #263849;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.cp-logistics-card-header p {
+  margin: 3px 0 0;
+  color: #8492a1;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cp-logistics-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #5b6b7a;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cp-logistics-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.cp-logistics-switch-track {
+  position: relative;
+  width: 38px;
+  height: 21px;
+  border-radius: 999px;
+  background: #c6d0da;
+  transition: background .18s ease;
+}
+.cp-logistics-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
+  transition: transform .18s ease;
+}
+.cp-logistics-switch input:checked + .cp-logistics-switch-track {
+  background: #28b779;
+}
+.cp-logistics-switch input:checked + .cp-logistics-switch-track::after {
+  transform: translateX(17px);
+}
+.cp-logistics-config-grid {
+  display: grid;
+  grid-template-columns: minmax(170px, .85fr) minmax(260px, 1.35fr) minmax(150px, .65fr) minmax(150px, .65fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+.cp-logistics-config-field,
+.cp-logistics-time-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #425466;
+  font-size: 12px;
+}
+.cp-logistics-config-field input,
+.cp-logistics-time-field input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d5dee8;
+  border-radius: 5px;
+  background: #fff;
+  color: #253746;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.cp-logistics-config-field input[readonly] {
+  background: #f6f8fa;
+  color: #5e6c79;
+}
+.cp-logistics-time-field {
+  position: relative;
+  padding-left: 11px;
+  border-left: 3px solid #dce5ee;
+}
+.cp-logistics-time-field small {
+  color: #8b98a6;
+  font-size: 11px;
+}
+.cp-logistics-time-add {
+  border-left: 3px solid #28b779;
+}
+.cp-logistics-time-remove {
+  border-left: 3px solid #e67e22;
+}
+.cp-logistics-settings-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 13px;
+}
+.cp-logistics-notice {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 11px;
+  border: 1px solid #f2d5aa;
+  border-radius: 5px;
+  background: #fff9ef;
+  color: #966124;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cp-logistics-actions {
+  flex: none;
+}
+.cp-logistics-actions .btn {
+  min-width: 96px;
+  height: 34px;
+}
+.cp-logistics-status-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #657586;
+  font-size: 11px;
+}
+.cp-logistics-status-badge.is-running,
+.cp-logistics-status-badge.is-waiting {
+  background: #eaf4fd;
+  color: #2879b5;
+}
+.cp-logistics-status-badge.is-success {
+  background: #e7f7ef;
+  color: #208b5a;
+}
+.cp-logistics-status-badge.is-error {
+  background: #fff0ee;
+  color: #d34e43;
+}
+.cp-logistics-runtime-card {
+  flex: none;
+  border-bottom: 1px solid #e8edf2;
+}
+.cp-logistics-runtime-layout {
+  display: grid;
+  grid-template-columns: minmax(270px, .9fr) minmax(620px, 2.1fr);
+  gap: 12px;
+  margin-top: 11px;
+}
+.cp-logistics-status-message {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 9px 12px;
+  border-radius: 5px;
+  background: #f6f8fa;
+  color: #4f6070;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cp-logistics-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.cp-logistics-runtime-grid div {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #edf1f5;
+  border-radius: 5px;
+  background: #fff;
+}
+.cp-logistics-runtime-grid dt {
+  color: #8a97a4;
+  font-size: 11px;
+}
+.cp-logistics-runtime-grid dd {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: #34495e;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-logistics-log-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-logistics-log {
+  flex: 1;
+  min-height: 160px;
+  overflow: auto;
+  margin-top: 8px;
+  border-top: 1px solid #eef2f6;
+}
+.cp-logistics-log-item {
+  display: grid;
+  grid-template-columns: 150px 56px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 6px;
+  border-bottom: 1px solid #f0f3f6;
+  color: #536372;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.cp-logistics-log-item .is-success { color: #208b5a; }
+.cp-logistics-log-item .is-error { color: #d34e43; }
+.cp-logistics-log-item .is-warn { color: #c4771a; }
+.cp-logistics-log-empty {
+  padding: 28px 0;
+  color: #9aa6b2;
+  font-size: 12px;
+  text-align: center;
+}
+@media (max-width: 1120px) {
+  .cp-logistics-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cp-logistics-runtime-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .cp-logistics-config-grid,
+  .cp-logistics-runtime-grid {
+    grid-template-columns: 1fr;
+  }
+  .cp-logistics-settings-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .cp-logistics-actions .btn {
+    width: 100%;
+  }
+}

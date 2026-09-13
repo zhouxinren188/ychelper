@@ -45,6 +45,7 @@
             HOT
           </span>
         </div>
+        <div class="nav-item" data-page="cpLogistics">物流服务</div>
       </div>
 
       <div class="nav-section">
@@ -659,6 +660,98 @@
                 <button id="aoPageLast" disabled>尾页</button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CP物流服务定时开关页面 -->
+      <div class="page" id="page-cpLogistics">
+        <div class="page-header">
+          <span class="page-icon page-icon-cp-logistics" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8" />
+              <path d="M12 7.5V12l3 2" />
+            </svg>
+          </span>
+          <span class="page-title">物流服务定时开关</span>
+          <span class="ao-portal-actions">
+            <button class="btn btn-primary btn-sm" id="cpLogisticsOpenCpBtn">进入CP端</button>
+          </span>
+        </div>
+
+        <div class="cp-logistics-body">
+          <div class="cp-logistics-shell">
+          <section class="cp-logistics-card cp-logistics-settings-card">
+            <div class="cp-logistics-card-header">
+              <div>
+                <h2>定时配置</h2>
+                <p>只添加或删除“仓配一体服务 / 青龙”，其他物流服务和仓库配置保持不变</p>
+              </div>
+              <label class="cp-logistics-switch">
+                <input type="checkbox" id="cpLogisticsEnabled">
+                <span class="cp-logistics-switch-track" aria-hidden="true"></span>
+                <span id="cpLogisticsEnabledText">已关闭</span>
+              </label>
+            </div>
+
+            <div class="cp-logistics-config-grid">
+              <label class="cp-logistics-config-field cp-logistics-account-field">
+                <span>登录账号</span>
+                <input type="text" id="cpLogisticsAccount" readonly placeholder="尚未登录">
+              </label>
+              <label class="cp-logistics-config-field cp-logistics-department-field">
+                <span>固定事业部</span>
+                <input type="text" id="cpLogisticsDepartment" readonly placeholder="尚未获取">
+              </label>
+              <label class="cp-logistics-time-field cp-logistics-time-add">
+                <span>每日添加时间</span>
+                <input type="time" id="cpLogisticsAddTime" value="00:05">
+                <small>到点添加仓配一体服务</small>
+              </label>
+              <label class="cp-logistics-time-field cp-logistics-time-remove">
+                <span>每日删除时间</span>
+                <input type="time" id="cpLogisticsRemoveTime" value="23:55">
+                <small>到点只删除仓配一体服务</small>
+              </label>
+            </div>
+
+            <div class="cp-logistics-settings-footer">
+              <div class="cp-logistics-notice">
+                每次执行前重新读取CP端现有配置；当天时间已过后才开启，则从下一天执行。两次变更至少间隔3分钟。
+              </div>
+              <div class="cp-logistics-actions">
+                <button class="btn btn-primary" id="cpLogisticsSaveBtn">保存设置</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="cp-logistics-card cp-logistics-runtime-card">
+            <div class="cp-logistics-card-header cp-logistics-runtime-header">
+              <div>
+                <h2>运行状态</h2>
+                <p>软件运行且当前登录账号与固定事业部一致时自动执行</p>
+              </div>
+              <span class="cp-logistics-status-badge is-idle" id="cpLogisticsStatusBadge">未启用</span>
+            </div>
+            <div class="cp-logistics-runtime-layout">
+              <div class="cp-logistics-status-message" id="cpLogisticsStatusMessage">尚未开启定时物流服务</div>
+              <dl class="cp-logistics-runtime-grid">
+                <div><dt>最近添加</dt><dd id="cpLogisticsLastAdd">--</dd></div>
+                <div><dt>最近删除</dt><dd id="cpLogisticsLastRemove">--</dd></div>
+                <div><dt>最近变更</dt><dd id="cpLogisticsLastChange">--</dd></div>
+                <div><dt>下次计划</dt><dd id="cpLogisticsNextPlan">--</dd></div>
+              </dl>
+            </div>
+          </section>
+
+          <section class="cp-logistics-card cp-logistics-log-card">
+            <div class="cp-logistics-card-header">
+              <div><h2>执行记录</h2><p>只记录执行结果，不记录Cookie及请求凭证</p></div>
+            </div>
+            <div class="cp-logistics-log" id="cpLogisticsLog">
+              <div class="cp-logistics-log-empty">暂无执行记录</div>
+            </div>
+          </section>
           </div>
         </div>
       </div>

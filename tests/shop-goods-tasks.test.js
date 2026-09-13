@@ -30,6 +30,17 @@ const taskStyles = fs.readFileSync(path.join(root, 'src', 'css', 'shop-goods-tas
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 
+assert.match(main, /const MAX_SHOP_ACCOUNTS = 1000;/,
+  '快速打标应允许保存最多1000个店铺账号');
+assert.match(main, /list\.length >= MAX_SHOP_ACCOUNTS[\s\S]*最多保存\$\{MAX_SHOP_ACCOUNTS\}个店铺账号/,
+  '新增店铺必须使用统一的快速打标店铺上限');
+assert.match(renderer, /let smShopSaveInProgress = false;/,
+  '店铺保存流程必须具备防重复提交状态');
+assert.match(renderer, /runSmShopSubmission\(saveSmShop\)/,
+  '保存店铺按钮必须通过防重复提交入口执行');
+assert.match(renderer, /runSmShopSubmission\(handleSmEditShopLogin\)/,
+  '登录并保存按钮必须通过防重复提交入口执行');
+
 const task = createTask({
   accountId: 'shop-1',
   shopName: '测试店铺',

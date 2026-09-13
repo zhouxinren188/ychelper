@@ -64,6 +64,7 @@ const logBox = $('#logBox');
   initEventListeners();
   initSubscriptionListeners();
   initSmModule();
+  initCpLogisticsModule();
   initAoModule();
   initWmsPrintOutbound();
   initContactModal();
@@ -2834,6 +2835,7 @@ let smAutomationCheckPromise = null;
 let smAutomationEligibleSince = Date.now();
 const SM_AUTOMATION_CHECK_INTERVAL_MS = 30000;
 let smEditConfigLoadVersion = 0;
+let smShopSaveInProgress = false;
 const smSelectedTaskIds = new Set();
 const smTaskResultCache = new Map();
 
@@ -3846,11 +3848,11 @@ function initSmEventListeners() {
 
   // 保存店铺
   const saveShopBtn = $('#smSaveShopBtn');
-  if (saveShopBtn) saveShopBtn.addEventListener('click', saveSmShop);
+  if (saveShopBtn) saveShopBtn.addEventListener('click', () => runSmShopSubmission(saveSmShop));
 
   // 弹窗内登录按钮：先保存再登录
   const loginShopBtn = $('#smLoginShopBtn');
-  if (loginShopBtn) loginShopBtn.addEventListener('click', handleSmEditShopLogin);
+  if (loginShopBtn) loginShopBtn.addEventListener('click', () => runSmShopSubmission(handleSmEditShopLogin));
 
   // 发送确认弹窗
   const sendModalEl = $('#smSendModal');
@@ -4142,6 +4144,19 @@ async function openSmEditShop(account) {
 function closeSmEditShop() {
   smEditConfigLoadVersion++;
   $('#smEditShopModal').style.display = 'none';
+}
+
+async function runSmShopSubmission(action) {
+  if (smShopSaveInProgress) return;
+  smShopSaveInProgress = true;
+  const buttons = [$('#smLoginShopBtn'), $('#smSaveShopBtn')].filter(Boolean);
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await action();
+  } finally {
+    smShopSaveInProgress = false;
+    buttons.forEach(button => { button.disabled = false; });
+  }
 }
 
 // 弹窗内登录按钮：先保存账号，再打开登录窗口
@@ -6041,6 +6056,167 @@ function addSmLog(type, message) {
     smLogBox.removeChild(smLogBox.firstChild);
   }
   smLogBox.scrollTop = smLogBox.scrollHeight;
+}
+
+// ========== CP物流服务定时开关 ==========
+
+let cpLogisticsViewState = { settings: null, context: null, contextMatches: false, running: false };
+
+function formatCpLogisticsDateTime(value) {
+  const date = new Date(value || 0);
+  if (Number.isNaN(date.getTime()) || !value) return '--';
+  return date.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+}
+
+function getNextCpLogisticsPlan(settings) {
+  if (!settings?.enabled) return '--';
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const activatedAt = new Date(settings.activatedAt || 0);
+  const candidates = [
+    { action: 'add', label: '添加', time: settings.addTime, completed: settings.lastAddDate === today },
+    { action: 'remove', label: '删除', time: settings.removeTime, completed: settings.lastRemoveDate === today }
+  ].map(item => {
+    const [hour, minute] = String(item.time || '00:00').split(':').map(Number);
+    const at = new Date(now);
+    at.setHours(hour || 0, minute || 0, 0, 0);
+    const blocked = settings.blockedDate === today && settings.blockedAction === item.action;
+    const activatedAfterSchedule = !Number.isNaN(activatedAt.getTime()) && activatedAt > at;
+    const pending = !item.completed && !blocked && !activatedAfterSchedule && at <= now;
+    if (item.completed || blocked || activatedAfterSchedule) at.setDate(at.getDate() + 1);
+    return { ...item, at, pending };
+  }).sort((left, right) => left.at - right.at);
+  const next = candidates.find(item => item.pending) || candidates[0];
+  if (next.pending) return `待执行：今天 ${next.time} ${next.label}`;
+  const tomorrow = next.at.toDateString() !== now.toDateString();
+  return `${tomorrow ? '明天 ' : '今天 '}${next.time} ${next.label}`;
+}
+
+function renderCpLogisticsLog(history) {
+  const logEl = $('#cpLogisticsLog');
+  if (!logEl) return;
+  logEl.replaceChildren();
+  const entries = Array.isArray(history) ? [...history].reverse() : [];
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cp-logistics-log-empty';
+    empty.textContent = '暂无执行记录';
+    logEl.appendChild(empty);
+    return;
+  }
+  entries.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'cp-logistics-log-item';
+    const time = document.createElement('span');
+    const level = document.createElement('span');
+    const message = document.createElement('span');
+    time.textContent = formatCpLogisticsDateTime(entry.time);
+    const labels = { success: '成功', error: '失败', warn: '提示', info: '信息' };
+    level.textContent = labels[entry.level] || '信息';
+    level.className = `is-${entry.level || 'info'}`;
+    message.textContent = entry.message || '';
+    row.append(time, level, message);
+    logEl.appendChild(row);
+  });
+}
+
+function renderCpLogisticsSettings(result) {
+  if (!result) return;
+  if (result.settings) cpLogisticsViewState = { ...cpLogisticsViewState, ...result };
+  else cpLogisticsViewState.settings = result;
+  const settings = cpLogisticsViewState.settings || {};
+  const context = cpLogisticsViewState.context || {};
+  const enabledEl = $('#cpLogisticsEnabled');
+  const enabledTextEl = $('#cpLogisticsEnabledText');
+  const accountEl = $('#cpLogisticsAccount');
+  const departmentEl = $('#cpLogisticsDepartment');
+  const addTimeEl = $('#cpLogisticsAddTime');
+  const removeTimeEl = $('#cpLogisticsRemoveTime');
+  if (!enabledEl) return;
+
+  enabledEl.checked = settings.enabled === true;
+  enabledTextEl.textContent = settings.enabled ? '已开启' : '已关闭';
+  const displayedAccount = settings.enabled ? (settings.username || settings.accountId) : (context.username || context.accountId);
+  const displayedDepartment = settings.enabled ? (settings.deptName || settings.deptNo) : (context.deptName || context.deptNo);
+  accountEl.value = displayedAccount || '';
+  departmentEl.value = displayedDepartment || '';
+  addTimeEl.value = settings.addTime || '00:05';
+  removeTimeEl.value = settings.removeTime || '23:55';
+
+  const badge = $('#cpLogisticsStatusBadge');
+  const message = $('#cpLogisticsStatusMessage');
+  const status = settings.enabled ? (settings.lastStatus || 'waiting') : 'disabled';
+  const statusLabels = {
+    disabled: '未启用', idle: '等待中', waiting: '等待中', running: '执行中', success: '已完成', error: '需处理'
+  };
+  badge.textContent = statusLabels[status] || '等待中';
+  badge.className = `cp-logistics-status-badge is-${status}`;
+  if (settings.enabled && cpLogisticsViewState.contextMatches === false) {
+    message.textContent = '当前登录账号或事业部与固定配置不一致，任务已保留但不会执行';
+    badge.textContent = '等待账号';
+    badge.className = 'cp-logistics-status-badge is-waiting';
+  } else {
+    message.textContent = settings.lastMessage || (settings.enabled ? '等待设定时间' : '尚未开启定时物流服务');
+  }
+  $('#cpLogisticsLastAdd').textContent = settings.lastAddDate || '--';
+  $('#cpLogisticsLastRemove').textContent = settings.lastRemoveDate || '--';
+  $('#cpLogisticsLastChange').textContent = formatCpLogisticsDateTime(settings.lastChangeAt);
+  $('#cpLogisticsNextPlan').textContent = getNextCpLogisticsPlan(settings);
+  renderCpLogisticsLog(settings.history);
+}
+
+async function loadCpLogisticsSettings() {
+  try {
+    const result = await window.electronAPI.getCpLogisticsSettings();
+    if (!result?.success) throw new Error(result?.error || '设置读取失败');
+    renderCpLogisticsSettings(result);
+  } catch (error) {
+    showToast(error.message || '物流服务设置读取失败', 4000, 'error');
+  }
+}
+
+async function saveCpLogisticsSettings() {
+  if (!requireTier('cpLogistics')) return;
+  const saveBtn = $('#cpLogisticsSaveBtn');
+  saveBtn.disabled = true;
+  try {
+    const result = await window.electronAPI.saveCpLogisticsSettings({
+      enabled: $('#cpLogisticsEnabled').checked,
+      addTime: $('#cpLogisticsAddTime').value,
+      removeTime: $('#cpLogisticsRemoveTime').value
+    });
+    if (!result?.success) throw new Error(result?.error || '设置保存失败');
+    cpLogisticsViewState.contextMatches = true;
+    renderCpLogisticsSettings(result);
+    showToast('物流服务定时设置已保存', 2500, 'success');
+  } catch (error) {
+    showToast(error.message || '物流服务定时设置保存失败', 4500, 'error');
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+function initCpLogisticsModule() {
+  const saveBtn = $('#cpLogisticsSaveBtn');
+  const openCpBtn = $('#cpLogisticsOpenCpBtn');
+  const enabledEl = $('#cpLogisticsEnabled');
+  if (!saveBtn || !openCpBtn || !enabledEl) return;
+  saveBtn.addEventListener('click', saveCpLogisticsSettings);
+  enabledEl.addEventListener('change', () => {
+    $('#cpLogisticsEnabledText').textContent = enabledEl.checked ? '已开启' : '已关闭';
+  });
+  openCpBtn.addEventListener('click', async () => {
+    try {
+      const result = await window.electronAPI.openCpWorkspace();
+      if (!result?.success) throw new Error(result?.error || 'CP端打开失败');
+    } catch (error) {
+      showToast(error.message || 'CP端打开失败', 4000, 'error');
+    }
+  });
+  if (window.electronAPI.onCpLogisticsStatus) {
+    window.electronAPI.onCpLogisticsStatus(settings => renderCpLogisticsSettings(settings));
+  }
+  loadCpLogisticsSettings();
 }
 
 // ========== 异常订单处理模块 ==========

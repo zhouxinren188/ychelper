@@ -25,6 +25,9 @@ assert.match(subscriptionHtml,
 assert.match(subscriptionHtml,
   /<span>快速打标、自动定时打标<\/span>\s*<span class="no">—<\/span>\s*<span class="yes">✓<\/span>\s*<span class="yes">✓<\/span>/,
   '版本功能对比必须标明快速打标及自动定时打标支持标准版和高级版');
+assert.match(subscriptionHtml,
+  /<span>物流服务定时开关<\/span>\s*<span class="no">—<\/span>\s*<span class="yes">✓<\/span>\s*<span class="yes">✓<\/span>/,
+  '版本功能对比必须标明物流服务定时开关支持标准版和高级版');
 assert.match(renderer,
   /function canUseFeature\(feature\) \{\s*if \(currentSubscriptionStatus === 'trial'\) return true;/,
   '试用状态必须放行全部功能，不能按基础版档位拦截打单出库');

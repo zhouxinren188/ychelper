@@ -7,6 +7,7 @@ const {
   shell,
   session,
   net,
+  powerMonitor,
   safeStorage,
   webContents: electronWebContents
 } = require('electron');
@@ -101,6 +102,15 @@ const {
   hasUsableDifferentialBase
 } = require('./src/js/updateDownloadState');
 const { launchInstallerBeforeApplicationExit } = require('./src/js/deferredInstaller');
+const {
+  CpLogisticsServiceClient,
+  MIN_CHANGE_INTERVAL_MS,
+  cpDateKey,
+  cpScheduleDistanceMinutes,
+  getDueCpLogisticsActions,
+  normalizeCpLogisticsTime,
+  resetChangedCpScheduleCompletions
+} = require('./cp-logistics-service');
 let cookieManager = null;
 try { cookieManager = require('./src/js/cookieManager'); } catch(e) { console.warn('[启动] cookieManager 模块缺失，热更新后将恢复'); }
 
@@ -307,6 +317,7 @@ function activateGrantedSubscriptionSession(subResult, context) {
   activateOrderCommandRuntime(jdUsername);
   createMainWindow();
   startHeartbeat();
+  setTimeout(() => checkCpLogisticsSchedule(), 1000);
   return true;
 }
 
@@ -1033,6 +1044,179 @@ function isMerchantLoginPageUrl(url) {
 
 const MERCHANT_WORKSPACE_URL = 'https://o.jdl.com';
 const CP_WORKSPACE_URL = 'https://cp.jdl.com';
+const CP_LOGISTICS_SETTINGS_KEY = 'cpLogisticsAutomation';
+const CP_LOGISTICS_CHECK_INTERVAL_MS = 30 * 1000;
+const CP_LOGISTICS_MAX_FAILURES_PER_DAY = 3;
+let cpLogisticsTimer = null;
+let cpLogisticsRunPromise = null;
+
+function sanitizeCpLogisticsSettings(source = {}) {
+  const value = source && typeof source === 'object' ? source : {};
+  const history = Array.isArray(value.history) ? value.history.slice(-50).map(item => ({
+    time: String(item?.time || '').slice(0, 32),
+    level: ['success', 'error', 'info', 'warn'].includes(item?.level) ? item.level : 'info',
+    message: String(item?.message || '').slice(0, 300)
+  })) : [];
+  return {
+    enabled: value.enabled === true,
+    addTime: normalizeCpLogisticsTime(value.addTime, '00:05'),
+    removeTime: normalizeCpLogisticsTime(value.removeTime, '23:55'),
+    accountId: String(value.accountId || '').slice(0, 128),
+    username: String(value.username || '').slice(0, 256),
+    deptId: String(value.deptId || '').slice(0, 128),
+    deptNo: String(value.deptNo || '').slice(0, 128),
+    deptName: String(value.deptName || '').slice(0, 256),
+    activatedAt: String(value.activatedAt || '').slice(0, 32),
+    lastAddDate: String(value.lastAddDate || '').slice(0, 16),
+    lastRemoveDate: String(value.lastRemoveDate || '').slice(0, 16),
+    lastChangeAt: String(value.lastChangeAt || '').slice(0, 32),
+    lastRunAt: String(value.lastRunAt || '').slice(0, 32),
+    lastStatus: String(value.lastStatus || 'idle').slice(0, 32),
+    lastMessage: String(value.lastMessage || '').slice(0, 300),
+    nextRetryAt: String(value.nextRetryAt || '').slice(0, 32),
+    failureDate: String(value.failureDate || '').slice(0, 16),
+    failureAction: value.failureAction === 'remove' ? 'remove' : value.failureAction === 'add' ? 'add' : '',
+    failureCount: Math.max(0, Math.min(CP_LOGISTICS_MAX_FAILURES_PER_DAY, Number(value.failureCount) || 0)),
+    blockedDate: String(value.blockedDate || '').slice(0, 16),
+    blockedAction: value.blockedAction === 'remove' ? 'remove' : value.blockedAction === 'add' ? 'add' : '',
+    history
+  };
+}
+
+function getCurrentCpLogisticsContext() {
+  const userData = storeGet('userData', {}) || {};
+  const deptNo = String(userData.selectedDeptId || userData.departmentId || '').trim();
+  const pairs = Array.isArray(userData.deptPairs) ? userData.deptPairs : [];
+  const pair = pairs.find(item => String(item?.deptNo || '').trim() === deptNo) || pairs[0] || {};
+  return {
+    accountId: String(activeMerchantAccountId || ''),
+    username: String(currentUsername || ''),
+    deptId: String(pair.id || pair.deptId || '').trim(),
+    deptNo: String(deptNo || pair.deptNo || '').trim(),
+    deptName: String(userData.selectedDeptName || pair.deptName || userData.departmentName || '').trim()
+  };
+}
+
+function cpLogisticsContextMatches(settings, context) {
+  return Boolean(
+    settings.accountId && context.accountId && settings.accountId === context.accountId &&
+    settings.deptNo && context.deptNo && settings.deptNo === context.deptNo
+  );
+}
+
+function emitCpLogisticsStatus(settings = null) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('cp-logistics-status', settings || sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {})));
+}
+
+function saveCpLogisticsRuntime(settings, { logLevel = '', logMessage = '' } = {}) {
+  const next = sanitizeCpLogisticsSettings(settings);
+  if (logMessage) {
+    next.history.push({
+      time: new Date().toISOString(),
+      level: logLevel || 'info',
+      message: String(logMessage).slice(0, 300)
+    });
+    next.history = next.history.slice(-50);
+  }
+  storeSet(CP_LOGISTICS_SETTINGS_KEY, next);
+  emitCpLogisticsStatus(next);
+  return next;
+}
+
+async function executeCpLogisticsAction(settings, context, dueAction) {
+  const runDate = cpDateKey();
+  let current = saveCpLogisticsRuntime({
+    ...settings,
+    lastStatus: 'running',
+    lastMessage: `正在为“${context.deptName || context.deptNo}”${dueAction.label}仓配一体服务`,
+    lastRunAt: new Date().toISOString(),
+    nextRetryAt: ''
+  }, {
+    logLevel: 'info',
+    logMessage: `开始${dueAction.label}仓配一体服务，执行前将重新读取当前物流服务和仓库配置`
+  });
+
+  try {
+    const client = new CpLogisticsServiceClient({
+      session: getMerchantSession(),
+      bootstrapSession: () => loadCpWorkspace({ show: false })
+    });
+    const result = await client.change(context, dueAction.action);
+    if (activeMerchantAccountId) {
+      await cookieManager.exportCookies(getMerchantSession(), 'merchant', activeMerchantAccountId);
+    }
+    current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, current));
+    if (dueAction.action === 'add') current.lastAddDate = runDate;
+    else current.lastRemoveDate = runDate;
+    if (result.changed) current.lastChangeAt = new Date().toISOString();
+    current.lastRunAt = new Date().toISOString();
+    current.lastStatus = 'success';
+    current.lastMessage = `${dueAction.label}完成：${result.message}（${result.warehouseCount}个仓库）`;
+    current.nextRetryAt = '';
+    current.failureDate = '';
+    current.failureAction = '';
+    current.failureCount = 0;
+    current.blockedDate = '';
+    current.blockedAction = '';
+    saveCpLogisticsRuntime(current, { logLevel: 'success', logMessage: current.lastMessage });
+  } catch (error) {
+    current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, current));
+    const sameFailure = current.failureDate === runDate && current.failureAction === dueAction.action;
+    current.failureDate = runDate;
+    current.failureAction = dueAction.action;
+    current.failureCount = sameFailure ? current.failureCount + 1 : 1;
+    current.lastRunAt = new Date().toISOString();
+    current.lastStatus = 'error';
+    current.lastMessage = `${dueAction.label}失败：${error.message || '未知错误'}`;
+    if (current.failureCount >= CP_LOGISTICS_MAX_FAILURES_PER_DAY) {
+      current.blockedDate = runDate;
+      current.blockedAction = dueAction.action;
+      current.nextRetryAt = '';
+      current.lastMessage += '；今日已停止自动重试，请检查后重新保存设置';
+    } else {
+      current.nextRetryAt = new Date(Date.now() + MIN_CHANGE_INTERVAL_MS).toISOString();
+      current.lastMessage += `；3分钟后进行第${current.failureCount + 1}次尝试`;
+    }
+    saveCpLogisticsRuntime(current, { logLevel: 'error', logMessage: current.lastMessage });
+  }
+}
+
+async function checkCpLogisticsSchedule() {
+  if (cpLogisticsRunPromise) return cpLogisticsRunPromise;
+  let settings = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+  if (!settings.enabled || appIsQuitting) return null;
+  if (!canUseAutomation(storeGet('subscriptionInfo', {}))) return null;
+  if (!jdPageWindow || jdPageWindow.isDestroyed()) return null;
+
+  const context = getCurrentCpLogisticsContext();
+  if (!cpLogisticsContextMatches(settings, context)) return null;
+  const now = new Date();
+  const retryAt = new Date(settings.nextRetryAt || 0);
+  if (!Number.isNaN(retryAt.getTime()) && now < retryAt) return null;
+  const dueActions = getDueCpLogisticsActions(settings, now);
+  if (dueActions.length === 0) return null;
+
+  const lastChangeAt = new Date(settings.lastChangeAt || 0);
+  if (!Number.isNaN(lastChangeAt.getTime()) && Date.now() - lastChangeAt.getTime() < MIN_CHANGE_INTERVAL_MS) {
+    settings.lastStatus = 'waiting';
+    settings.lastMessage = '等待CP端3分钟操作间隔后继续执行';
+    settings.nextRetryAt = new Date(lastChangeAt.getTime() + MIN_CHANGE_INTERVAL_MS).toISOString();
+    saveCpLogisticsRuntime(settings);
+    return null;
+  }
+
+  cpLogisticsRunPromise = executeCpLogisticsAction(settings, context, dueActions[0])
+    .catch(error => console.error('[CP物流服务] 调度异常:', error.message))
+    .finally(() => { cpLogisticsRunPromise = null; });
+  return cpLogisticsRunPromise;
+}
+
+function startCpLogisticsScheduler() {
+  if (cpLogisticsTimer) clearInterval(cpLogisticsTimer);
+  cpLogisticsTimer = setInterval(checkCpLogisticsSchedule, CP_LOGISTICS_CHECK_INTERVAL_MS);
+  setTimeout(checkCpLogisticsSchedule, 1000);
+}
 
 function destroyMerchantWorkspaceWindow() {
   if (merchantWorkspaceWindow && !merchantWorkspaceWindow.isDestroyed()) merchantWorkspaceWindow.destroy();
@@ -1042,6 +1226,45 @@ function destroyMerchantWorkspaceWindow() {
 function destroyCpPageWindow() {
   if (cpPageWindow && !cpPageWindow.isDestroyed()) cpPageWindow.destroy();
   cpPageWindow = null;
+}
+
+function getOrCreateCpPageWindow() {
+  if (cpPageWindow && !cpPageWindow.isDestroyed()) return cpPageWindow;
+  const webPreferences = {
+    contextIsolation: true,
+    nodeIntegration: false
+  };
+  const merchantPartition = getMerchantPartition();
+  if (merchantPartition) webPreferences.partition = merchantPartition;
+
+  cpPageWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    center: true,
+    show: false,
+    title: '京东物流 - CP端',
+    webPreferences
+  });
+  cpPageWindow.on('closed', () => {
+    cpPageWindow = null;
+  });
+  return cpPageWindow;
+}
+
+async function loadCpWorkspace({ show = false } = {}) {
+  const target = getOrCreateCpPageWindow();
+  await target.loadURL(CP_WORKSPACE_URL);
+  if (target.isDestroyed()) throw new Error('CP端窗口已关闭');
+  const loadedUrl = target.webContents.getURL();
+  if (isMerchantLoginPageUrl(loadedUrl)) {
+    throw new Error('CP登录已失效，请重新登录云仓助手');
+  }
+  if (show) {
+    if (!target.isMaximized()) target.maximize();
+    target.show();
+    target.focus();
+  }
+  return target;
 }
 
 function isMerchantWorkspaceUrl(url) {
@@ -3006,6 +3229,8 @@ app.whenReady().then(async () => {
   activeMerchantAccountId = storeGet('lastMerchantAccountId', '');
   activeWmsAccountId = storeGet('lastWmsAccountId', '');
   activeShopAccountId = storeGet('lastShopAccountId', '');
+  startCpLogisticsScheduler();
+  powerMonitor.on('resume', () => setTimeout(checkCpLogisticsSchedule, 1000));
 
   // 清除旧的持久化 wmsLoggedIn（已改为内存管理）
   const store = loadStore();
@@ -3062,6 +3287,10 @@ app.on('before-quit', () => {
   if (jdPageWindow && !jdPageWindow.isDestroyed()) {
     jdPageWindow.close();
     jdPageWindow = null;
+  }
+  if (cpLogisticsTimer) {
+    clearInterval(cpLogisticsTimer);
+    cpLogisticsTimer = null;
   }
   destroyMerchantWorkspaceWindow();
   destroyCpPageWindow();
@@ -3139,6 +3368,7 @@ ipcMain.handle('open-merchant-workspace', async event => {
     if (target.isDestroyed()) {
       return { success: false, error: '商家端窗口已关闭，请重新登录云仓助手' };
     }
+    if (!target.isMaximized()) target.maximize();
     target.show();
     target.focus();
     return { success: true };
@@ -3157,38 +3387,80 @@ ipcMain.handle('open-cp-workspace', async event => {
       return { success: false, error: '商家端运行环境不可用，请重新登录云仓助手' };
     }
 
-    if (!cpPageWindow || cpPageWindow.isDestroyed()) {
-      const webPreferences = {
-        contextIsolation: true,
-        nodeIntegration: false
-      };
-      const merchantPartition = getMerchantPartition();
-      if (merchantPartition) webPreferences.partition = merchantPartition;
-
-      cpPageWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
-        center: true,
-        show: false,
-        title: '京东物流 - CP端',
-        webPreferences
-      });
-      cpPageWindow.on('closed', () => {
-        cpPageWindow = null;
-      });
-    }
-
-    const target = cpPageWindow;
-    await target.loadURL(CP_WORKSPACE_URL);
-    if (target.isDestroyed()) {
-      return { success: false, error: 'CP 端窗口已关闭，请重新打开' };
-    }
-    target.show();
-    target.focus();
+    await loadCpWorkspace({ show: true });
     return { success: true };
   } catch (error) {
     console.warn('打开 CP 端失败:', error.message);
     return { success: false, error: 'CP 端页面打开失败，请检查网络或重新登录' };
+  }
+});
+
+ipcMain.handle('get-cp-logistics-settings', async () => {
+  const settings = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+  const context = getCurrentCpLogisticsContext();
+  return {
+    success: true,
+    settings,
+    context,
+    contextMatches: cpLogisticsContextMatches(settings, context),
+    running: Boolean(cpLogisticsRunPromise)
+  };
+});
+
+ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
+  try {
+    assertAutomationAccess();
+    const current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+    const enabled = requested?.enabled === true;
+    const addTime = normalizeCpLogisticsTime(requested?.addTime, '00:05');
+    const removeTime = normalizeCpLogisticsTime(requested?.removeTime, '23:55');
+    if (cpScheduleDistanceMinutes(addTime, removeTime) < 3) {
+      return { success: false, error: '添加和删除时间至少需要间隔3分钟' };
+    }
+
+    const context = getCurrentCpLogisticsContext();
+    if (enabled && (!context.accountId || !context.deptNo || !context.deptName)) {
+      return { success: false, error: '当前登录账号的固定事业部信息不完整，请重新登录云仓助手' };
+    }
+    const bindingChanged = current.accountId !== context.accountId || current.deptNo !== context.deptNo;
+    const scheduleChanged = current.addTime !== addTime || current.removeTime !== removeTime;
+    const activationChanged = enabled && (!current.enabled || bindingChanged || scheduleChanged);
+    const next = sanitizeCpLogisticsSettings({
+      ...current,
+      enabled,
+      addTime,
+      removeTime,
+      accountId: enabled ? context.accountId : current.accountId,
+      username: enabled ? context.username : current.username,
+      deptId: enabled ? context.deptId : current.deptId,
+      deptNo: enabled ? context.deptNo : current.deptNo,
+      deptName: enabled ? context.deptName : current.deptName,
+      activatedAt: enabled ? (activationChanged ? new Date().toISOString() : current.activatedAt) : '',
+      lastStatus: enabled ? 'waiting' : 'disabled',
+      lastMessage: enabled
+        ? `已绑定固定事业部“${context.deptName}”，等待设定时间`
+        : '定时物流服务已关闭',
+      nextRetryAt: '',
+      failureDate: '',
+      failureAction: '',
+      failureCount: 0,
+      blockedDate: '',
+      blockedAction: ''
+    });
+    Object.assign(next, resetChangedCpScheduleCompletions(current, next, bindingChanged));
+    if (bindingChanged) {
+      next.lastChangeAt = '';
+    }
+    const saved = saveCpLogisticsRuntime(next, {
+      logLevel: 'info',
+      logMessage: enabled
+        ? `已保存定时设置：${addTime}添加，${removeTime}删除；固定事业部“${context.deptName}”`
+        : '已关闭定时物流服务'
+    });
+    if (enabled) setTimeout(checkCpLogisticsSchedule, 500);
+    return { success: true, settings: saved, context };
+  } catch (error) {
+    return { success: false, error: error.message || '定时物流服务设置保存失败' };
   }
 });
 
@@ -3755,6 +4027,10 @@ ipcMain.handle('save-shop-auto-label-runtime', async (event, runtime) => {
 });
 
 // 店铺账号 CRUD - 存储在 config.json 的 shopAccounts key
+// 快速打标按店铺逐个排队执行，不占用“同时在线设备”名额；这里只保留一个
+// 较宽松的本地数据保护上限，避免异常脚本无限写入账号记录。
+const MAX_SHOP_ACCOUNTS = 1000;
+
 ipcMain.handle('get-shop-accounts', async () => {
   return storeGet('shopAccounts', []);
 });
@@ -3822,8 +4098,8 @@ ipcMain.handle('save-shop-account', async (event, account) => {
     list[idx] = { ...list[idx], ...savedAccount };
   } else {
     // 新增
-    if (list.length >= 20) {
-      return { success: false, error: '最多保存20个店铺账号' };
+    if (list.length >= MAX_SHOP_ACCOUNTS) {
+      return { success: false, error: `最多保存${MAX_SHOP_ACCOUNTS}个店铺账号` };
     }
     list.push(savedAccount);
   }

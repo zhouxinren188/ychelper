@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   switchMerchantAccount: (account) => ipcRenderer.invoke('switch-merchant-account', account),
   openMerchantWorkspace: () => ipcRenderer.invoke('open-merchant-workspace'),
   openCpWorkspace: () => ipcRenderer.invoke('open-cp-workspace'),
+  getCpLogisticsSettings: () => ipcRenderer.invoke('get-cp-logistics-settings'),
+  saveCpLogisticsSettings: (settings) => ipcRenderer.invoke('save-cp-logistics-settings', settings),
+  onCpLogisticsStatus: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('cp-logistics-status', listener);
+    return () => ipcRenderer.removeListener('cp-logistics-status', listener);
+  },
 
   // 快捷模式
   getModes: () => ipcRenderer.invoke('get-modes'),
