@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 查询店铺商品（CSG编码）
   queryShopGoods: (params) => ipcRenderer.invoke('query-shop-goods', params),
 
+  // 查询指定店铺、事业部和仓库的SKU库存
+  queryShopStock: (params) => ipcRenderer.invoke('query-shop-stock', params),
+
   // 保存库存比例配置
   saveStockConfig: (params) => ipcRenderer.invoke('save-stock-config', params),
 
@@ -157,5 +160,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onShowUpdateDownloadFailed: (callback) => ipcRenderer.on('show-update-download-failed', (event, data) => callback(data)),
   confirmUpdateInstall: () => ipcRenderer.send('confirm-update-install'),
   confirmUpdateInstallByPath: () => ipcRenderer.send('confirm-update-install-by-path'),
+  deferUpdateInstall: () => ipcRenderer.send('defer-update-install'),
   openExternalDownload: (url) => ipcRenderer.send('open-external-download', url)
 });

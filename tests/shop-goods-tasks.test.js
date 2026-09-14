@@ -326,6 +326,30 @@ assert.match(renderer, /缺少商家ID（vendorId），跳过上传/,
   '商品导入缺少vendorId时必须明确阻止上传');
 assert.match(renderer, /smSendWarehouse\.value = findSmDefaultWarehouse\(sourceAccount, warehouseOptions\)/,
   '单次发送必须采用源店铺预设的默认仓库');
+assert.match(indexHtml, /name="smSendInventoryCheck" value="1"[\s\S]*name="smSendInventoryCheck" value="0" checked/,
+  '单次发送弹窗必须提供默认关闭的库存前置检查开关');
+assert.match(preload, /queryShopStock:\s*\(params\) => ipcRenderer\.invoke\('query-shop-stock', params\)/,
+  '渲染层必须通过受控IPC查询库存');
+assert.match(main, /ipcMain\.handle\('query-shop-stock'[\s\S]*activeSellerId !== requestedSellerId/,
+  '库存查询必须阻止使用其他商家账号的Cookie');
+assert.match(renderer, /enable && task\.waitForInventoryBeforeLabel[\s\S]*waitForInventoryBeforeJdLabel\(task, skuLabel\)/,
+  '库存门禁只能在京配打标生效前执行');
+assert.match(indexHtml, /id="inventoryCheckRow"[\s\S]*name="cfgInventoryCheck" value="1" disabled[\s\S]*校验（AB仓推荐）[\s\S]*name="cfgInventoryCheck" value="0" checked disabled[\s\S]*不校验[\s\S]*步骤延时/,
+  '主界面必须在步骤延时前提供默认不校验的库存选项');
+assert.match(renderer, /cfgJdLabel'[\s\S]*syncInventoryCheckAvailability\(true\)/,
+  '库存校验选项必须跟随京配打标开关联动');
+assert.match(renderer, /inventoryCheckBeforeJdLabel: \$\('#cfgJdLabel'\)\.checked && inventoryCheckSelected/,
+  '未勾选京配打标时不得保存库存校验状态');
+assert.match(appStyles, /\.config-item input\[type="checkbox"\]:checked[\s\S]*stroke='%23fff'/,
+  '配置区域选中的橙色复选框必须使用白色勾号');
+assert.match(renderer, /taskConfig\.jdLabel && taskConfig\.inventoryCheckBeforeJdLabel[\s\S]*shopOpt\?\.sellerId/,
+  '普通打标任务必须把模式中的库存校验及目标商家身份带入任务');
+assert.match(renderer, /waitForInventoryBeforeLabel: Boolean\(task\.waitForInventoryBeforeLabel\)[\s\S]*inventorySellerId: task\.inventorySellerId/,
+  '库存门禁配置必须随任务持久化，软件重启后仍能恢复');
+assert.match(renderer, /const logisticsTaskNo =[^\n]*WLSX\\d\+[\s\S]*resMsg\.includes\('导入成功'\)[\s\S]*Boolean\(logisticsTaskNo\)/,
+  '物流属性上传必须同时确认导入成功并取得WLSX任务编号');
+assert.match(renderer, /物流属性接口即使被限频[\s\S]*attempt \+ 1 < maxRetries[\s\S]*setTimeout\(resolve, 60000\)[\s\S]*throw new Error\(`\$\{label\}失败/,
+  '物流属性未取得任务编号时必须每分钟重试，耗尽后阻止后续步骤');
 assert.match(renderer, /sourceAccountMap\.get\(String\(task\.accountId\)\)[\s\S]*task\.publishConfig\?\.targetWarehouseId/,
   '批量发布必须按每条采集任务的源店铺采用默认仓库');
 assert.match(renderer, /saveShopAccount\(\{[\s\S]*defaultWarehouseId[\s\S]*\}\)/,

@@ -216,6 +216,17 @@
                   <span>毛重</span>
                   <input type="number" id="logWeight" class="logistics-input" value="0.5" step="0.1" min="0.01" /> <span>kg</span>
                 </div>
+                <div class="logistics-row inventory-check-row is-disabled" id="inventoryCheckRow">
+                  <span>校验库存：</span>
+                  <label class="config-radio">
+                    <input type="radio" name="cfgInventoryCheck" value="1" disabled />
+                    <span>校验（AB仓推荐）</span>
+                  </label>
+                  <label class="config-radio">
+                    <input type="radio" name="cfgInventoryCheck" value="0" checked disabled />
+                    <span>不校验</span>
+                  </label>
+                </div>
                 <div class="logistics-row">
                   <span>步骤延时：</span>
                   <input type="number" id="stepDelay" class="logistics-input" value="10" /> <span>秒</span>
@@ -961,9 +972,9 @@
       <div class="modal-body" style="text-align:center; padding: 24px 16px;">
         <div style="font-size:36px; margin-bottom:12px;">&#10004;</div>
         <div style="font-size:14px; color:#333; margin-bottom:8px;" id="updateInstallText">新版本已下载完成</div>
-        <div style="font-size:12px; color:#999; margin-bottom:16px;">安装过程中会关闭当前应用，安装完成后可重新打开。</div>
+        <div style="font-size:12px; color:#999; margin-bottom:16px;">选择稍后安装后，本次运行不再提醒，退出软件时自动安装。</div>
         <div class="modal-actions" style="justify-content:center; gap:12px;">
-          <button class="btn" id="updateInstallNo" style="background:#eee;color:#555;padding:6px 20px;">稍后</button>
+          <button class="btn" id="updateInstallNo" style="background:#eee;color:#555;padding:6px 20px;">稍后安装</button>
           <button class="btn btn-primary" id="updateInstallYes" style="padding:6px 20px;">立即安装</button>
         </div>
       </div>
@@ -1061,6 +1072,14 @@
         <div class="form-group-modal">
           <label>目标仓库</label>
           <select id="smSendWarehouse" style="width:100%;height:32px;border:1px solid #d9d9d9;border-radius:6px;padding:0 8px;font-size:13px;"></select>
+        </div>
+        <div class="form-group-modal" id="smSendInventoryCheckRow">
+          <label>是否查询库存打标？</label>
+          <div class="sm-radio-group">
+            <label class="sm-radio"><input type="radio" name="smSendInventoryCheck" value="1" /><span>是</span></label>
+            <label class="sm-radio"><input type="radio" name="smSendInventoryCheck" value="0" checked /><span>否</span></label>
+          </div>
+          <div style="font-size:12px;color:#8c8c8c;margin-top:6px;">选择“是”后，全部SKU在目标仓库有库存才执行京配打标</div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-primary" id="smConfirmSendBtn">确认发送</button>

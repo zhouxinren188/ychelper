@@ -7,6 +7,7 @@ const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const login = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
 const updateState = fs.readFileSync(path.join(root, 'src', 'js', 'updateDownloadState.js'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
+const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const rules = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
 const hotBuild = fs.readFileSync(path.join(root, 'scripts', 'make-hot-update.js'), 'utf8');
 const hotLoginBuild = fs.readFileSync(path.join(root, 'scripts', 'hot-update-login.js'), 'utf8');
@@ -35,8 +36,24 @@ assert.match(updateState, /currentVersion = getRuntimeAppVersion\(\)/,
 assert.match(main, /mode:\s*normalizedProgress\.mode/);
 assert.match(main, /mode:\s*'完整更新'/);
 assert.match(main, /Range:\s*`bytes=\$\{resumeOffset\}-`/);
-assert.match(main, /scheduleAutomaticInstall\('autoUpdater'\)/);
-assert.match(main, /scheduleAutomaticInstall\('localPath', savePath\)/);
+assert.match(main, /registerDownloadedUpdate\(\{[\s\S]*action: 'autoUpdater'[\s\S]*context: activeUpdateContext/,
+  '差分包下载完成后必须进入统一的待安装策略');
+assert.match(main, /registerDownloadedUpdate\(\{[\s\S]*action: 'localPath'[\s\S]*installerPath: savePath[\s\S]*context/,
+  '完整包下载完成后必须进入统一的待安装策略');
+assert.match(main, /context === 'runtime'[\s\S]*'show-update-install'[\s\S]*if \(notifiedWindow\) return true;[\s\S]*scheduleAutomaticInstall/,
+  '运行中更新必须提示用户，启动更新仍可自动安装');
+assert.match(login, /updateInstallNo[\s\S]*deferUpdateInstall\(\)/,
+  '停留在登录页时，运行中更新的稍后安装按钮也必须记录延后状态');
+assert.match(main, /runtimeUpdatePolicy\.shouldDownload\(updateInfo\.version\)/,
+  '差分更新必须跳过已选择稍后安装的同版本');
+assert.match(main, /runtimeUpdatePolicy\.shouldDownload\(fullMetadata\.version\)/,
+  '完整更新必须跳过已选择稍后安装的同版本');
+assert.match(main, /ipcMain\.on\('defer-update-install'[\s\S]*runtimeUpdatePolicy\.defer\(\)/,
+  '稍后安装必须通知主进程并记录本次运行状态');
+assert.match(preload, /deferUpdateInstall:\s*\(\) => ipcRenderer\.send\('defer-update-install'\)/,
+  '渲染层必须通过受控IPC选择稍后安装');
+assert.match(renderer, /updateInstallNo[\s\S]*deferUpdateInstall\(\)/,
+  '主界面的稍后安装按钮必须真实通知主进程');
 assert.match(main, /launchInstallerBeforeApplicationExit\(\{\s*installerPath\s*\}\)/,
   '完整安装包必须在主程序仍可报告启动错误时创建安装进程');
 assert.doesNotMatch(main, /shell\.openPath\((?:installerPath|global\._pendingUpdateInstaller)\)/,
@@ -49,8 +66,12 @@ assert(localInstallBlock[1].indexOf('releaseCurrentSubscriptionSession')
 assert(localInstallBlock[1].indexOf('launchInstallerBeforeApplicationExit')
   < localInstallBlock[1].indexOf('app.quit()'),
   '必须确认安装器进程已创建后再退出主程序');
-assert.match(main, /if \(pendingUpdateAction\) return;/,
-  '自动安装已经排队时，窗口关闭事件不得清除安装动作');
+assert.match(main, /if \(automaticInstallScheduled\) return;/,
+  '安装已经开始调度时，窗口关闭事件不得干扰安装动作');
+assert.doesNotMatch(main, /if \(pendingUpdateAction\) return;/,
+  '选择稍后安装后仍必须允许用户正常发起退出');
+assert.match(main, /ipcMain\.on\('confirm-close'[\s\S]*runtimeUpdatePolicy\.getPending\(\)[\s\S]*installPendingUpdateAndQuit/,
+  '用户退出时必须自动安装已下载并选择稍后的版本');
 assert.match(installerInclude, /!macro customInit/);
 assert.match(installerInclude, /nsProcess::FindProcess/);
 assert.match(installerInclude, /Sleep 200/);

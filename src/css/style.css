@@ -588,10 +588,27 @@ body {
   cursor: pointer;
 }
 .config-item input[type="checkbox"] {
-  accent-color: #e67e22;
+  -webkit-appearance: none;
+  appearance: none;
   width: 15px;
   height: 15px;
+  box-sizing: border-box;
+  border: 1px solid #9ca3af;
+  border-radius: 2px;
+  background-color: #fff;
   cursor: pointer;
+}
+.config-item input[type="checkbox"]:checked {
+  border-color: #e67e22;
+  background-color: #e67e22;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.2 8.2 6.5 11.3 12.9 4.8' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 13px 13px;
+}
+.config-item input[type="checkbox"]:focus-visible {
+  outline: 2px solid rgba(230, 126, 34, 0.25);
+  outline-offset: 1px;
 }
 .config-inline-input {
   width: 40px !important;
@@ -626,6 +643,49 @@ body {
 }
 .logistics-gap {
   margin-left: 16px;
+}
+.inventory-check-row {
+  gap: 14px;
+}
+.config-radio {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.config-radio input[type="radio"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  box-sizing: border-box;
+  border: 1px solid #9ca3af;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+.config-radio input[type="radio"]:checked {
+  border-color: #e67e22;
+  background: radial-gradient(circle at center, #e67e22 0 3.5px, #fff 4px);
+}
+.config-radio input[type="radio"]:focus-visible {
+  outline: 2px solid rgba(230, 126, 34, 0.25);
+  outline-offset: 1px;
+}
+.config-radio input[type="radio"]:disabled {
+  border-color: #c8c8c8;
+  background: #f5f5f5;
+}
+.config-radio input[type="radio"]:checked:disabled {
+  background: radial-gradient(circle at center, #aaa 0 3.5px, #f5f5f5 4px);
+}
+.inventory-check-row.is-disabled {
+  color: #aaa;
+}
+.inventory-check-row.is-disabled .config-radio,
+.inventory-check-row.is-disabled input[type="radio"] {
+  cursor: not-allowed;
 }
 
 /* ========== 操作按钮 ========== */

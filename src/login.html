@@ -485,7 +485,7 @@
     <div class="update-install-box">
       <div class="update-install-text" id="updateInstallText">新版本已下载完成</div>
       <div class="update-install-btns">
-        <button class="btn-install-no" id="updateInstallNo">稍后</button>
+        <button class="btn-install-no" id="updateInstallNo">稍后安装</button>
         <button class="btn-install-yes" id="updateInstallYes">立即安装</button>
       </div>
     </div>
@@ -769,6 +769,9 @@
       btnNo.addEventListener('click', function() {
         var modal = document.getElementById('updateInstallModal');
         if (modal) modal.classList.remove('active');
+        if (window.electronAPI.deferUpdateInstall) {
+          window.electronAPI.deferUpdateInstall();
+        }
       });
     }
 

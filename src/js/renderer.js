@@ -342,7 +342,7 @@ function initEventListeners() {
   });
 
   // 添加任务
-  $('#addTaskBtn').addEventListener('click', addTask);
+  $('#addTaskBtn').addEventListener('click', () => addTask());
 
   // 执行任务 / 停止任务
   $('#execTaskBtn').addEventListener('click', () => {
@@ -404,6 +404,10 @@ function initEventListeners() {
     applyMode();
   });
 
+  $('#cfgJdLabel').addEventListener('change', () => {
+    syncInventoryCheckAvailability(true);
+  });
+
   // 弹窗遮罩点击关闭
   $('#modeModal').addEventListener('click', (e) => {
     if (e.target === $('#modeModal')) closeModeModal();
@@ -423,7 +427,9 @@ function enqueueLabelTasks({
   sourceFileName = '',
   sourceTaskId = '',
   automationRunDate = '',
-  autoCreated = false
+  autoCreated = false,
+  waitForInventoryBeforeLabel = false,
+  inventorySellerId = ''
 }) {
   const normalizedSkus = [...new Set((Array.isArray(skus) ? skus : [])
     .map(value => String(value || '').trim())
@@ -440,6 +446,11 @@ function enqueueLabelTasks({
   const shopDeptId = shopOpt ? shopOpt.deptId : '';
   const shopDeptName = shopOpt ? shopOpt.deptName : '';
   const taskConfig = config && typeof config === 'object' ? { ...config } : {};
+  const waitForInventory = Boolean(
+    waitForInventoryBeforeLabel
+    || (taskConfig.jdLabel && taskConfig.inventoryCheckBeforeJdLabel)
+  );
+  const resolvedInventorySellerId = String(inventorySellerId || shopOpt?.sellerId || '').trim();
 
   // 其他步骤（非京配/非采购）是否有勾选
   const hasOtherSteps = taskConfig.importShopProduct || taskConfig.enableShopProduct ||
@@ -465,6 +476,20 @@ function enqueueLabelTasks({
   // 仓库验证：仅京配步骤时可不选仓库
   if (!warehouseId && !onlyJdSteps) {
     return { success: false, error: '请选择仓库', taskCount: 0 };
+  }
+  if (waitForInventory) {
+    if (!taskConfig.jdLabel) {
+      return { success: false, error: '库存校验仅支持京配打标生效', taskCount: 0 };
+    }
+    if (!shopId || !shopDeptId) {
+      return { success: false, error: '校验库存必须选择目标店铺', taskCount: 0 };
+    }
+    if (!warehouseId) {
+      return { success: false, error: '校验库存必须选择目标仓库', taskCount: 0 };
+    }
+    if (!resolvedInventorySellerId) {
+      return { success: false, error: '未获取到目标店铺对应的商家信息，请重新登录商家端', taskCount: 0 };
+    }
   }
 
   // 判断是否仅勾选了京配打标/取消京配打标步骤（用于批大小）
@@ -494,6 +519,8 @@ function enqueueLabelTasks({
       sourceTaskId,
       automationRunDate,
       autoCreated: Boolean(autoCreated),
+      waitForInventoryBeforeLabel: waitForInventory,
+      inventorySellerId: waitForInventory ? resolvedInventorySellerId : '',
       status: 'pending'
     });
     createdTaskIds.push(taskIdCounter);
@@ -526,6 +553,8 @@ function toPersistedLabelTask(task) {
     sourceTaskId: task.sourceTaskId || '',
     automationRunDate: task.automationRunDate || '',
     autoCreated: Boolean(task.autoCreated),
+    waitForInventoryBeforeLabel: Boolean(task.waitForInventoryBeforeLabel),
+    inventorySellerId: task.inventorySellerId || '',
     status: task.status || 'pending',
     hasLabelFailure: Boolean(task.hasLabelFailure),
     failedLabelSkus: Array.isArray(task.failedLabelSkus) ? task.failedLabelSkus : []
@@ -564,7 +593,7 @@ async function confirmEnqueuedLabelTasksPersisted(result) {
   throw new Error(saved?.error || '打标任务保存失败');
 }
 
-function addTask() {
+function addTask(options = {}) {
   const skuText = skuInput.value.trim();
   if (!skuText) {
     showToast('请输入商品SKU');
@@ -579,7 +608,9 @@ function addTask() {
     warehouseId: warehouseSelect.value,
     config: getCurrentConfig(),
     modeName: modeSelect.value || '自定义',
-    sourceFileName: importedFileName || ''
+    sourceFileName: importedFileName || '',
+    waitForInventoryBeforeLabel: Boolean(options.waitForInventoryBeforeLabel),
+    inventorySellerId: options.inventorySellerId || ''
   });
   if (!result.success) {
     showToast(result.error);
@@ -624,6 +655,7 @@ function saveLogisticsPrefs() {
 
 // ========== 获取当前配置 ==========
 function getCurrentConfig() {
+  const inventoryCheckSelected = document.querySelector('input[name="cfgInventoryCheck"]:checked')?.value === '1';
   return {
     importShopProduct: $('#cfgImportShopProduct').checked,
     enableShopProduct: $('#cfgEnableShopProduct').checked,
@@ -636,6 +668,7 @@ function getCurrentConfig() {
     disableShopProduct: $('#cfgDisableShopProduct').checked,
     logistics: $('#cfgLogistics').checked,
     cancelJdLabel: $('#cfgCancelJdLabel').checked,
+    inventoryCheckBeforeJdLabel: $('#cfgJdLabel').checked && inventoryCheckSelected,
     logLength: $('#logLength').value,
     logWidth: $('#logWidth').value,
     logHeight: $('#logHeight').value,
@@ -660,6 +693,9 @@ function applyConfig(config) {
   $('#cfgDisableShopProduct').checked = !!config.disableShopProduct;
   $('#cfgLogistics').checked = !!config.logistics;
   $('#cfgCancelJdLabel').checked = !!config.cancelJdLabel;
+  const inventoryCheckValue = config.jdLabel && config.inventoryCheckBeforeJdLabel ? '1' : '0';
+  const inventoryCheckRadio = document.querySelector(`input[name="cfgInventoryCheck"][value="${inventoryCheckValue}"]`);
+  if (inventoryCheckRadio) inventoryCheckRadio.checked = true;
   $('#logLength').value = config.logLength || $('#logLength').value || '210';
   $('#logWidth').value = config.logWidth || $('#logWidth').value || '150';
   $('#logHeight').value = config.logHeight || $('#logHeight').value || '100';
@@ -667,7 +703,21 @@ function applyConfig(config) {
   $('#stepDelay').value = config.stepDelay || $('#stepDelay').value || 10;
   if (purchaseQty && config.purchaseQty != null) purchaseQty.value = config.purchaseQty;
   $('#autoAccept').checked = config.autoAccept !== false;
+  syncInventoryCheckAvailability(false);
   saveLogisticsPrefs();
+}
+
+function syncInventoryCheckAvailability(resetWhenDisabled = false) {
+  const enabled = $('#cfgJdLabel').checked;
+  const row = $('#inventoryCheckRow');
+  document.querySelectorAll('input[name="cfgInventoryCheck"]').forEach(radio => {
+    radio.disabled = !enabled;
+  });
+  if (row) row.classList.toggle('is-disabled', !enabled);
+  if (!enabled && resetWhenDisabled) {
+    const offRadio = document.querySelector('input[name="cfgInventoryCheck"][value="0"]');
+    if (offRadio) offRadio.checked = true;
+  }
 }
 
 // ========== 渲染任务列表 ==========
@@ -995,12 +1045,63 @@ function getTaskSteps(task) {
   return steps;
 }
 
+const LABEL_STOCK_CHECK_INTERVAL_MS = 10000;
+
+async function waitForInventoryBeforeJdLabel(task, skuLabel) {
+  if (!task.inventorySellerId || !task.shopDeptId || !task.shopId || !task.warehouseId) {
+    throw new Error('库存前置检查缺少商家、事业部、店铺或仓库信息');
+  }
+
+  let attempt = 0;
+  while (!stopRequested) {
+    attempt++;
+    addLog('info', `[${skuLabel}] 库存前置检查第${attempt}次：正在查询${task.skus.length}个SKU...`);
+    let result;
+    try {
+      result = await window.electronAPI.queryShopStock({
+        skus: task.skus,
+        sellerId: task.inventorySellerId,
+        deptId: task.shopDeptId,
+        shopId: task.shopId,
+        warehouseNo: task.warehouseId
+      });
+    } catch (error) {
+      result = { success: false, retryable: true, error: error?.message || '库存查询通信异常' };
+    }
+    if (stopRequested) return false;
+
+    if (result?.success && result.ready) {
+      addLog('success', `[${skuLabel}] 库存已全部就绪（${result.inStockCount}/${result.total}），开始京配打标`);
+      return true;
+    }
+    if (result?.fatal) {
+      throw new Error(`库存前置检查失败: ${result.error || '账号或登录状态异常'}`);
+    }
+    if (result?.success) {
+      addLog(
+        'warn',
+        `[${skuLabel}] 库存尚未齐全：已就绪${result.inStockCount}/${result.total}，零库存${result.zeroStockCount}，未返回${result.missingCount}；10秒后重查`
+      );
+    } else {
+      addLog('warn', `[${skuLabel}] 库存查询异常：${result?.error || '未知错误'}；10秒后重试`);
+    }
+
+    let elapsed = 0;
+    while (elapsed < LABEL_STOCK_CHECK_INTERVAL_MS && !stopRequested) {
+      const waitMs = Math.min(200, LABEL_STOCK_CHECK_INTERVAL_MS - elapsed);
+      await sleep(waitMs);
+      elapsed += waitMs;
+    }
+  }
+  return false;
+}
+
 // ========== 步骤执行（生成Excel + 预留API上传） ==========
 // ========== 带限频重试的上传函数 ==========
 async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const uploadRes = await window.electronAPI.uploadExcel(uploadParams);
-    const d = uploadRes.data;
+    const d = uploadRes?.data;
 
     // 构建友好的结果消息
     let resMsg;
@@ -1017,10 +1118,40 @@ async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
       resMsg = uploadRes.error || JSON.stringify(d);
     }
 
+    // 物流属性接口即使被限频，也可能在外层返回 success=true。
+    // 只有明确返回“导入成功”并拿到 WLSX 任务编号，才允许进入后续库存比例和采购入库步骤。
+    const isGoodsLogistics = uploadParams?.type === 'goodsLogistics';
+    const logisticsTaskNo = typeof resMsg === 'string' ? resMsg.match(/\bWLSX\d+\b/i)?.[0] : '';
+    if (isGoodsLogistics) {
+      const logisticsAccepted = uploadRes?.success
+        && typeof resMsg === 'string'
+        && resMsg.includes('导入成功')
+        && Boolean(logisticsTaskNo);
+      if (logisticsAccepted) {
+        addLog('success', `[${sku}] ${label}: ${resMsg}`);
+        return uploadRes;
+      }
+
+      if (attempt + 1 < maxRetries) {
+        addLog(
+          'warn',
+          `[${sku}] ${label}未取得WLSX任务编号: ${resMsg || '返回结果异常'}，1分钟后重试 (${attempt + 1}/${maxRetries})...`
+        );
+        await new Promise(resolve => setTimeout(resolve, 60000));
+        continue;
+      }
+
+      const failureMessage = resMsg || '未取得WLSX任务编号';
+      addLog('error', `[${sku}] ${label}失败: ${failureMessage}（已重试${maxRetries}次）`);
+      throw new Error(`${label}失败: ${failureMessage}`);
+    }
+
     // 先检测限频提示（即使 success=true 也可能是限频）
-    const isRateLimit = typeof resMsg === 'string' && (resMsg.includes('只能导入一次') || resMsg.includes('后重试'));
+    const isRateLimit = typeof resMsg === 'string'
+      && (resMsg.includes('只能导入一次') || resMsg.includes('频繁')
+        || resMsg.includes('后重试') || resMsg.includes('稍后再试'));
     if (isRateLimit) {
-      if (attempt < maxRetries) {
+      if (attempt + 1 < maxRetries) {
         addLog('warn', `[${sku}] ${label}: ${resMsg}，1分钟后重试 (${attempt + 1}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, 60000));
         continue;
@@ -1448,6 +1579,11 @@ async function executeStep(step, task) {
     case 'cancelJdLabel': {
       const enable = step.key === 'jdLabel';
       const label = enable ? '生效' : '取消';
+
+      if (enable && task.waitForInventoryBeforeLabel) {
+        const inventoryReady = await waitForInventoryBeforeJdLabel(task, skuLabel);
+        if (!inventoryReady || stopRequested) return;
+      }
 
       // 查询所有SKU对应的店铺商品信息
       addLog('info', `[${skuLabel}] 正在查询店铺商品信息...`);
@@ -2084,6 +2220,8 @@ let wmsAutoTimer = null;      // 自动验收定时器
 let wmsTotalAcceptedOrders = 0;  // 已验收单据数（运行期间累计）
 let wmsTotalAcceptedSkus = 0;    // 已验收SKU数（运行期间累计）
 const WMS_AUTO_INTERVAL = 1 * 60 * 1000; // 1分钟
+const WMS_LOGISTICS_REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
+let wmsLogisticsRepairLastSuccessAt = 0;
 
 // WMS DOM 引用
 const wmsLoginBtn = $('#wmsLoginBtn');
@@ -2307,7 +2445,12 @@ function initWmsEventListeners() {
       for (const r of results) {
         if (r.status === 'fulfilled') {
           const { orderIdx, inboundNo, result } = r.value;
-          if (result.success) {
+          if (result.needsLogistics) {
+            addWmsLog(
+              'warn',
+              `[${orderIdx}/${selectedOrders.length}] ${inboundNo} 有${result.logisticsItems?.length || 0}个商品缺少物流属性；仅自动验收模式会自动补录`
+            );
+          } else if (result.success) {
             if (result.skipped) {
               addWmsLog('info', `[${orderIdx}/${selectedOrders.length}] ${inboundNo} 当前无可验收明细，跳过`);
             } else {
@@ -2571,6 +2714,78 @@ async function handleWmsQuery() {
   }
 }
 
+async function repairWmsMissingLogistics(requirements) {
+  const itemsBySku = new Map();
+  for (const requirement of requirements) {
+    for (const item of Array.isArray(requirement?.logisticsItems) ? requirement.logisticsItems : []) {
+      const sku = String(item?.sku || '').trim();
+      if (sku && !itemsBySku.has(sku)) itemsBySku.set(sku, item);
+    }
+  }
+  const cmgSkus = [...itemsBySku.keys()];
+  if (cmgSkus.length === 0) return false;
+
+  const remainingMs = WMS_LOGISTICS_REPAIR_COOLDOWN_MS - (Date.now() - wmsLogisticsRepairLastSuccessAt);
+  if (remainingMs > 0) {
+    addWmsLog(
+      'info',
+      `[自动验收] 物流属性任务已提交，等待后台生效（约${Math.ceil(remainingMs / 60000)}分钟内不重复上传）`
+    );
+    return true;
+  }
+
+  const cfg = getCurrentConfig();
+  const dimensions = [cfg.logLength, cfg.logWidth, cfg.logHeight, cfg.logWeight].map(Number);
+  if (dimensions.some(value => !Number.isFinite(value) || value <= 0)) {
+    addWmsLog('error', '[自动验收] 当前物流长、宽、高或毛重不是有效正数，无法自动补录');
+    return false;
+  }
+
+  addWmsLog(
+    'warn',
+    `[自动验收] 检测到${requirements.length}个入库单、${cmgSkus.length}个商品缺少物流属性，正在自动补录...`
+  );
+  const generated = await window.electronAPI.generateExcel({
+    type: 'goodsLogistics',
+    data: {
+      skus: cmgSkus,
+      departmentId: '',
+      length: cfg.logLength,
+      width: cfg.logWidth,
+      height: cfg.logHeight,
+      weight: cfg.logWeight,
+      useDepartmentGoodsCode: true,
+      outputFileName: `GoodsLogisticsAutoRepair-${Date.now()}.xls`
+    }
+  });
+  if (!generated?.success) {
+    addWmsLog('error', `[自动验收] 生成物流属性文件失败: ${generated?.error || '未知错误'}`);
+    return false;
+  }
+
+  try {
+    const uploaded = await uploadWithRetry({
+      type: 'goodsLogistics',
+      filePath: generated.filePath,
+      params: {}
+    }, '自动补录物流属性', `${cmgSkus.length}个商品`, 1);
+    const uploadMessage = uploaded?.data?.data || uploaded?.data?.msg || '';
+    const taskNo = typeof uploadMessage === 'string' ? uploadMessage.match(/\bWLSX\d+\b/i)?.[0] : '';
+    wmsLogisticsRepairLastSuccessAt = Date.now();
+    addWmsLog(
+      'success',
+      `[自动验收] 物流属性已提交${taskNo ? `（${taskNo}）` : ''}，下轮扫描继续验收`
+    );
+    return true;
+  } catch (error) {
+    addWmsLog(
+      'warn',
+      `[自动验收] 物流属性补录暂未成功: ${error?.message || '未知错误'}；1分钟后自动重试`
+    );
+    return false;
+  }
+}
+
 // 自动验收：查询 + 验收全部单据
 async function runAutoAcceptance() {
   if (wmsIsProcessing) {
@@ -2615,6 +2830,7 @@ async function runAutoAcceptance() {
 
     let successCount = 0;
     let failCount = 0;
+    const missingLogisticsRequirements = [];
     const ORDER_CONCURRENCY = 5; // 最多同时验收5个不同订单
 
     // 将订单按并发数分组，每组最多 ORDER_CONCURRENCY 个订单同时验收
@@ -2643,13 +2859,23 @@ async function runAutoAcceptance() {
       for (const r of results) {
         if (r.status === 'fulfilled') {
           const { orderIdx, inboundNo, result } = r.value;
-          if (result.success) {
-            successCount++;
-            wmsTotalAcceptedOrders++;
-            wmsTotalAcceptedSkus += (result.count || 0);
-            updateWmsStats();
-            const warnMsg = result.warning ? ` (${result.failCount}个SKU失败: ${result.warning})` : '';
-            addWmsLog('success', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+          if (result.needsLogistics) {
+            missingLogisticsRequirements.push(result);
+            addWmsLog(
+              'warn',
+              `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 检测到${result.logisticsItems?.length || 0}个商品缺少物流属性`
+            );
+          } else if (result.success) {
+            if (result.skipped) {
+              addWmsLog('info', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 当前无可验收明细，跳过`);
+            } else {
+              successCount++;
+              wmsTotalAcceptedOrders++;
+              wmsTotalAcceptedSkus += (result.count || 0);
+              updateWmsStats();
+              const warnMsg = result.warning ? ` (${result.failCount}个SKU失败: ${result.warning})` : '';
+              addWmsLog('success', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 验收成功，${result.count} 个SKU${warnMsg}`);
+            }
           } else {
             failCount++;
             addWmsLog('error', `[自动验收] [${orderIdx}/${wmsOrders.length}] ${inboundNo} 验收失败: ${result.error}`);
@@ -2659,6 +2885,10 @@ async function runAutoAcceptance() {
           addWmsLog('error', `[自动验收] 订单验收异常: ${r.reason?.message || '未知'}`);
         }
       }
+    }
+
+    if (missingLogisticsRequirements.length > 0 && wmsAutoMode) {
+      await repairWmsMissingLogistics(missingLogisticsRequirements);
     }
 
     addWmsLog('info', `[自动验收] 本轮完成！成功: ${successCount}, 失败: ${failCount}`);
@@ -2906,6 +3136,8 @@ function initSubscriptionListeners() {
   // ========== 更新下载进度弹窗 ==========
   if (window.electronAPI.onShowUpdateDownloading) {
     window.electronAPI.onShowUpdateDownloading((data) => {
+      const installModal = document.getElementById('updateInstallModal');
+      if (installModal) installModal.style.display = 'none';
       const text = document.getElementById('updateDownloadText');
       if (text) {
         text.textContent = data.message
@@ -2950,7 +3182,7 @@ function initSubscriptionListeners() {
       if (dlModal) dlModal.style.display = 'none';
       // 显示安装确认弹窗
       const text = document.getElementById('updateInstallText');
-      if (text && data.version) text.textContent = `新版本 v${data.version} 已下载完成`;
+      if (text && data.version) text.textContent = `新版本 v${data.version} 已下载完成，是否立即安装？`;
       const modal = document.getElementById('updateInstallModal');
       if (modal) modal.style.display = 'flex';
     });
@@ -2968,6 +3200,8 @@ function initSubscriptionListeners() {
     updateInstallNo.addEventListener('click', () => {
       const modal = document.getElementById('updateInstallModal');
       if (modal) modal.style.display = 'none';
+      if (window.electronAPI.deferUpdateInstall) window.electronAPI.deferUpdateInstall();
+      showToast('已选择稍后安装，退出软件时将自动安装更新');
     });
   }
 
@@ -6229,6 +6463,11 @@ async function handleSmSend(type) {
   });
   smSendWarehouse.value = findSmDefaultWarehouse(sourceAccount, warehouseOptions);
 
+  const inventoryCheckOff = document.querySelector('input[name="smSendInventoryCheck"][value="0"]');
+  if (inventoryCheckOff) inventoryCheckOff.checked = true;
+  const inventoryCheckRow = $('#smSendInventoryCheckRow');
+  if (inventoryCheckRow) inventoryCheckRow.style.display = smSendType === '打标' ? '' : 'none';
+
   modal.style.display = 'flex';
 }
 
@@ -6247,12 +6486,37 @@ async function confirmSmSend() {
   const modeName = $('#smSendMode').value;
   const targetShopId = $('#smSendShop').value;
   const targetWarehouseId = $('#smSendWarehouse').value;
+  const waitForInventoryBeforeLabel = document.querySelector('input[name="smSendInventoryCheck"]:checked')?.value === '1';
 
   if (!modeName) { showToast('请选择快捷模式'); return; }
 
   // 获取模式配置
   const modes = await window.electronAPI.getModes();
   const targetMode = modes.find(m => m.name === modeName);
+  if (!targetMode) { showToast('快捷模式不存在，请重新选择'); return; }
+
+  let inventorySellerId = '';
+  if (waitForInventoryBeforeLabel) {
+    if (smSendType !== '打标' || !targetMode.config?.jdLabel) {
+      showToast('库存前置检查仅支持包含“京配打标生效”的打标模式');
+      return;
+    }
+    if (!targetShopId) { showToast('查询库存打标必须选择目标店铺'); return; }
+    if (!targetWarehouseId) { showToast('查询库存打标必须选择目标仓库'); return; }
+
+    const targetShop = allShopOptions.find(option => option.value === targetShopId);
+    const userData = await window.electronAPI.getUserData();
+    const deptPairs = Array.isArray(userData?.deptPairs) ? userData.deptPairs : [];
+    const targetDept = deptPairs.find(pair =>
+      String(pair.id || '') === String(targetShop?.deptId || '')
+      || (targetShop?.deptNo && String(pair.deptNo || '') === String(targetShop.deptNo))
+    );
+    inventorySellerId = String(targetDept?.sellerId || targetShop?.sellerId || userData?.sellerId || '').trim();
+    if (!inventorySellerId || !targetShop?.deptId) {
+      showToast('未获取到当前店铺的商家或事业部信息，请重新登录商家端');
+      return;
+    }
+  }
 
   // 1. 填充 SKU 到店铺打标页的输入框
   skuInput.value = skus.join('，');
@@ -6276,8 +6540,9 @@ async function confirmSmSend() {
     modeSelect.classList.toggle('placeholder', !modeSelect.value);
   }
 
-  // 5. 调用已有的 addTask() 添加到任务列表
-  addTask();
+  // 5. 调用已有的 addTask() 添加到任务列表；弹窗选择和快捷模式配置均可开启库存门禁。
+  const addResult = addTask({ waitForInventoryBeforeLabel, inventorySellerId });
+  if (!addResult?.success) return;
 
   // 6. 更新统计
   await window.electronAPI.updateSmStats({ shops: 1, skus: skus.length });
@@ -6285,7 +6550,7 @@ async function confirmSmSend() {
 
   // 7. 关闭弹窗并切换页面
   closeSmSendModal();
-  addSmLog('success', `已发送 ${skus.length} 个SKU到${smSendType}任务（模式：${modeName}）`);
+  addSmLog('success', `已发送 ${skus.length} 个SKU到${smSendType}任务（模式：${modeName}${waitForInventoryBeforeLabel ? '，已开启库存前置检查' : ''}）`);
 
   // 切换到店铺打标页面
   document.querySelector('[data-page="shopLabel"]').click();

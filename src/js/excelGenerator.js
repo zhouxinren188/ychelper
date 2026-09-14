@@ -42,7 +42,15 @@ function generatePopGoodsImport(skus) {
  * 生成 GoodsLogisticsTemplate.xls
  * 维护物流属性：事业部编码 + SKU + 长宽高 + 毛重
  */
-function generateGoodsLogistics(skus, { departmentId, length, width, height, weight }) {
+function generateGoodsLogistics(skus, {
+  departmentId,
+  length,
+  width,
+  height,
+  weight,
+  useDepartmentGoodsCode = false,
+  outputFileName = 'GoodsLogisticsTemplate.xls'
+}) {
   const header = [
     '事业部商品编码\n（若此列不为空，以此编码获取的商品为准）',
     '事业部编码\n（事业部商品编码为空时必填）',
@@ -57,9 +65,9 @@ function generateGoodsLogistics(skus, { departmentId, length, width, height, wei
 
   skus.forEach(sku => {
     rows.push([
-      '',                          // 第1列：不填
-      departmentId,                // 第2列：事业部编号
-      sku,                         // 第3列：SKU
+      useDepartmentGoodsCode ? sku : '', // WMS 缺属性清单返回 CMG 编码时直接填第1列
+      useDepartmentGoodsCode ? '' : departmentId,
+      useDepartmentGoodsCode ? '' : sku,
       parseFloat(length) || 0,     // 第4列：长
       parseFloat(width) || 0,      // 第5列：宽
       parseFloat(height) || 0,     // 第6列：高
@@ -72,7 +80,10 @@ function generateGoodsLogistics(skus, { departmentId, length, width, height, wei
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '商品物流属性导入');
 
-  const filePath = path.join(outputDir, 'GoodsLogisticsTemplate.xls');
+  const safeFileName = path.basename(String(outputFileName || 'GoodsLogisticsTemplate.xls'));
+  const filePath = path.join(outputDir, safeFileName.toLowerCase().endsWith('.xls')
+    ? safeFileName
+    : `${safeFileName}.xls`);
   XLSX.writeFile(wb, filePath, { bookType: 'xls' });
   return filePath;
 }

@@ -22,6 +22,22 @@ const excelGen = require('./src/js/excelGenerator');
 const { buildShopSkuExportFileName } = require('./src/js/shopExportFile');
 const { canUseAutomation } = require('./src/js/subscriptionAccess');
 const {
+  MODE_BASELINE_REVISION,
+  cloneModeBaseline,
+  applyModeBaselineMigration
+} = require('./src/js/modeBaseline');
+const {
+  buildShopStockForm,
+  normalizeSkus: normalizeShopStockSkus,
+  summarizeShopStockRows
+} = require('./src/js/shopStockQuery');
+const {
+  buildWmsMissingLogisticsQuery,
+  getWmsScanRecord,
+  needsWmsLogisticsRepair,
+  normalizeWmsMissingLogisticsItems
+} = require('./src/js/wmsLogisticsRepair');
+const {
   getMachineCodeAccountKey,
   getOrCreateMachineCode,
   isValidMachineCode,
@@ -104,6 +120,7 @@ const {
   createUpdateDownloadState,
   hasUsableDifferentialBase
 } = require('./src/js/updateDownloadState');
+const { createRuntimeUpdatePolicy } = require('./src/js/runtimeUpdatePolicy');
 const { launchInstallerBeforeApplicationExit } = require('./src/js/deferredInstaller');
 const {
   CpLogisticsServiceClient,
@@ -954,6 +971,8 @@ function sanitizeLabelTaskMetadata(task) {
     sourceTaskId: text(source.sourceTaskId, 128),
     automationRunDate: text(source.automationRunDate, 16),
     autoCreated: Boolean(source.autoCreated),
+    waitForInventoryBeforeLabel: Boolean(source.waitForInventoryBeforeLabel),
+    inventorySellerId: text(source.inventorySellerId, 128),
     status: status === 'running' ? 'pending' : status,
     hasLabelFailure: Boolean(source.hasLabelFailure),
     failedLabelSkus: (Array.isArray(source.failedLabelSkus) ? source.failedLabelSkus : [])
@@ -2380,9 +2399,7 @@ function createMainWindow() {
     if (!appIsQuitting && !isCheckingSubscription) {
       event.preventDefault();
       // 更新已进入自动安装阶段时保持当前动作，等待统一退出流程处理。
-      if (pendingUpdateAction) return;
-      // 用户手动关闭窗口时，清除待执行的更新安装动作
-      pendingUpdateAction = null;
+      if (automaticInstallScheduled) return;
       // 通知渲染进程显示自定义退出确认弹窗
       mainWindow.webContents.send('show-close-confirm');
     }
@@ -2434,6 +2451,7 @@ let automaticInstallScheduled = false;
 let activeUpdateContext = 'startup';
 let activeUpdateMetadata = null;
 let periodicUpdateTimer = null;
+const runtimeUpdatePolicy = createRuntimeUpdatePolicy(isNewerVersion);
 
 function handleAutoUpdaterFullFallback(event) {
   console.warn(`[自动更新] ${event.message} (${event.source})`);
@@ -2552,7 +2570,8 @@ async function installPendingUpdateAndQuit(action, installerPath = null) {
 
 function reportUpdateInstallFailure(error) {
   automaticInstallScheduled = false;
-  pendingUpdateAction = null;
+  const pending = runtimeUpdatePolicy.getPending();
+  pendingUpdateAction = pending?.action || null;
   console.error('自动安装更新失败:', error.message);
   sendUpdateWindowEvent('show-update-download-failed', {
     message: '更新安装启动失败，请重新启动软件后再试'
@@ -2564,15 +2583,45 @@ function scheduleAutomaticInstall(action, installerPath = null) {
   automaticInstallScheduled = true;
   pendingUpdateAction = action;
   if (installerPath) global._pendingUpdateInstaller = installerPath;
+  const pending = runtimeUpdatePolicy.getPending();
 
   sendUpdateProgress('installing', {
-    version: activeUpdateMetadata && activeUpdateMetadata.version,
-    changelog: activeUpdateMetadata && activeUpdateMetadata.changelog
+    version: pending?.version || activeUpdateMetadata?.version,
+    changelog: pending?.changelog || activeUpdateMetadata?.changelog
   });
 
   setTimeout(() => {
     installPendingUpdateAndQuit(action, installerPath).catch(reportUpdateInstallFailure);
   }, 1200);
+}
+
+function registerDownloadedUpdate({ version, action, installerPath = null, context, changelog = '' }) {
+  const registration = runtimeUpdatePolicy.register({
+    version,
+    action,
+    installerPath,
+    changelog
+  });
+  if (!registration.accepted) {
+    console.log(`[自动更新] v${version} 已下载或不是更高版本，不再重复提示`);
+    return false;
+  }
+
+  const pending = registration.pending;
+  pendingUpdateAction = pending.action;
+  global._pendingUpdateInstaller = pending.installerPath;
+  automaticInstallScheduled = false;
+
+  if (context === 'runtime') {
+    const notifiedWindow = sendUpdateWindowEvent('show-update-install', {
+      version: pending.version,
+      changelog: pending.changelog
+    }, 'runtime');
+    if (notifiedWindow) return true;
+  }
+
+  scheduleAutomaticInstall(pending.action, pending.installerPath);
+  return true;
 }
 
 autoUpdater.on('checking-for-update', () => {
@@ -2606,8 +2655,13 @@ autoUpdater.on('download-progress', (progress) => {
 autoUpdater.on('update-downloaded', (info) => {
   console.log('更新下载完成:', info.version);
   autoUpdaterActive = false;
-  global._pendingUpdateInstaller = null;
-  scheduleAutomaticInstall('autoUpdater');
+  registerDownloadedUpdate({
+    version: info.version,
+    action: 'autoUpdater',
+    installerPath: null,
+    context: activeUpdateContext,
+    changelog: normalizeUpdateNotes(activeUpdateMetadata?.changelog || info.releaseNotes)
+  });
 });
 
 autoUpdater.on('error', (err) => {
@@ -2689,7 +2743,13 @@ async function downloadAndInstallFullUpdate(checkData, context = activeUpdateCon
       const existingSize = fs.statSync(savePath).size;
       if (existingSize === expectedSize && verifyFileSHA512(savePath, checkData.sha512)) {
         console.log('完整更新: 复用已校验的本地安装包');
-        scheduleAutomaticInstall('localPath', savePath);
+        registerDownloadedUpdate({
+          version: checkData.version,
+          action: 'localPath',
+          installerPath: savePath,
+          context,
+          changelog: normalizeUpdateNotes(checkData.changelog || checkData.releaseNotes)
+        });
         return true;
       }
       if (existingSize > expectedSize || existingSize === expectedSize) {
@@ -2816,8 +2876,13 @@ async function downloadAndInstallFullUpdate(checkData, context = activeUpdateCon
       requestFile(downloadUrl);
     });
 
-    global._pendingUpdateInstaller = savePath;
-    scheduleAutomaticInstall('localPath', savePath);
+    registerDownloadedUpdate({
+      version: checkData.version,
+      action: 'localPath',
+      installerPath: savePath,
+      context,
+      changelog: normalizeUpdateNotes(checkData.changelog || checkData.releaseNotes)
+    });
     return true;
 
   } catch (dlErr) {
@@ -2854,21 +2919,26 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
     const updateInfo = updateResult && updateResult.updateInfo;
     const hasDifferentialUpdate = updateInfo
       && VERSION_PATTERN.test(String(updateInfo.version || ''))
-      && isNewerVersion(updateInfo.version, app.getVersion());
+      && isNewerVersion(updateInfo.version, app.getVersion())
+      && runtimeUpdatePolicy.shouldDownload(updateInfo.version);
+    const downloadableFullMetadata = fullMetadata
+      && runtimeUpdatePolicy.shouldDownload(fullMetadata.version)
+      ? fullMetadata
+      : null;
 
     if (hasDifferentialUpdate) {
       autoUpdaterDownloadState.reset();
       const differentialMetadata = {
         ...updateInfo,
-        changelog: fullMetadata && fullMetadata.version === updateInfo.version
-          ? fullMetadata.changelog
+        changelog: downloadableFullMetadata && downloadableFullMetadata.version === updateInfo.version
+          ? downloadableFullMetadata.changelog
           : updateInfo.releaseNotes
       };
       const differentialBase = await inspectDifferentialBase();
-      if (fullMetadata && differentialBase.known && !differentialBase.available) {
+      if (downloadableFullMetadata && differentialBase.known && !differentialBase.available) {
         console.warn('[自动更新] 本机缺少 installer.exe，跳过差分下载');
         return downloadAndInstallFullUpdate(
-          fullMetadata,
+          downloadableFullMetadata,
           context,
           MISSING_DIFFERENTIAL_BASE_MESSAGE
         );
@@ -2884,9 +2954,9 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
         autoUpdaterDownloadState.switchToFullUpdate('download-error', err.stack || err.message);
         autoUpdaterActive = false;
         console.error('差分更新下载失败，立即切换完整包续传:', err.message);
-        if (fullMetadata) {
+        if (downloadableFullMetadata) {
           return downloadAndInstallFullUpdate(
-            fullMetadata,
+            downloadableFullMetadata,
             context,
             DIFFERENTIAL_FALLBACK_MESSAGE
           );
@@ -2897,8 +2967,8 @@ async function checkAndApplyAutomaticUpdate(context = 'startup') {
       }
     }
 
-    if (fullMetadata) {
-      return downloadAndInstallFullUpdate(fullMetadata, context);
+    if (downloadableFullMetadata) {
+      return downloadAndInstallFullUpdate(downloadableFullMetadata, context);
     }
 
     if (hasDifferentialUpdate) return 'failed';
@@ -3406,6 +3476,20 @@ app.whenReady().then(async () => {
     }
   }
 
+  // 下一版本只执行一次：将所有用户的快捷模式统一为当前六个基础模式。
+  // 迁移标记与模式列表在同一次原子写入中保存；后续用户增删改不会再次被覆盖。
+  if ((Number(storeGet('modeBaselineRevision', 0)) || 0) < MODE_BASELINE_REVISION) {
+    let replacedModeBaseline = false;
+    const migratedModes = storeUpdate(data => {
+      replacedModeBaseline = applyModeBaselineMigration(data);
+    });
+    if (migratedModes && replacedModeBaseline) {
+      console.log(`[存储] 快捷模式已一次性替换为六个基础模式（v${MODE_BASELINE_REVISION}）`);
+    } else if (!migratedModes) {
+      console.error('[存储] 快捷模式基础配置迁移失败，已保留原本地配置');
+    }
+  }
+
   // 恢复上次活跃的账号ID
   activeMerchantAccountId = storeGet('lastMerchantAccountId', '');
   activeWmsAccountId = storeGet('lastWmsAccountId', '');
@@ -3469,6 +3553,7 @@ app.on('before-quit', () => {
     jdPageWindow.close();
     jdPageWindow = null;
   }
+
   if (cpLogisticsTimer) {
     clearInterval(cpLogisticsTimer);
     cpLogisticsTimer = null;
@@ -3497,8 +3582,12 @@ ipcMain.on('window-close', (event) => {
 // 渲染进程确认退出
 ipcMain.on('confirm-close', async () => {
   try {
-    if (pendingUpdateAction) {
-      await installPendingUpdateAndQuit(pendingUpdateAction, global._pendingUpdateInstaller);
+    const pending = runtimeUpdatePolicy.getPending();
+    if (pending || pendingUpdateAction) {
+      await installPendingUpdateAndQuit(
+        pending?.action || pendingUpdateAction,
+        pending?.installerPath || global._pendingUpdateInstaller
+      );
       return;
     }
     await releaseCurrentSubscriptionSession();
@@ -3646,18 +3735,10 @@ ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
 });
 
 function requestPendingUpdateInstall() {
-  if (global._pendingUpdateInstaller) {
-    pendingUpdateAction = 'localPath';
-  } else {
-    pendingUpdateAction = 'autoUpdater';
-  }
-  // 只有主窗口有退出确认弹窗UI；登录窗口/订阅窗口直接安装
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('show-close-confirm');
-    return;
-  }
-  installPendingUpdateAndQuit(pendingUpdateAction, global._pendingUpdateInstaller)
-    .catch(reportUpdateInstallFailure);
+  const pending = runtimeUpdatePolicy.getPending();
+  const action = pending?.action || (global._pendingUpdateInstaller ? 'localPath' : 'autoUpdater');
+  const installerPath = pending?.installerPath || global._pendingUpdateInstaller || null;
+  scheduleAutomaticInstall(action, installerPath);
 }
 
 // 渲染进程确认安装更新（兼容旧版 preload 的 fallback）
@@ -3668,6 +3749,15 @@ ipcMain.on('confirm-update-install', () => {
 // 渲染进程确认安装更新（服务器下载的安装包）
 ipcMain.on('confirm-update-install-by-path', () => {
   requestPendingUpdateInstall();
+});
+
+ipcMain.on('defer-update-install', () => {
+  if (automaticInstallScheduled) return;
+  const pending = runtimeUpdatePolicy.getPending();
+  if (!pending || !runtimeUpdatePolicy.defer()) return;
+  automaticInstallScheduled = false;
+  pendingUpdateAction = pending.action;
+  console.log(`[自动更新] 用户选择稍后安装 v${pending.version}，退出软件时自动安装`);
 });
 
 // 渲染进程点击浏览器下载
@@ -3874,63 +3964,7 @@ ipcMain.handle('get-csrf-token', async () => {
 
 // ========== IPC: 快捷模式 ==========
 
-const DEFAULT_MODES = [
-  {
-    name: '入仓打标',
-    config: {
-      importShopProduct: true, enableShopProduct: true, enableMasterData: true,
-      disableMasterData: false, inventoryRatio: true, inventoryRatioValue: '100',
-      jdLabel: true, enablePurchase: true, disableShopProduct: false,
-      logistics: true, cancelJdLabel: false,
-      logLength: '210', logWidth: '150', logHeight: '100',
-      stepDelay: 10, purchaseQty: 10, autoAccept: true
-    }
-  },
-  {
-    name: '添加库存',
-    config: {
-      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
-      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
-      jdLabel: false, enablePurchase: true, disableShopProduct: false,
-      logistics: false, cancelJdLabel: false,
-      logLength: '210', logWidth: '150', logHeight: '100',
-      stepDelay: 60, purchaseQty: 10, autoAccept: true
-    }
-  },
-  {
-    name: '打标（仅勾标）',
-    config: {
-      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
-      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
-      jdLabel: true, enablePurchase: false, disableShopProduct: false,
-      logistics: false, cancelJdLabel: false,
-      logLength: '210', logWidth: '150', logHeight: '100',
-      stepDelay: 60, purchaseQty: 10, autoAccept: true
-    }
-  },
-  {
-    name: '下标（取消京配）',
-    config: {
-      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
-      disableMasterData: false, inventoryRatio: false, inventoryRatioValue: '100',
-      jdLabel: false, enablePurchase: false, disableShopProduct: false,
-      logistics: false, cancelJdLabel: true,
-      logLength: '210', logWidth: '150', logHeight: '100',
-      stepDelay: 10, purchaseQty: 10, autoAccept: true
-    }
-  },
-  {
-    name: '标准下标（含清库+停用）',
-    config: {
-      importShopProduct: false, enableShopProduct: false, enableMasterData: false,
-      disableMasterData: true, inventoryRatio: true, inventoryRatioValue: '0',
-      jdLabel: true, enablePurchase: false, disableShopProduct: true,
-      logistics: false, cancelJdLabel: false,
-      logLength: '210', logWidth: '150', logHeight: '100',
-      stepDelay: 60, purchaseQty: 10, autoAccept: true
-    }
-  }
-];
+const DEFAULT_MODES = cloneModeBaseline();
 
 ipcMain.handle('get-modes', async () => {
   return storeGet('modes', DEFAULT_MODES);
@@ -4058,7 +4092,9 @@ ipcMain.handle('generate-excel', async (event, { type, data }) => {
           length: data.length,
           width: data.width,
           height: data.height,
-          weight: data.weight
+          weight: data.weight,
+          useDepartmentGoodsCode: data.useDepartmentGoodsCode === true,
+          outputFileName: data.outputFileName
         });
         break;
 
@@ -7034,6 +7070,153 @@ ipcMain.handle('upload-excel', async (event, { type, filePath, params }) => {
   }
 });
 
+// 查询店铺库存：供京配打标任务的可选库存前置门禁使用。
+ipcMain.handle('query-shop-stock', async (event, request = {}) => {
+  const skus = normalizeShopStockSkus(request.skus).slice(0, 5000);
+  const requestedSellerId = String(request.sellerId || '').trim();
+  const requestedDeptId = String(request.deptId || '').trim();
+  const requestedShopId = String(request.shopId || '').trim();
+  const requestedWarehouseNo = String(request.warehouseNo || '').trim();
+  const activeSellerId = String(storeGet('sellerId', '') || '').trim();
+
+  if (skus.length === 0) {
+    return { success: false, fatal: true, error: '库存检查缺少SKU' };
+  }
+  if (!requestedSellerId || !requestedDeptId || !requestedShopId || !requestedWarehouseNo) {
+    return { success: false, fatal: true, error: '库存检查缺少商家、事业部、店铺或仓库信息' };
+  }
+  if (!activeSellerId || activeSellerId !== requestedSellerId) {
+    return {
+      success: false,
+      retryable: true,
+      error: '当前商家账号与创建任务时不一致，已暂停放行；请切换回原账号'
+    };
+  }
+
+  try {
+    const merchantSession = getMerchantSession();
+    const cookies = await merchantSession.cookies.get({ url: 'https://o.jdl.com/' });
+    const csrfCookie = cookies.find(cookie => cookie.name === 'csrfToken');
+    const csrfToken = String(csrfCookie?.value || '').trim();
+    if (!csrfToken) {
+      return { success: false, retryable: true, error: '当前商家端Cookie不完整，请重新登录商家端' };
+    }
+
+    const allRows = [];
+    const batchSize = 100;
+    const pageSize = 100;
+    for (let batchIndex = 0; batchIndex < skus.length; batchIndex += batchSize) {
+      const batch = skus.slice(batchIndex, batchIndex + batchSize);
+      let pageStart = 0;
+      let pageNumber = 0;
+      let paginationComplete = false;
+
+      while (pageNumber < 100) {
+        const body = buildShopStockForm({
+          csrfToken,
+          sellerId: requestedSellerId,
+          skus: batch,
+          start: pageStart,
+          length: pageSize,
+          echo: pageNumber + 1
+        });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        let response;
+        try {
+          response = await merchantSession.fetch(
+            `https://o.jdl.com/shopStock/queryShopStockList.do?rand=${Math.random()}`,
+            {
+              method: 'POST',
+              headers: {
+                Accept: 'application/json, text/javascript, */*; q=0.01',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest',
+                Origin: 'https://o.jdl.com',
+                Referer: 'https://o.jdl.com/goToMainIframe.do'
+              },
+              body: body.toString(),
+              signal: controller.signal
+            }
+          );
+        } finally {
+          clearTimeout(timeout);
+        }
+
+        const responseText = await response.text();
+        if (response.status === 401 || response.status === 403 || response.redirected || isMerchantLoginPageUrl(response.url)) {
+          return { success: false, retryable: true, error: '商家端登录已失效，请重新登录后重试' };
+        }
+        if (!response.ok) {
+          return { success: false, retryable: true, error: `库存接口请求失败（HTTP ${response.status}）` };
+        }
+        if (/^\s*</.test(responseText)) {
+          return { success: false, retryable: true, error: '库存接口返回了登录页面，请重新登录商家端' };
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(responseText);
+        } catch (_) {
+          return { success: false, retryable: true, error: '库存接口返回格式异常' };
+        }
+
+        const message = String(payload?.msg || payload?.message || payload?.resultMessage || '').trim();
+        if (payload?.code != null && Number(payload.code) !== 200) {
+          return {
+            success: false,
+            retryable: true,
+            error: message || `库存接口返回错误码 ${payload.code}`
+          };
+        }
+        if (payload?.success === false) {
+          return { success: false, retryable: true, error: message || '库存接口查询失败' };
+        }
+
+        const responseData = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+        const rows = Array.isArray(responseData?.aaData) ? responseData.aaData : [];
+        allRows.push(...rows);
+        pageNumber++;
+        pageStart += pageSize;
+
+        const total = Number(responseData?.iTotalDisplayRecords ?? responseData?.iTotalRecords);
+        if (rows.length < pageSize || (Number.isFinite(total) && total > 0 && pageStart >= total)) {
+          paginationComplete = true;
+          break;
+        }
+      }
+
+      if (!paginationComplete) {
+        return { success: false, retryable: true, error: '库存接口分页数量异常，请稍后重试' };
+      }
+    }
+
+    const summary = summarizeShopStockRows({
+      skus,
+      rows: allRows,
+      sellerId: requestedSellerId,
+      deptId: requestedDeptId,
+      shopId: requestedShopId,
+      warehouseNo: requestedWarehouseNo
+    });
+    console.log('[库存门禁]', JSON.stringify({
+      sellerId: requestedSellerId,
+      deptId: requestedDeptId,
+      shopId: requestedShopId,
+      warehouseNo: requestedWarehouseNo,
+      total: summary.total,
+      inStockCount: summary.inStockCount,
+      zeroStockCount: summary.zeroStockCount,
+      missingCount: summary.missingCount
+    }));
+    return { success: true, ...summary, checkedAt: new Date().toISOString() };
+  } catch (error) {
+    const message = error?.name === 'AbortError' ? '库存接口请求超时' : String(error?.message || error || '库存查询异常');
+    console.error('[库存门禁] 查询失败:', message);
+    return { success: false, retryable: true, error: message };
+  }
+});
+
 // 查询店铺商品列表（根据 SKU 获取 CSG 编码）— 批量查询
 ipcMain.handle('query-shop-goods', async (event, { skus }) => {
   try {
@@ -9004,6 +9187,40 @@ ipcMain.handle('wms-accept-order', async (event, { inboundNo, warehouseNo, locat
     });
     if (!scanResult.success) {
       return { success: false, error: `扫描订单失败: ${scanResult.resultMessage || '未知错误'}` };
+    }
+
+    // WMS 会明确标记本单是否存在未维护物流属性的商品。必须使用这个标记和
+    // queryInboundOrderNewSku 返回的 CMG 清单，不能用“无可验收明细”猜测。
+    const scanRecord = getWmsScanRecord(scanResult, inboundNo);
+    if (needsWmsLogisticsRepair(scanRecord)) {
+      const missingResult = await wmsApiCall(
+        '/receiving/orderCenter/queryInboundOrderNewSku',
+        buildWmsMissingLogisticsQuery(inboundNo, warehouseNo)
+      );
+      if (!missingResult.success) {
+        return {
+          success: false,
+          error: `查询缺少物流属性商品失败: ${missingResult.resultMessage || '未知错误'}`
+        };
+      }
+
+      const logisticsItems = normalizeWmsMissingLogisticsItems(missingResult);
+      if (logisticsItems.length === 0) {
+        return {
+          success: false,
+          error: 'WMS 标记本单需要维护物流属性，但未返回待维护商品，请稍后重试'
+        };
+      }
+
+      console.log(`WMS 验收: ${inboundNo} 检测到 ${logisticsItems.length} 个商品需要维护物流属性`);
+      return {
+        success: false,
+        needsLogistics: true,
+        inboundNo,
+        ownerNo: String(scanRecord?.ownerNo || ''),
+        ownerName: String(scanRecord?.ownerName || ''),
+        logisticsItems
+      };
     }
 
     // Step 2: 分页获取全部可验收明细
