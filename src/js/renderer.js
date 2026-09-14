@@ -428,7 +428,6 @@ function enqueueLabelTasks({
   sourceTaskId = '',
   automationRunDate = '',
   autoCreated = false,
-  waitForInventoryBeforeLabel = false,
   inventorySellerId = ''
 }) {
   const normalizedSkus = [...new Set((Array.isArray(skus) ? skus : [])
@@ -447,8 +446,7 @@ function enqueueLabelTasks({
   const shopDeptName = shopOpt ? shopOpt.deptName : '';
   const taskConfig = config && typeof config === 'object' ? { ...config } : {};
   const waitForInventory = Boolean(
-    waitForInventoryBeforeLabel
-    || (taskConfig.jdLabel && taskConfig.inventoryCheckBeforeJdLabel)
+    taskConfig.jdLabel && taskConfig.inventoryCheckBeforeJdLabel
   );
   const resolvedInventorySellerId = String(inventorySellerId || shopOpt?.sellerId || '').trim();
 
@@ -609,7 +607,6 @@ function addTask(options = {}) {
     config: getCurrentConfig(),
     modeName: modeSelect.value || '自定义',
     sourceFileName: importedFileName || '',
-    waitForInventoryBeforeLabel: Boolean(options.waitForInventoryBeforeLabel),
     inventorySellerId: options.inventorySellerId || ''
   });
   if (!result.success) {
@@ -6463,11 +6460,6 @@ async function handleSmSend(type) {
   });
   smSendWarehouse.value = findSmDefaultWarehouse(sourceAccount, warehouseOptions);
 
-  const inventoryCheckOff = document.querySelector('input[name="smSendInventoryCheck"][value="0"]');
-  if (inventoryCheckOff) inventoryCheckOff.checked = true;
-  const inventoryCheckRow = $('#smSendInventoryCheckRow');
-  if (inventoryCheckRow) inventoryCheckRow.style.display = smSendType === '打标' ? '' : 'none';
-
   modal.style.display = 'flex';
 }
 
@@ -6486,7 +6478,6 @@ async function confirmSmSend() {
   const modeName = $('#smSendMode').value;
   const targetShopId = $('#smSendShop').value;
   const targetWarehouseId = $('#smSendWarehouse').value;
-  const waitForInventoryBeforeLabel = document.querySelector('input[name="smSendInventoryCheck"]:checked')?.value === '1';
 
   if (!modeName) { showToast('请选择快捷模式'); return; }
 
@@ -6494,13 +6485,14 @@ async function confirmSmSend() {
   const modes = await window.electronAPI.getModes();
   const targetMode = modes.find(m => m.name === modeName);
   if (!targetMode) { showToast('快捷模式不存在，请重新选择'); return; }
+  const inventoryCheckEnabled = Boolean(
+    smSendType === '打标'
+    && targetMode.config?.jdLabel
+    && targetMode.config?.inventoryCheckBeforeJdLabel
+  );
 
   let inventorySellerId = '';
-  if (waitForInventoryBeforeLabel) {
-    if (smSendType !== '打标' || !targetMode.config?.jdLabel) {
-      showToast('库存前置检查仅支持包含“京配打标生效”的打标模式');
-      return;
-    }
+  if (inventoryCheckEnabled) {
     if (!targetShopId) { showToast('查询库存打标必须选择目标店铺'); return; }
     if (!targetWarehouseId) { showToast('查询库存打标必须选择目标仓库'); return; }
 
@@ -6540,8 +6532,8 @@ async function confirmSmSend() {
     modeSelect.classList.toggle('placeholder', !modeSelect.value);
   }
 
-  // 5. 调用已有的 addTask() 添加到任务列表；弹窗选择和快捷模式配置均可开启库存门禁。
-  const addResult = addTask({ waitForInventoryBeforeLabel, inventorySellerId });
+  // 5. 调用已有的 addTask() 添加到任务列表；库存门禁只采用快捷模式配置。
+  const addResult = addTask({ inventorySellerId });
   if (!addResult?.success) return;
 
   // 6. 更新统计
@@ -6550,7 +6542,7 @@ async function confirmSmSend() {
 
   // 7. 关闭弹窗并切换页面
   closeSmSendModal();
-  addSmLog('success', `已发送 ${skus.length} 个SKU到${smSendType}任务（模式：${modeName}${waitForInventoryBeforeLabel ? '，已开启库存前置检查' : ''}）`);
+  addSmLog('success', `已发送 ${skus.length} 个SKU到${smSendType}任务（模式：${modeName}${inventoryCheckEnabled ? '，已开启库存前置检查' : ''}）`);
 
   // 切换到店铺打标页面
   document.querySelector('[data-page="shopLabel"]').click();

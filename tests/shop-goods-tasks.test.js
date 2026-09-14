@@ -326,8 +326,10 @@ assert.match(renderer, /缺少商家ID（vendorId），跳过上传/,
   '商品导入缺少vendorId时必须明确阻止上传');
 assert.match(renderer, /smSendWarehouse\.value = findSmDefaultWarehouse\(sourceAccount, warehouseOptions\)/,
   '单次发送必须采用源店铺预设的默认仓库');
-assert.match(indexHtml, /name="smSendInventoryCheck" value="1"[\s\S]*name="smSendInventoryCheck" value="0" checked/,
-  '单次发送弹窗必须提供默认关闭的库存前置检查开关');
+assert.doesNotMatch(indexHtml, /smSendInventoryCheck|是否查询库存打标/,
+  '单次发送弹窗不得重复提供库存校验开关');
+assert.match(renderer, /const inventoryCheckEnabled = Boolean\([\s\S]*targetMode\.config\?\.jdLabel[\s\S]*targetMode\.config\?\.inventoryCheckBeforeJdLabel[\s\S]*addTask\(\{ inventorySellerId \}\)/,
+  '单次发送必须只采用快捷模式中的库存校验配置');
 assert.match(preload, /queryShopStock:\s*\(params\) => ipcRenderer\.invoke\('query-shop-stock', params\)/,
   '渲染层必须通过受控IPC查询库存');
 assert.match(main, /ipcMain\.handle\('query-shop-stock'[\s\S]*activeSellerId !== requestedSellerId/,
