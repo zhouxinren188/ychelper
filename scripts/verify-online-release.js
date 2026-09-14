@@ -282,28 +282,28 @@ async function main() {
     }, 200, 'v1.0.83 安装器启动热修检测');
     const recoveryData = await recoveryCheck.json();
     if (!recoveryData.needUpdate || recoveryData.requiresFullUpdate !== false
-      || recoveryData.baseVersion !== '1.0.83' || recoveryData.version !== '1.0.83.1'
+      || recoveryData.baseVersion !== '1.0.83' || recoveryData.version !== '1.0.83.2'
       || !recoveryData.size || !recoveryData.sha512) {
-      throw new Error('v1.0.83 未获得 v1.0.83.1 安装器启动热修');
+      throw new Error('v1.0.83 未获得 v1.0.83.2 安装器启动热修');
     }
 
     const recoveryDownload = await expectResponse(`${BASE_URL}/api/update/download?${recoverySessionQuery}`, {
       headers: { 'User-Agent': recoveryUserAgent },
       cache: 'no-store'
-    }, 200, 'v1.0.83.1 安装器启动热修下载');
+    }, 200, 'v1.0.83.2 安装器启动热修下载');
     const recoveryBuffer = Buffer.from(await recoveryDownload.arrayBuffer());
     const recoverySha512 = crypto.createHash('sha512').update(recoveryBuffer).digest('base64');
     if (recoveryBuffer.length !== Number(recoveryData.size)
       || recoverySha512 !== recoveryData.sha512
       || recoveryBuffer[0] !== 0x50 || recoveryBuffer[1] !== 0x4b) {
-      throw new Error('v1.0.83.1 安装器启动热修大小、SHA-512 或 ZIP 格式无效');
+      throw new Error('v1.0.83.2 安装器启动热修大小、SHA-512 或 ZIP 格式无效');
     }
     const recoveryZip = new AdmZip(recoveryBuffer);
     const recoveryLauncher = recoveryZip.readAsText('src/js/deferredInstaller.js');
     if (!recoveryLauncher.includes('launchInstallerBeforeApplicationExit')
       || !recoveryLauncher.includes('launchInstallerAfterApplicationExit')
       || !recoveryLauncher.includes("'--updated', '--force-run'")) {
-      throw new Error('v1.0.83.1 安装器启动热修缺少兼容别名或正式 NSIS 启动参数');
+      throw new Error('v1.0.83.2 安装器启动热修缺少兼容别名或正式 NSIS 启动参数');
     }
 
     const recoveredLatestResponse = await expectResponse(`${BASE_URL}/latest.yml?installer-recovery-complete=${Date.now()}&${recoverySessionQuery}`, {
@@ -313,7 +313,7 @@ async function main() {
     const recoveredLatestYml = await recoveredLatestResponse.text();
     const recoveredLatestVersion = ((recoveredLatestYml.match(/^version:\s*(.+)$/m) || [])[1] || '').trim();
     if (recoveredLatestVersion !== version) {
-      throw new Error(`v1.0.83.1 下载完成后 latest.yml 未放行到 v${version}`);
+      throw new Error(`v1.0.83.2 下载完成后 latest.yml 未放行到 v${version}`);
     }
   }
 
@@ -382,7 +382,7 @@ async function main() {
   console.log('  ✓ 安装包支持 HTTP Range 断点续传');
   console.log('  ✓ 差分更新端点支持 multipart/byteranges');
   if (baselines.includes('1.0.83')) {
-    console.log(`  ✓ v1.0.83 会先应用 v1.0.83.1 安装器修复，再放行到 v${version}`);
+    console.log(`  ✓ v1.0.83 会先应用 v1.0.83.2 安装器修复，再放行到 v${version}`);
   }
   if (baselines.length > 0) {
     console.log(`  ✓ ${baselines.map(item => `v${item}`).join('、')} 均有可验收的跨版本升级路径到 v${version}`);
