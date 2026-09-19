@@ -38,7 +38,7 @@ assert.strictEqual(form.get('warehouseId'), '');
 assert.doesNotThrow(() => JSON.parse(form.get('aoData')));
 
 const queryContext = {
-  skus: ['1001', '1002', '1003'],
+  skus: ['1001', '1002', '1003', '1004'],
   sellerId: '20000023823',
   deptId: '26408279105374',
   shopId: '92708941',
@@ -57,13 +57,31 @@ const summary = summarizeShopStockRows({
 });
 
 assert.strictEqual(summary.ready, false);
-assert.strictEqual(summary.total, 3);
+assert.strictEqual(summary.total, 4);
 assert.strictEqual(summary.inStockCount, 1);
 assert.strictEqual(summary.zeroStockCount, 1);
-assert.strictEqual(summary.missingCount, 1);
+assert.strictEqual(summary.missingCount, 2);
 assert.deepStrictEqual(summary.inStockSkus, ['1001']);
 assert.deepStrictEqual(summary.zeroStockSkus, ['1002']);
-assert.deepStrictEqual(summary.missingSkus, ['1003']);
+assert.deepStrictEqual(summary.missingSkus, ['1003', '1004']);
+assert.deepStrictEqual(summary.missingReasonCounts, {
+  noRecord: 1,
+  sellerMismatch: 1,
+  deptMismatch: 0,
+  shopMismatch: 0,
+  warehouseMismatch: 1
+});
+assert.deepStrictEqual(summary.missingDiagnostics, [
+  {
+    sku: '1003',
+    reasons: ['仓库不一致', '商家不一致'],
+    candidates: [
+      { sellerId: '20000023823', deptId: '26408279105374', shopId: '92708941', warehouseNo: 'other-warehouse' },
+      { sellerId: 'wrong-seller', deptId: '26408279105374', shopId: '92708941', warehouseNo: '800018086' }
+    ]
+  },
+  { sku: '1004', reasons: ['未返回库存记录'], candidates: [] }
+]);
 assert.strictEqual(summary.latestUpdateTime, '2026-09-13T15:21:13.000Z');
 
 const ready = summarizeShopStockRows({
@@ -79,6 +97,6 @@ const ready = summarizeShopStockRows({
   }))
 });
 assert.strictEqual(ready.ready, true);
-assert.strictEqual(ready.inStockCount, 3);
+assert.strictEqual(ready.inStockCount, 4);
 
 console.log('店铺库存查询与严格门禁测试通过');

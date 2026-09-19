@@ -31,6 +31,9 @@ assert.match(subscriptionHtml,
 assert.match(renderer,
   /function canUseFeature\(feature\) \{\s*if \(currentSubscriptionStatus === 'trial'\) return true;/,
   '试用状态必须放行全部功能，不能按基础版档位拦截打单出库');
+assert.match(renderer,
+  /function renderCpLogisticsLog\(history\) \{[\s\S]*?logEl\.replaceChildren\(\);\s*\/\/[^\n]*\s*logEl\.scrollTop = 0;/,
+  '物流服务执行记录刷新后必须回到顶部，保证最新结果可见');
 
 assert.match(indexHtml,
   /<div class="ao-action-bar sm-action-group">\s*<button class="btn sm-action-btn sm-action-btn-primary" id="aoQueryBtn">查询<\/button>\s*<button class="btn sm-action-btn" id="aoResetBtn">重置<\/button>\s*<button class="btn sm-action-btn" id="aoBatchBtn">批量处理<\/button>/,

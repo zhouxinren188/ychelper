@@ -72,9 +72,11 @@ const mainSource = fs.readFileSync(path.join(rootDir, 'main.js'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(rootDir, 'src', 'js', 'renderer.js'), 'utf8');
 assert.match(mainSource, /\/receiving\/orderCenter\/queryInboundOrderNewSku/);
 assert.match(mainSource, /needsLogistics:\s*true/);
-assert.doesNotMatch(rendererSource, /ownerNo !== currentDeptNo/);
-assert.match(rendererSource, /for \(const requirement of requirements\)/);
-assert.match(rendererSource, /WMS_LOGISTICS_REPAIR_COOLDOWN_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/);
-assert.match(rendererSource, /1分钟后自动重试/);
+assert.match(rendererSource, /normalizeWmsDepartmentNo\(requirement\?\.ownerNo\)/);
+assert.match(rendererSource, /ownerNo !== currentDept\.deptNo/);
+assert.match(rendererSource, /WMS_LOGISTICS_REPAIR_BATCH_SIZE\s*=\s*2000/);
+assert.match(rendererSource, /splitWmsLogisticsRepairBatches\(cmgSkus\)/);
+assert.match(rendererSource, /wmsSubmittedLogisticsSkus\.set/);
+assert.match(rendererSource, /1分钟后自动重试未提交的批次/);
 
 console.log('WMS 缺物流属性自动补录测试通过');

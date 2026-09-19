@@ -13,6 +13,7 @@ const loginHtml = fs.readFileSync(path.join(root, 'src', 'login.html'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'utf8');
 const cookieManager = fs.readFileSync(path.join(root, 'src', 'js', 'cookieManager.js'), 'utf8');
+const durableStoreFile = fs.readFileSync(path.join(root, 'durable-store-file.js'), 'utf8');
 const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 
 assert.match(loginHtml, /const rememberPassword = rememberCheck\.checked/,
@@ -61,14 +62,32 @@ assert.match(main, /config\.json\.before-auto-recovery|before-auto-recovery/,
   '自动恢复前必须保留当前配置以便回退');
 assert.match(main, /saveStoreRecoverySnapshot\(currentRaw, currentData\)/,
   '启动时必须为有效账号配置保留恢复快照');
+assert.match(main, /STORE_PREVIOUS_SNAPSHOT_PATH/,
+  '账号配置必须保留最新和上一代两份恢复快照');
+assert.match(main, /if \(isDeepStrictEqual\(data\[key\], value\)\) return true;/,
+  '配置值没有变化时不得重复写入整个配置文件');
+assert.match(main, /saveStoreRecoverySnapshot\(raw, data\)/,
+  '每次配置安全落盘后必须更新恢复快照');
+assert.match(durableStoreFile, /fsImpl\.fsyncSync\(fileHandle\)/,
+  '配置替换前后必须强制刷新文件数据');
+assert.match(main, /CP_LOGISTICS_RUNTIME_PATH[\s\S]{0,3000}saveCpLogisticsRuntimeFile/,
+  '物流定时完成记录必须独立持久化，避免主配置恢复后重复执行');
 assert.match(main, /if \(!snapshotRaw\.startsWith\(ENCRYPTED_STORE_PREFIX\)\)[\s\S]{0,420}safeStorage\.encryptString\(json\)/,
   '历史明文配置生成恢复快照前必须先使用系统安全存储加密');
 assert.match(main, /data\.csrfToken = profile\.csrfToken \|\| '';/,
   '切换商家账号时必须覆盖或清空 CSRF Token');
 assert.match(main, /data\.sellerId = profile\.sellerId \|\| '';/,
   '切换商家账号时必须覆盖或清空 sellerId');
-assert.match(main, /const identityVerified = !!\(/,
-  '商家端进入后台后必须执行身份接口验证');
+assert.match(main, /const merchantIdentity = evaluateMerchantIdentity\(apiData\)/,
+  '商家端进入后台后必须校验真实事业部或店铺身份');
+assert.match(main, /nonMerchant: deptApiAvailable && shopApiAvailable && deptRows\.length === 0 && shopRows\.length === 0/,
+  '事业部和店铺接口均为空时必须识别为非云仓商家账号');
+assert.match(main, /当前登录的京东账号不是云仓商家端账号/,
+  '非云仓商家账号必须给出明确提示');
+assert.match(main, /await resetRejectedMerchantLogin\(\)/,
+  '拒绝非云仓商家账号后必须清理无效会话并返回登录页');
+assert.doesNotMatch(main, /departmentName:\s*'已登录用户'/,
+  '不得再用“已登录用户”伪装缺失的事业部身份');
 assert.match(main, /webLoginWindow = new BrowserWindow\(\{[\s\S]{0,220}show: false/,
   '商家端窗口必须默认隐藏，避免工作台页面闪现');
 assert.match(main, /did-start-navigation[\s\S]{0,500}webLoginWindow\.hide\(\)/,

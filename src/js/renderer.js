@@ -7,6 +7,7 @@ let labelTaskPersistenceChain = Promise.resolve();
 let smAutomaticExecutionPending = false;
 let shopOptions = []; // 店铺选项数据（当前事业部过滤后）
 let allShopOptions = []; // 全量店铺选项（不受事业部筛选影响）
+let merchantDeptPairs = []; // 与店铺列表来自同一份登录资料，用于创建任务时关联商家编号
 let importedFileName = ''; // 当前导入的文本文件名（无扩展名）
 let currentTier = 'basic'; // 当前订阅版本：basic, standard, premium
 let currentSubscriptionStatus = ''; // 当前订阅状态：trial, active, expired...
@@ -74,6 +75,7 @@ const logBox = $('#logBox');
 // ========== 加载用户数据 ==========
 async function loadUserData() {
   const data = await window.electronAPI.getUserData();
+  merchantDeptPairs = Array.isArray(data?.deptPairs) ? data.deptPairs : [];
   if (!data) return;
 
   // 商家名称
@@ -418,6 +420,19 @@ function initEventListeners() {
 }
 
 // ========== 添加任务 ==========
+function resolveLabelTaskInventorySellerId(shopOption) {
+  if (!shopOption) return '';
+  const deptId = String(shopOption.deptId || '').trim();
+  const deptNo = String(shopOption.deptNo || '').trim();
+  const targetDept = (deptId && merchantDeptPairs.find(pair =>
+    String(pair?.id || pair?.deptId || '').trim() === deptId
+  )) || (deptNo && merchantDeptPairs.find(pair =>
+    String(pair?.deptNo || '').trim() === deptNo
+  ));
+  // 只采用目标店铺所属事业部或店铺自身的编号，不能回退到其他事业部/账号。
+  return String(targetDept?.sellerId || shopOption.sellerId || '').trim();
+}
+
 function enqueueLabelTasks({
   skus,
   shopId,
@@ -427,8 +442,7 @@ function enqueueLabelTasks({
   sourceFileName = '',
   sourceTaskId = '',
   automationRunDate = '',
-  autoCreated = false,
-  inventorySellerId = ''
+  autoCreated = false
 }) {
   const normalizedSkus = [...new Set((Array.isArray(skus) ? skus : [])
     .map(value => String(value || '').trim())
@@ -448,7 +462,9 @@ function enqueueLabelTasks({
   const waitForInventory = Boolean(
     taskConfig.jdLabel && taskConfig.inventoryCheckBeforeJdLabel
   );
-  const resolvedInventorySellerId = String(inventorySellerId || shopOpt?.sellerId || '').trim();
+  const resolvedInventorySellerId = waitForInventory
+    ? resolveLabelTaskInventorySellerId(shopOpt)
+    : '';
 
   // 其他步骤（非京配/非采购）是否有勾选
   const hasOtherSteps = taskConfig.importShopProduct || taskConfig.enableShopProduct ||
@@ -591,7 +607,7 @@ async function confirmEnqueuedLabelTasksPersisted(result) {
   throw new Error(saved?.error || '打标任务保存失败');
 }
 
-function addTask(options = {}) {
+function addTask() {
   const skuText = skuInput.value.trim();
   if (!skuText) {
     showToast('请输入商品SKU');
@@ -606,8 +622,7 @@ function addTask(options = {}) {
     warehouseId: warehouseSelect.value,
     config: getCurrentConfig(),
     modeName: modeSelect.value || '自定义',
-    sourceFileName: importedFileName || '',
-    inventorySellerId: options.inventorySellerId || ''
+    sourceFileName: importedFileName || ''
   });
   if (!result.success) {
     showToast(result.error);
@@ -1050,6 +1065,7 @@ async function waitForInventoryBeforeJdLabel(task, skuLabel) {
   }
 
   let attempt = 0;
+  let previousMissingDiagnosis = '';
   while (!stopRequested) {
     attempt++;
     addLog('info', `[${skuLabel}] 库存前置检查第${attempt}次：正在查询${task.skus.length}个SKU...`);
@@ -1079,6 +1095,21 @@ async function waitForInventoryBeforeJdLabel(task, skuLabel) {
         'warn',
         `[${skuLabel}] 库存尚未齐全：已就绪${result.inStockCount}/${result.total}，零库存${result.zeroStockCount}，未返回${result.missingCount}；10秒后重查`
       );
+      if (result.missingCount > 0 && result.missingReasonCounts) {
+        const diagnosis = JSON.stringify(result.missingReasonCounts);
+        if (diagnosis !== previousMissingDiagnosis) {
+          const counts = result.missingReasonCounts;
+          const samples = (Array.isArray(result.missingDiagnostics) ? result.missingDiagnostics : [])
+            .slice(0, 5)
+            .map(item => `${item.sku}（${(item.reasons || []).join('、')}）`)
+            .join('；');
+          addLog(
+            'warn',
+            `[${skuLabel}] 未返回诊断：无记录${counts.noRecord || 0}，商家不一致${counts.sellerMismatch || 0}，事业部不一致${counts.deptMismatch || 0}，店铺不一致${counts.shopMismatch || 0}，仓库不一致${counts.warehouseMismatch || 0}${samples ? `；样例：${samples}` : ''}`
+          );
+          previousMissingDiagnosis = diagnosis;
+        }
+      }
     } else {
       addLog('warn', `[${skuLabel}] 库存查询异常：${result?.error || '未知错误'}；10秒后重试`);
     }
@@ -1095,7 +1126,8 @@ async function waitForInventoryBeforeJdLabel(task, skuLabel) {
 
 // ========== 步骤执行（生成Excel + 预留API上传） ==========
 // ========== 带限频重试的上传函数 ==========
-async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
+async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5, logWriter = addLog) {
+  const writeLog = typeof logWriter === 'function' ? logWriter : addLog;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const uploadRes = await window.electronAPI.uploadExcel(uploadParams);
     const d = uploadRes?.data;
@@ -1125,12 +1157,12 @@ async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
         && resMsg.includes('导入成功')
         && Boolean(logisticsTaskNo);
       if (logisticsAccepted) {
-        addLog('success', `[${sku}] ${label}: ${resMsg}`);
+        writeLog('success', `[${sku}] ${label}: ${resMsg}`);
         return uploadRes;
       }
 
       if (attempt + 1 < maxRetries) {
-        addLog(
+        writeLog(
           'warn',
           `[${sku}] ${label}未取得WLSX任务编号: ${resMsg || '返回结果异常'}，1分钟后重试 (${attempt + 1}/${maxRetries})...`
         );
@@ -1139,7 +1171,7 @@ async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
       }
 
       const failureMessage = resMsg || '未取得WLSX任务编号';
-      addLog('error', `[${sku}] ${label}失败: ${failureMessage}（已重试${maxRetries}次）`);
+      writeLog('error', `[${sku}] ${label}失败: ${failureMessage}（已重试${maxRetries}次）`);
       throw new Error(`${label}失败: ${failureMessage}`);
     }
 
@@ -1149,29 +1181,29 @@ async function uploadWithRetry(uploadParams, label, sku, maxRetries = 5) {
         || resMsg.includes('后重试') || resMsg.includes('稍后再试'));
     if (isRateLimit) {
       if (attempt + 1 < maxRetries) {
-        addLog('warn', `[${sku}] ${label}: ${resMsg}，1分钟后重试 (${attempt + 1}/${maxRetries})...`);
+        writeLog('warn', `[${sku}] ${label}: ${resMsg}，1分钟后重试 (${attempt + 1}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, 60000));
         continue;
       }
-      addLog('error', `[${sku}] ${label}失败: ${resMsg}（重试次数已耗尽）`);
+      writeLog('error', `[${sku}] ${label}失败: ${resMsg}（重试次数已耗尽）`);
       return uploadRes;
     }
 
     // 判断是否成功
     const isOk = uploadRes.success && (d?.result || d?.success || (d?.resultCode === 1 && (d?.failNum == null || d?.failNum === 0)));
     if (isOk) {
-      addLog('success', `[${sku}] ${label}: ${resMsg}`);
+      writeLog('success', `[${sku}] ${label}: ${resMsg}`);
       return uploadRes;
     }
 
     // 部分成功（有成功也有失败）
     if (uploadRes.success && d?.resultCode === 1 && d?.successNum > 0 && d?.failNum > 0) {
-      addLog('warn', `[${sku}] ${label}: ${resMsg}`);
+      writeLog('warn', `[${sku}] ${label}: ${resMsg}`);
       return uploadRes;
     }
 
     // 其他错误，不重试
-    addLog('error', `[${sku}] ${label}失败: ${resMsg}`);
+    writeLog('error', `[${sku}] ${label}失败: ${resMsg}`);
     return uploadRes;
   }
 }
@@ -2217,8 +2249,12 @@ let wmsAutoTimer = null;      // 自动验收定时器
 let wmsTotalAcceptedOrders = 0;  // 已验收单据数（运行期间累计）
 let wmsTotalAcceptedSkus = 0;    // 已验收SKU数（运行期间累计）
 const WMS_AUTO_INTERVAL = 1 * 60 * 1000; // 1分钟
-const WMS_LOGISTICS_REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
-let wmsLogisticsRepairLastSuccessAt = 0;
+// 商家端物流属性导入接口单次最多 2000 条。自动补录必须分批，避免整个
+// 仓库的缺失商品混在同一份导入文件里而被接口拒绝。
+const WMS_LOGISTICS_REPAIR_BATCH_SIZE = 2000;
+const WMS_LOGISTICS_REPAIR_BATCH_GAP_MS = 6000;
+const WMS_LOGISTICS_REPAIR_IMPORT_WAIT_MS = 10 * 60 * 1000;
+const wmsSubmittedLogisticsSkus = new Map();
 
 // WMS DOM 引用
 const wmsLoginBtn = $('#wmsLoginBtn');
@@ -2711,23 +2747,76 @@ async function handleWmsQuery() {
   }
 }
 
+function normalizeWmsDepartmentNo(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function getCurrentWmsRepairDepartment() {
+  const selected = deptSelect?.selectedOptions?.[0];
+  return {
+    deptNo: normalizeWmsDepartmentNo(deptSelect?.value),
+    deptName: String(selected?.dataset?.deptName || selected?.textContent || '').trim()
+  };
+}
+
+function splitWmsLogisticsRepairBatches(skus) {
+  const batches = [];
+  for (let index = 0; index < skus.length; index += WMS_LOGISTICS_REPAIR_BATCH_SIZE) {
+    batches.push(skus.slice(index, index + WMS_LOGISTICS_REPAIR_BATCH_SIZE));
+  }
+  return batches;
+}
+
+function pruneSubmittedWmsLogisticsSkus() {
+  const now = Date.now();
+  for (const [sku, expiresAt] of wmsSubmittedLogisticsSkus) {
+    if (expiresAt <= now) wmsSubmittedLogisticsSkus.delete(sku);
+  }
+}
+
 async function repairWmsMissingLogistics(requirements) {
-  const itemsBySku = new Map();
+  const currentDept = getCurrentWmsRepairDepartment();
+  if (!currentDept.deptNo) {
+    addWmsLog('error', '[自动验收] 未获取当前商家端事业部，已跳过物流属性补录');
+    return false;
+  }
+
+  const eligibleRequirements = [];
+  let skippedRequirements = 0;
   for (const requirement of requirements) {
+    const ownerNo = normalizeWmsDepartmentNo(requirement?.ownerNo);
+    if (ownerNo !== currentDept.deptNo) {
+      skippedRequirements++;
+      addWmsLog(
+        'warn',
+        `[自动验收] ${requirement?.inboundNo || '入库单'} 下发事业部“${ownerNo || '未返回'}”与当前事业部“${currentDept.deptNo}”不一致，跳过物流属性补录`
+      );
+      continue;
+    }
+    eligibleRequirements.push(requirement);
+  }
+
+  if (eligibleRequirements.length === 0) {
+    if (skippedRequirements > 0) {
+      addWmsLog('info', '[自动验收] 本轮缺物流属性的入库单均不属于当前事业部，未上传任何物流属性');
+    }
+    return true;
+  }
+
+  const itemsBySku = new Map();
+  for (const requirement of eligibleRequirements) {
     for (const item of Array.isArray(requirement?.logisticsItems) ? requirement.logisticsItems : []) {
       const sku = String(item?.sku || '').trim();
       if (sku && !itemsBySku.has(sku)) itemsBySku.set(sku, item);
     }
   }
-  const cmgSkus = [...itemsBySku.keys()];
-  if (cmgSkus.length === 0) return false;
+  const allCmgSkus = [...itemsBySku.keys()];
+  if (allCmgSkus.length === 0) return false;
 
-  const remainingMs = WMS_LOGISTICS_REPAIR_COOLDOWN_MS - (Date.now() - wmsLogisticsRepairLastSuccessAt);
-  if (remainingMs > 0) {
-    addWmsLog(
-      'info',
-      `[自动验收] 物流属性任务已提交，等待后台生效（约${Math.ceil(remainingMs / 60000)}分钟内不重复上传）`
-    );
+  pruneSubmittedWmsLogisticsSkus();
+  const cmgSkus = allCmgSkus.filter(sku => !wmsSubmittedLogisticsSkus.has(sku));
+  if (cmgSkus.length === 0) {
+    addWmsLog('info', '[自动验收] 当前事业部缺失商品的物流属性已提交，等待 WLSX 导入生效后再验收');
     return true;
   }
 
@@ -2738,46 +2827,58 @@ async function repairWmsMissingLogistics(requirements) {
     return false;
   }
 
+  const batches = splitWmsLogisticsRepairBatches(cmgSkus);
   addWmsLog(
     'warn',
-    `[自动验收] 检测到${requirements.length}个入库单、${cmgSkus.length}个商品缺少物流属性，正在自动补录...`
+    `[自动验收] 当前事业部“${currentDept.deptName || currentDept.deptNo}”检测到${eligibleRequirements.length}个入库单、${cmgSkus.length}个商品缺少物流属性，分${batches.length}批补录（每批最多${WMS_LOGISTICS_REPAIR_BATCH_SIZE}条）...`
   );
-  const generated = await window.electronAPI.generateExcel({
-    type: 'goodsLogistics',
-    data: {
-      skus: cmgSkus,
-      departmentId: '',
-      length: cfg.logLength,
-      width: cfg.logWidth,
-      height: cfg.logHeight,
-      weight: cfg.logWeight,
-      useDepartmentGoodsCode: true,
-      outputFileName: `GoodsLogisticsAutoRepair-${Date.now()}.xls`
-    }
-  });
-  if (!generated?.success) {
-    addWmsLog('error', `[自动验收] 生成物流属性文件失败: ${generated?.error || '未知错误'}`);
-    return false;
-  }
 
   try {
-    const uploaded = await uploadWithRetry({
-      type: 'goodsLogistics',
-      filePath: generated.filePath,
-      params: {}
-    }, '自动补录物流属性', `${cmgSkus.length}个商品`, 1);
-    const uploadMessage = uploaded?.data?.data || uploaded?.data?.msg || '';
-    const taskNo = typeof uploadMessage === 'string' ? uploadMessage.match(/\bWLSX\d+\b/i)?.[0] : '';
-    wmsLogisticsRepairLastSuccessAt = Date.now();
-    addWmsLog(
-      'success',
-      `[自动验收] 物流属性已提交${taskNo ? `（${taskNo}）` : ''}，下轮扫描继续验收`
-    );
+    for (let index = 0; index < batches.length; index++) {
+      const batch = batches[index];
+      const generated = await window.electronAPI.generateExcel({
+        type: 'goodsLogistics',
+        data: {
+          skus: batch,
+          departmentId: '',
+          length: cfg.logLength,
+          width: cfg.logWidth,
+          height: cfg.logHeight,
+          weight: cfg.logWeight,
+          useDepartmentGoodsCode: true,
+          outputFileName: `GoodsLogisticsAutoRepair-${Date.now()}-${index + 1}.xls`
+        }
+      });
+      if (!generated?.success) {
+        throw new Error(`生成第${index + 1}批物流属性文件失败: ${generated?.error || '未知错误'}`);
+      }
+
+      const batchLabel = batches.length > 1 ? `第${index + 1}/${batches.length}批` : '';
+      const uploaded = await uploadWithRetry({
+        type: 'goodsLogistics',
+        filePath: generated.filePath,
+        params: {}
+      }, `自动补录物流属性${batchLabel}`, `${batch.length}个商品`, 5, (type, message) => {
+        addWmsLog(type, `[自动验收] ${message}`);
+      });
+      const uploadMessage = uploaded?.data?.data || uploaded?.data?.msg || '';
+      const taskNo = typeof uploadMessage === 'string' ? uploadMessage.match(/\bWLSX\d+\b/i)?.[0] : '';
+      const expiresAt = Date.now() + WMS_LOGISTICS_REPAIR_IMPORT_WAIT_MS;
+      batch.forEach(sku => wmsSubmittedLogisticsSkus.set(sku, expiresAt));
+      addWmsLog(
+        'success',
+        `[自动验收] ${batchLabel || '物流属性'}已提交${taskNo ? `（${taskNo}）` : ''}，等待 WLSX 导入生效`
+      );
+
+      if (index + 1 < batches.length) {
+        await sleep(WMS_LOGISTICS_REPAIR_BATCH_GAP_MS);
+      }
+    }
     return true;
   } catch (error) {
     addWmsLog(
       'warn',
-      `[自动验收] 物流属性补录暂未成功: ${error?.message || '未知错误'}；1分钟后自动重试`
+      `[自动验收] 物流属性补录暂未成功: ${error?.message || '未知错误'}；1分钟后自动重试未提交的批次`
     );
     return false;
   }
@@ -6491,23 +6592,9 @@ async function confirmSmSend() {
     && targetMode.config?.inventoryCheckBeforeJdLabel
   );
 
-  let inventorySellerId = '';
   if (inventoryCheckEnabled) {
     if (!targetShopId) { showToast('查询库存打标必须选择目标店铺'); return; }
     if (!targetWarehouseId) { showToast('查询库存打标必须选择目标仓库'); return; }
-
-    const targetShop = allShopOptions.find(option => option.value === targetShopId);
-    const userData = await window.electronAPI.getUserData();
-    const deptPairs = Array.isArray(userData?.deptPairs) ? userData.deptPairs : [];
-    const targetDept = deptPairs.find(pair =>
-      String(pair.id || '') === String(targetShop?.deptId || '')
-      || (targetShop?.deptNo && String(pair.deptNo || '') === String(targetShop.deptNo))
-    );
-    inventorySellerId = String(targetDept?.sellerId || targetShop?.sellerId || userData?.sellerId || '').trim();
-    if (!inventorySellerId || !targetShop?.deptId) {
-      showToast('未获取到当前店铺的商家或事业部信息，请重新登录商家端');
-      return;
-    }
   }
 
   // 1. 填充 SKU 到店铺打标页的输入框
@@ -6533,7 +6620,7 @@ async function confirmSmSend() {
   }
 
   // 5. 调用已有的 addTask() 添加到任务列表；库存门禁只采用快捷模式配置。
-  const addResult = addTask({ inventorySellerId });
+  const addResult = addTask();
   if (!addResult?.success) return;
 
   // 6. 更新统计
@@ -6616,6 +6703,8 @@ function renderCpLogisticsLog(history) {
   const logEl = $('#cpLogisticsLog');
   if (!logEl) return;
   logEl.replaceChildren();
+  // 执行记录按时间倒序展示；刷新后回到顶部，避免最新结果被旧滚动位置藏住。
+  logEl.scrollTop = 0;
   const entries = Array.isArray(history) ? [...history].reverse() : [];
   if (entries.length === 0) {
     const empty = document.createElement('div');
@@ -6851,11 +6940,8 @@ function initAoEventListeners() {
       button.textContent = originalText;
     }
   };
-  $('#aoOpenMerchantBtn').addEventListener('click', event => {
+  $('#shopLabelOpenMerchantBtn').addEventListener('click', event => {
     openPortal(event, () => window.electronAPI.openMerchantWorkspace(), '商家端页面打开失败');
-  });
-  $('#aoOpenCpBtn').addEventListener('click', event => {
-    openPortal(event, () => window.electronAPI.openCpWorkspace(), 'CP 端页面打开失败');
   });
   $('#aoQueryBtn').addEventListener('click', () => handleAoQuery());
   $('#aoResetBtn').addEventListener('click', () => handleAoReset());

@@ -15,6 +15,7 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('util');
 const https = require('https');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
@@ -122,6 +123,7 @@ const {
 } = require('./src/js/updateDownloadState');
 const { createRuntimeUpdatePolicy } = require('./src/js/runtimeUpdatePolicy');
 const { launchInstallerBeforeApplicationExit } = require('./src/js/deferredInstaller');
+const { saveRecoveryGenerations, writeFileDurably } = require('./durable-store-file');
 const {
   CpLogisticsServiceClient,
   MIN_CHANGE_INTERVAL_MS,
@@ -557,6 +559,10 @@ async function selectDepartment(deptPairs) {
 const storePath = path.join(app.getPath('userData'), 'config.json');
 const ENCRYPTED_STORE_PREFIX = 'YCH-ENC-V1:';
 const STORE_RECOVERY_SNAPSHOT_PATH = `${storePath}.recovery-backup`;
+const STORE_PREVIOUS_SNAPSHOT_PATH = `${storePath}.recovery-previous`;
+const CP_LOGISTICS_RUNTIME_PATH = path.join(app.getPath('userData'), 'cp-logistics-runtime.json');
+const CP_LOGISTICS_RUNTIME_BACKUP_PATH = `${CP_LOGISTICS_RUNTIME_PATH}.recovery-backup`;
+const CP_LOGISTICS_RUNTIME_PREVIOUS_PATH = `${CP_LOGISTICS_RUNTIME_PATH}.recovery-previous`;
 const STORE_READ_RETRY_DELAYS_MS = [0, 25, 75];
 const STORE_TRANSIENT_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']);
 let storeReadBlocked = false;
@@ -618,15 +624,7 @@ function hasMeaningfulStoreAccountData(data) {
 }
 
 function writeStoreRawAtomically(targetPath, raw, suffix) {
-  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${suffix}.tmp`;
-  try {
-    fs.writeFileSync(tempPath, raw, 'utf-8');
-    fs.renameSync(tempPath, targetPath);
-  } finally {
-    if (fs.existsSync(tempPath)) {
-      try { fs.unlinkSync(tempPath); } catch (_) {}
-    }
-  }
+  writeFileDurably(targetPath, raw, { suffix });
 }
 
 function saveStoreRecoverySnapshot(raw, data) {
@@ -641,7 +639,12 @@ function saveStoreRecoverySnapshot(raw, data) {
       const json = JSON.stringify(data, null, 2);
       snapshotRaw = ENCRYPTED_STORE_PREFIX + safeStorage.encryptString(json).toString('base64');
     }
-    writeStoreRawAtomically(STORE_RECOVERY_SNAPSHOT_PATH, snapshotRaw, 'snapshot');
+    saveRecoveryGenerations({
+      latestPath: STORE_RECOVERY_SNAPSHOT_PATH,
+      previousPath: STORE_PREVIOUS_SNAPSHOT_PATH,
+      raw: snapshotRaw,
+      validateRaw: candidateRaw => hasMeaningfulStoreAccountData(decodeStoreRaw(candidateRaw))
+    });
   } catch (error) {
     console.error('[存储] 创建账号配置恢复快照失败:', error.message);
   }
@@ -696,7 +699,7 @@ function recoverStoreAtStartup() {
   // 当前文件缺失或已损坏时，可优先使用新版本维护的最近一次有效恢复快照。
   const candidatePaths = currentValid
     ? listLegacyCorruptStoreBackups()
-    : [STORE_RECOVERY_SNAPSHOT_PATH, ...listLegacyCorruptStoreBackups()];
+    : [STORE_RECOVERY_SNAPSHOT_PATH, STORE_PREVIOUS_SNAPSHOT_PATH, ...listLegacyCorruptStoreBackups()];
   const candidate = candidatePaths
     .filter(candidatePath => candidatePath !== storePath && fs.existsSync(candidatePath))
     .map(inspectStoreRecoveryCandidate)
@@ -780,8 +783,7 @@ function loadStore() {
   }
 }
 
-function saveStore(data) {
-  let tempPath = '';
+function saveStore(data, reason = '直接保存') {
   try {
     if (storeReadBlocked) {
       console.error(`[存储] 已阻止写入，避免覆盖无法读取的原配置: ${storeReadBlockedReason || '未知原因'}`);
@@ -793,17 +795,18 @@ function saveStore(data) {
     }
     const json = JSON.stringify(data, null, 2);
     const encrypted = safeStorage.encryptString(json).toString('base64');
-    tempPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, ENCRYPTED_STORE_PREFIX + encrypted, 'utf-8');
-    fs.renameSync(tempPath, storePath);
+    const raw = ENCRYPTED_STORE_PREFIX + encrypted;
+    writeStoreRawAtomically(storePath, raw, 'store');
+    const verified = decodeStoreRaw(fs.readFileSync(storePath, 'utf8'));
+    if (!isDeepStrictEqual(verified, data)) {
+      throw new Error('写入后的配置校验不一致');
+    }
+    saveStoreRecoverySnapshot(raw, data);
+    console.log(`[存储] 配置已安全保存: ${reason}`);
     return true;
   } catch (e) {
     console.error('[存储] 写入 config.json 失败:', e.message);
     return false;
-  } finally {
-    if (tempPath && fs.existsSync(tempPath)) {
-      try { fs.unlinkSync(tempPath); } catch (_) {}
-    }
   }
 }
 
@@ -815,15 +818,18 @@ function storeGet(key, defaultVal) {
 function storeSet(key, value) {
   const data = loadStore();
   if (storeReadBlocked) return false;
+  if (isDeepStrictEqual(data[key], value)) return true;
   data[key] = value;
-  return saveStore(data);
+  return saveStore(data, `更新 ${key}`);
 }
 
 function storeUpdate(update) {
   const data = loadStore();
   if (storeReadBlocked) return false;
+  const before = JSON.stringify(data);
   update(data);
-  return saveStore(data);
+  if (JSON.stringify(data) === before) return true;
+  return saveStore(data, '批量更新');
 }
 
 const SHOP_GOODS_TASK_RESULT_PREFIX = 'YCH-SM-TASK-V1:';
@@ -1280,6 +1286,70 @@ function sanitizeCpLogisticsSettings(source = {}) {
   };
 }
 
+function decodeCpLogisticsRuntimeRaw(raw) {
+  const payload = decodeStoreRaw(raw);
+  const settings = payload?.schemaVersion === 1 ? payload.settings : payload;
+  if (!settings || typeof settings !== 'object') {
+    throw new Error('物流定时状态格式无效');
+  }
+  return sanitizeCpLogisticsSettings(settings);
+}
+
+function saveCpLogisticsRuntimeFile(settings) {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('系统安全存储当前不可用');
+    }
+    const payload = {
+      schemaVersion: 1,
+      savedAt: new Date().toISOString(),
+      settings: sanitizeCpLogisticsSettings(settings)
+    };
+    const raw = ENCRYPTED_STORE_PREFIX
+      + safeStorage.encryptString(JSON.stringify(payload)).toString('base64');
+    writeStoreRawAtomically(CP_LOGISTICS_RUNTIME_PATH, raw, 'cp-runtime');
+    decodeCpLogisticsRuntimeRaw(fs.readFileSync(CP_LOGISTICS_RUNTIME_PATH, 'utf8'));
+    saveRecoveryGenerations({
+      latestPath: CP_LOGISTICS_RUNTIME_BACKUP_PATH,
+      previousPath: CP_LOGISTICS_RUNTIME_PREVIOUS_PATH,
+      raw,
+      validateRaw: candidateRaw => Boolean(decodeCpLogisticsRuntimeRaw(candidateRaw))
+    });
+    return true;
+  } catch (error) {
+    console.error('[存储] 保存物流定时独立状态失败:', error.message);
+    return false;
+  }
+}
+
+function loadCpLogisticsRuntimeFile() {
+  const candidates = [
+    CP_LOGISTICS_RUNTIME_PATH,
+    CP_LOGISTICS_RUNTIME_BACKUP_PATH,
+    CP_LOGISTICS_RUNTIME_PREVIOUS_PATH
+  ];
+  for (const candidatePath of candidates) {
+    if (!fs.existsSync(candidatePath)) continue;
+    try {
+      const raw = fs.readFileSync(candidatePath, 'utf8');
+      const settings = decodeCpLogisticsRuntimeRaw(raw);
+      if (candidatePath !== CP_LOGISTICS_RUNTIME_PATH) {
+        writeStoreRawAtomically(CP_LOGISTICS_RUNTIME_PATH, raw, 'cp-recovery');
+        console.log(`[存储] 已恢复物流定时独立状态: ${path.basename(candidatePath)}`);
+      }
+      return settings;
+    } catch (error) {
+      console.warn(`[存储] 物流定时状态不可用 ${path.basename(candidatePath)}:`, error.message);
+    }
+  }
+  return null;
+}
+
+function loadCpLogisticsSettings() {
+  return loadCpLogisticsRuntimeFile()
+    || sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+}
+
 function getCurrentCpLogisticsContext() {
   const userData = storeGet('userData', {}) || {};
   const deptNo = String(userData.selectedDeptId || userData.departmentId || '').trim();
@@ -1303,7 +1373,7 @@ function cpLogisticsContextMatches(settings, context) {
 
 function emitCpLogisticsStatus(settings = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send('cp-logistics-status', settings || sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {})));
+  mainWindow.webContents.send('cp-logistics-status', settings || loadCpLogisticsSettings());
 }
 
 function saveCpLogisticsRuntime(settings, { logLevel = '', logMessage = '' } = {}) {
@@ -1316,7 +1386,11 @@ function saveCpLogisticsRuntime(settings, { logLevel = '', logMessage = '' } = {
     });
     next.history = next.history.slice(-50);
   }
-  storeSet(CP_LOGISTICS_SETTINGS_KEY, next);
+  const runtimeSaved = saveCpLogisticsRuntimeFile(next);
+  const configSaved = storeSet(CP_LOGISTICS_SETTINGS_KEY, next);
+  if (!runtimeSaved && !configSaved) {
+    throw new Error('物流定时状态保存失败');
+  }
   emitCpLogisticsStatus(next);
   return next;
 }
@@ -1343,7 +1417,7 @@ async function executeCpLogisticsAction(settings, context, dueAction) {
     if (activeMerchantAccountId) {
       await cookieManager.exportCookies(getMerchantSession(), 'merchant', activeMerchantAccountId);
     }
-    current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, current));
+    current = loadCpLogisticsSettings();
     if (dueAction.action === 'add') current.lastAddDate = runDate;
     else current.lastRemoveDate = runDate;
     if (result.changed) current.lastChangeAt = new Date().toISOString();
@@ -1358,7 +1432,7 @@ async function executeCpLogisticsAction(settings, context, dueAction) {
     current.blockedAction = '';
     saveCpLogisticsRuntime(current, { logLevel: 'success', logMessage: current.lastMessage });
   } catch (error) {
-    current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, current));
+    current = loadCpLogisticsSettings();
     const sameFailure = current.failureDate === runDate && current.failureAction === dueAction.action;
     current.failureDate = runDate;
     current.failureAction = dueAction.action;
@@ -1381,7 +1455,7 @@ async function executeCpLogisticsAction(settings, context, dueAction) {
 
 async function checkCpLogisticsSchedule() {
   if (cpLogisticsRunPromise) return cpLogisticsRunPromise;
-  let settings = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+  let settings = loadCpLogisticsSettings();
   if (!settings.enabled || appIsQuitting) return null;
   if (!canUseAutomation(storeGet('subscriptionInfo', {}))) return null;
   if (!jdPageWindow || jdPageWindow.isDestroyed()) return null;
@@ -1471,6 +1545,86 @@ function isMerchantWorkspaceUrl(url) {
   } catch (_) {
     return false;
   }
+}
+
+function extractMerchantIdentityRows(payload) {
+  if (!payload || payload.error) return [];
+  if (Array.isArray(payload)) return payload;
+
+  const knownCollections = [payload.aaData, payload.data, payload.deptList, payload.result];
+  for (const collection of knownCollections) {
+    if (Array.isArray(collection)) return collection;
+  }
+
+  for (const value of Object.values(payload)) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function evaluateMerchantIdentity(apiData) {
+  const apiAvailable = !!(apiData && !apiData.error);
+  const deptApiAvailable = !!(apiAvailable && apiData.deptData && !apiData.deptData.error);
+  const shopApiAvailable = !!(apiAvailable && apiData.shopData && !apiData.shopData.error);
+  const deptRows = extractMerchantIdentityRows(apiData?.deptData);
+  const shopRows = extractMerchantIdentityRows(apiData?.shopData);
+
+  const hasDepartment = deptRows.some(row => row && typeof row === 'object'
+    && (row.deptNo || row.deptId || row.deptName)
+    && (row.sellerId || row.sellerNo || row.sellerName));
+  const hasShop = shopRows.some(row => row && typeof row === 'object'
+    && (row.shopNo || row.shopId || row.spShopNo)
+    && (row.deptNo || row.deptId || row.sellerId));
+
+  return {
+    verified: hasDepartment || hasShop,
+    nonMerchant: deptApiAvailable && shopApiAvailable && deptRows.length === 0 && shopRows.length === 0,
+    deptCount: deptRows.length,
+    shopCount: shopRows.length
+  };
+}
+
+async function resetRejectedMerchantLogin() {
+  const rejectedWindow = webLoginWindow;
+  const rejectedAccountId = activeMerchantAccountId;
+  const rejectedUsername = currentUsername;
+
+  try {
+    if (rejectedWindow && !rejectedWindow.isDestroyed()) {
+      await rejectedWindow.webContents.session.clearStorageData({
+        storages: ['cookies', 'localstorage']
+      });
+    }
+  } catch (error) {
+    console.warn('清除非商家账号会话失败:', error.message);
+  }
+
+  if (rejectedAccountId) {
+    cookieManager.deleteCookieFile('merchant', rejectedAccountId);
+  }
+  storeUpdate(data => {
+    data.userData = null;
+    data.csrfToken = '';
+    data.sellerId = '';
+    data.cookies = '';
+    if (data.lastMerchantAccountId === rejectedAccountId) data.lastMerchantAccountId = '';
+    if (data.lastLoginUser === rejectedUsername) data.lastLoginUser = '';
+    if (rejectedUsername && data.userProfiles && typeof data.userProfiles === 'object') {
+      delete data.userProfiles[rejectedUsername];
+    }
+  });
+
+  pendingCredentials = null;
+  currentUsername = '';
+  activeMerchantAccountId = '';
+  merchantIdentityValidationAttempts = 0;
+  isLoggingIn = false;
+
+  if (rejectedWindow && !rejectedWindow.isDestroyed()) {
+    if (webLoginWindow === rejectedWindow) webLoginWindow = null;
+    rejectedWindow.destroy();
+  }
+  createLoginWindow();
 }
 
 function createLoginWindow({ showWhenReady = true } = {}) {
@@ -1760,14 +1914,13 @@ async function checkLoginStatus(url) {
     // 获取 Cookie
     const cookies = await webLoginWindow.webContents.session.cookies.get({ domain: '.jdl.com' });
     const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    storeSet('cookies', cookieStr);
 
     // 等待页面加载稳定
     await new Promise(resolve => setTimeout(resolve, 500));
 
     // 从 API 获取真实用户数据（sellerId 从事业部数据中动态获取）
     let userData = {
-      departmentName: '已登录用户',
+      departmentName: '',
       departmentId: '',
       shops: [],
       suppliers: [],
@@ -1776,15 +1929,9 @@ async function checkLoginStatus(url) {
 
     const apiData = await fetchUserDataFromApi();
 
-    const identityVerified = !!(
-      apiData
-      && !apiData.error
-      && (
-        (apiData.deptData && !apiData.deptData.error)
-        || (apiData.shopData && !apiData.shopData.error)
-      )
-    );
-    if (!identityVerified) {
+    const merchantIdentity = evaluateMerchantIdentity(apiData);
+    console.log(`商家端身份数据: 事业部 ${merchantIdentity.deptCount} 个, 店铺 ${merchantIdentity.shopCount} 个`);
+    if (!merchantIdentity.verified) {
       merchantIdentityValidationAttempts += 1;
       const attempt = merchantIdentityValidationAttempts;
       console.warn(`商家端身份验证未通过（第 ${attempt}/3 次），继续在后台重试`);
@@ -1798,16 +1945,30 @@ async function checkLoginStatus(url) {
       } else if (webLoginWindow && !webLoginWindow.isDestroyed()) {
         webLoginWindow.show();
         webLoginWindow.focus();
-        dialog.showMessageBox(webLoginWindow, {
-          type: 'warning',
-          title: '登录状态验证失败',
-          message: '尚未能确认商家端登录状态，请确认页面已正常进入商家后台后重试。',
-          buttons: ['确定']
-        }).catch(() => {});
+        if (merchantIdentity.nonMerchant) {
+          console.warn('当前京东账号没有云仓商家身份，已阻止进入订阅流程');
+          await dialog.showMessageBox(webLoginWindow, {
+            type: 'warning',
+            title: '当前账号不是云仓商家账号',
+            message: '当前登录的京东账号不是云仓商家端账号',
+            detail: '京东未返回任何事业部或店铺信息。请使用已经入驻京东物流云仓商家端的账号重新登录。',
+            buttons: ['重新登录'],
+            defaultId: 0
+          });
+          await resetRejectedMerchantLogin();
+        } else {
+          await dialog.showMessageBox(webLoginWindow, {
+            type: 'warning',
+            title: '登录状态验证失败',
+            message: '尚未能确认商家端登录状态，请确认页面已正常进入商家后台后重试。',
+            buttons: ['确定']
+          });
+        }
       }
       return;
     }
     merchantIdentityValidationAttempts = 0;
+    storeSet('cookies', cookieStr);
 
     if (apiData && !apiData.error) {
       console.log('动态获取的 sellerId:', apiData.sellerId || '(空)');
@@ -3666,7 +3827,7 @@ ipcMain.handle('open-cp-workspace', async event => {
 });
 
 ipcMain.handle('get-cp-logistics-settings', async () => {
-  const settings = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+  const settings = loadCpLogisticsSettings();
   const context = getCurrentCpLogisticsContext();
   return {
     success: true,
@@ -3680,7 +3841,7 @@ ipcMain.handle('get-cp-logistics-settings', async () => {
 ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
   try {
     assertAutomationAccess();
-    const current = sanitizeCpLogisticsSettings(storeGet(CP_LOGISTICS_SETTINGS_KEY, {}));
+    const current = loadCpLogisticsSettings();
     const enabled = requested?.enabled === true;
     const addTime = normalizeCpLogisticsTime(requested?.addTime, '00:05');
     const removeTime = normalizeCpLogisticsTime(requested?.removeTime, '23:55');
@@ -7209,6 +7370,12 @@ ipcMain.handle('query-shop-stock', async (event, request = {}) => {
       zeroStockCount: summary.zeroStockCount,
       missingCount: summary.missingCount
     }));
+    if (summary.missingCount > 0) {
+      console.log('[库存门禁] 未返回诊断', JSON.stringify({
+        reasonCounts: summary.missingReasonCounts,
+        samples: summary.missingDiagnostics.slice(0, 10)
+      }));
+    }
     return { success: true, ...summary, checkedAt: new Date().toISOString() };
   } catch (error) {
     const message = error?.name === 'AbortError' ? '库存接口请求超时' : String(error?.message || error || '库存查询异常');

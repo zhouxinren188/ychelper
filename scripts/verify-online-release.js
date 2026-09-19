@@ -17,7 +17,10 @@ function arg(name, fallback = '') {
 
 async function expectResponse(url, options, expectedStatus, label) {
   const requestOptions = { ...(options || {}) };
-  if (!requestOptions.signal) requestOptions.signal = AbortSignal.timeout(30000);
+  // 旧版兼容桥接 ZIP 在网络抖动时可能超过普通接口的 30 秒窗口；
+  // 这是验收下载的真实场景，单独放宽，其他元数据、Range 和接口仍严格 30 秒。
+  const timeoutMs = label.includes('下载') ? 120000 : 30000;
+  if (!requestOptions.signal) requestOptions.signal = AbortSignal.timeout(timeoutMs);
   let response;
   try {
     response = await fetch(url, requestOptions);

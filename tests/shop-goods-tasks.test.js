@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { JSDOM } = require('jsdom');
 const {
   applyProgress,
@@ -328,8 +329,14 @@ assert.match(renderer, /smSendWarehouse\.value = findSmDefaultWarehouse\(sourceA
   '单次发送必须采用源店铺预设的默认仓库');
 assert.doesNotMatch(indexHtml, /smSendInventoryCheck|是否查询库存打标/,
   '单次发送弹窗不得重复提供库存校验开关');
-assert.match(renderer, /const inventoryCheckEnabled = Boolean\([\s\S]*targetMode\.config\?\.jdLabel[\s\S]*targetMode\.config\?\.inventoryCheckBeforeJdLabel[\s\S]*addTask\(\{ inventorySellerId \}\)/,
+assert.match(renderer, /const inventoryCheckEnabled = Boolean\([\s\S]*targetMode\.config\?\.jdLabel[\s\S]*targetMode\.config\?\.inventoryCheckBeforeJdLabel[\s\S]*const addResult = addTask\(\)/,
   '单次发送必须只采用快捷模式中的库存校验配置');
+const confirmSmSendSource = renderer.slice(renderer.indexOf('async function confirmSmSend()'),
+  renderer.indexOf('// ========== 数据看板 =========='));
+assert.doesNotMatch(confirmSmSendSource, /getUserData|targetDept|inventorySellerId/,
+  '快速发送不得单独补取商家编号，必须交给公共创建入口');
+assert.match(renderer, /merchantDeptPairs = Array\.isArray\(data\?\.deptPairs\) \? data\.deptPairs : \[\];/,
+  '店铺和事业部身份必须来自同一份登录资料，缺失时不得沿用旧账号');
 assert.match(preload, /queryShopStock:\s*\(params\) => ipcRenderer\.invoke\('query-shop-stock', params\)/,
   '渲染层必须通过受控IPC查询库存');
 assert.match(main, /ipcMain\.handle\('query-shop-stock'[\s\S]*activeSellerId !== requestedSellerId/,
@@ -344,8 +351,8 @@ assert.match(renderer, /inventoryCheckBeforeJdLabel: \$\('#cfgJdLabel'\)\.checke
   '未勾选京配打标时不得保存库存校验状态');
 assert.match(appStyles, /\.config-item input\[type="checkbox"\]:checked[\s\S]*stroke='%23fff'/,
   '配置区域选中的橙色复选框必须使用白色勾号');
-assert.match(renderer, /taskConfig\.jdLabel && taskConfig\.inventoryCheckBeforeJdLabel[\s\S]*shopOpt\?\.sellerId/,
-  '普通打标任务必须把模式中的库存校验及目标商家身份带入任务');
+assert.match(renderer, /taskConfig\.jdLabel && taskConfig\.inventoryCheckBeforeJdLabel[\s\S]*const resolvedInventorySellerId = waitForInventory\s*\? resolveLabelTaskInventorySellerId\(shopOpt\)\s*: '';/,
+  '所有打标任务必须在公共创建入口按需关联目标商家身份');
 assert.match(renderer, /waitForInventoryBeforeLabel: Boolean\(task\.waitForInventoryBeforeLabel\)[\s\S]*inventorySellerId: task\.inventorySellerId/,
   '库存门禁配置必须随任务持久化，软件重启后仍能恢复');
 assert.match(renderer, /const logisticsTaskNo =[^\n]*WLSX\\d\+[\s\S]*resMsg\.includes\('导入成功'\)[\s\S]*Boolean\(logisticsTaskNo\)/,
@@ -506,4 +513,109 @@ assert.match(main, /ipcMain\.handle\('save-label-tasks'/,
 assert.match(main, /const autoLabelConfig =[\s\S]*autoLabelConfig[\s\S]*\};/,
   '主进程必须持久化每个店铺的自动打标配置且兼容旧记录');
 
-console.log('店铺商品任务队列测试通过');
+async function testUnifiedInventoryTaskCreation() {
+  const targetShop = {
+    value: 'CSP0020000000002', label: '目标店铺（225737397）', spShopNo: '225737397',
+    deptId: '202', deptNo: 'CBU202', deptName: '目标事业部', sellerId: ''
+  };
+  const checkedConfig = { jdLabel: true, inventoryCheckBeforeJdLabel: true, enablePurchase: true };
+  const sendFields = {
+    '#smSendMode': { value: '入仓打标（AB仓）' },
+    '#smSendShop': { value: targetShop.value },
+    '#smSendWarehouse': { value: '800014550' }
+  };
+  const messages = [];
+  const scope = {
+    allShopOptions: [targetShop], shopOptions: [targetShop],
+    merchantDeptPairs: [
+      { id: '101', deptNo: 'CBU101', sellerId: 'wrong-seller' },
+      { id: 202, deptNo: 'CBU202', sellerId: '20000022217' }
+    ],
+    tasks: [], taskIdCounter: 0, BATCH_SIZE: 500,
+    currentConfig: checkedConfig,
+    skuInput: { value: '1001，1002' },
+    shopSelect: { value: targetShop.value }, shopSearchInput: { value: '' },
+    warehouseSelect: { value: '800014550' },
+    modeSelect: { value: '入仓打标（AB仓）', classList: { toggle() {} } },
+    importedFileName: '',
+    getCurrentConfig: () => scope.currentConfig,
+    renderTaskTable() {}, persistLabelTasks: () => Promise.resolve({ success: true }),
+    showToast: message => messages.push(message), addLog() {},
+    smSendType: '打标', getSelectedSmSkus: () => ['1001', '1002'], requireTier: () => true,
+    $: selector => sendFields[selector],
+    applyConfig: config => { scope.currentConfig = config; },
+    window: { electronAPI: {
+      getModes: async () => [{ name: '入仓打标（AB仓）', config: checkedConfig }],
+      getUserData: async () => { throw new Error('快速入口不得独立读取商家身份'); },
+      queryShopStock: async () => { throw new Error('创建任务不得提前查询库存'); },
+      updateSmStats: async () => {}
+    } },
+    updateSmDashboard: async () => {}, closeSmSendModal() {}, addSmLog() {},
+    document: { querySelector: () => ({ click() {} }) }
+  };
+  const enqueueSource = renderer.slice(renderer.indexOf('function resolveLabelTaskInventorySellerId('),
+    renderer.indexOf('function toPersistedLabelTask('));
+  const addSource = renderer.slice(renderer.indexOf('function addTask()'),
+    renderer.indexOf('// ========== 物流属性持久化 =========='));
+  vm.runInNewContext(`${enqueueSource}\n${addSource}\n${confirmSmSendSource}`, scope);
+
+  assert.strictEqual(scope.addTask().success, true, '手动添加应从事业部补齐缺失的店铺sellerId');
+  const manualTask = scope.tasks[0];
+  await scope.confirmSmSend();
+  assert.strictEqual(scope.tasks.length, 2, '快速发送必须通过同一公共入口成功创建任务');
+  const fastTask = scope.tasks[1];
+  for (const task of [manualTask, fastTask]) {
+    assert.strictEqual(task.inventorySellerId, '20000022217', '不得使用vendorId或首个其他事业部的sellerId');
+    assert.strictEqual(task.waitForInventoryBeforeLabel, true);
+    assert.strictEqual(task.shopDeptId, '202');
+    assert.strictEqual(task.warehouseId, '800014550');
+  }
+  const batchInput = {
+    skus: ['1001'], shopId: targetShop.value, warehouseId: '800014550', config: checkedConfig
+  };
+  assert.strictEqual(scope.enqueueLabelTasks({ ...batchInput, autoCreated: true }).success, true,
+    '批量/自动发布同样必须在公共入口补齐sellerId');
+  assert.strictEqual(scope.tasks[2].inventorySellerId, manualTask.inventorySellerId);
+
+  targetShop.deptNo = 'CBU101';
+  assert.strictEqual(scope.resolveLabelTaskInventorySellerId(targetShop), '20000022217',
+    '关联优先采用准确的事业部ID，不能被其他编号匹配覆盖');
+  targetShop.deptNo = 'CBU202';
+  scope.merchantDeptPairs = [{ deptNo: 'CBU202', sellerId: '20000022217' }];
+  assert.strictEqual(scope.resolveLabelTaskInventorySellerId(targetShop), '20000022217',
+    '应兼容通过事业部编码匹配登录资料');
+  scope.merchantDeptPairs = [{ id: '101', deptNo: 'CBU101', sellerId: 'wrong-seller' }];
+  const countBeforeFailure = scope.tasks.length;
+  assert.strictEqual(scope.enqueueLabelTasks(batchInput).success, false,
+    '确实缺少目标商家身份时必须阻止创建，不得借用其他事业部的编号');
+  assert.strictEqual(scope.tasks.length, countBeforeFailure);
+  targetShop.sellerId = '20000022217';
+  assert.strictEqual(scope.enqueueLabelTasks(batchInput).success, true,
+    '店铺自身已有sellerId时仍应兼容');
+  targetShop.sellerId = '';
+
+  sendFields['#smSendShop'].value = '';
+  const countBeforeEmptyTarget = scope.tasks.length;
+  await scope.confirmSmSend();
+  assert.strictEqual(scope.tasks.length, countBeforeEmptyTarget,
+    '快速弹窗未选目标时不得误用手动页面残留的店铺');
+  assert.strictEqual(messages.at(-1), '查询库存打标必须选择目标店铺');
+
+  scope.resolveLabelTaskInventorySellerId = () => { throw new Error('未开启库存校验不得提取编号'); };
+  for (const config of [
+    { ...checkedConfig, inventoryCheckBeforeJdLabel: false },
+    { jdLabel: false, cancelJdLabel: true, inventoryCheckBeforeJdLabel: true }
+  ]) {
+    const result = scope.enqueueLabelTasks({ ...batchInput, config });
+    assert.strictEqual(result.success, true, '不校验/取消京配不得受缺失商家编号影响');
+    assert.strictEqual(scope.tasks.at(-1).inventorySellerId, '');
+    assert.strictEqual(scope.tasks.at(-1).waitForInventoryBeforeLabel, false);
+  }
+}
+
+testUnifiedInventoryTaskCreation().then(() => {
+  console.log('店铺商品任务队列与统一库存身份创建测试通过');
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

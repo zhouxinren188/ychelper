@@ -168,7 +168,9 @@ assert.match(onlineVerifier, /verification-session=/,
   'v1.0.83 发布验收必须使用独立会话，避免连续验收复用公网 IP 状态');
 assert.match(onlineVerifier, /baseline === '1\.0\.83'[\s\S]{0,180}recoverySessionQuery[\s\S]{0,260}full-check/,
   'v1.0.83 完成桥接后的基线检测必须继续使用同一验收会话');
-assert.match(onlineVerifier, /AbortSignal\.timeout\(30000\)/,
+assert.match(onlineVerifier, /label\.includes\('下载'\) \? 120000 : 30000/,
+  '大文件下载可使用120秒超时，其他线上验收请求必须保持30秒超时');
+assert.match(onlineVerifier, /AbortSignal\.timeout\(timeoutMs\)/,
   '线上发布验收的每个网络请求必须设置超时，禁止永久挂起');
 assert.doesNotMatch(onlineVerifier, /changelog\.includes\('自动更新'\)/,
   'UTF-8 中文校验不得依赖某个固定更新文案');

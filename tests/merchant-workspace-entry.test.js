@@ -11,9 +11,10 @@ const renderer = fs.readFileSync(path.join(root, 'src', 'js', 'renderer.js'), 'u
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 
-assert.match(html, /id="aoOpenMerchantBtn"[^>]*>进入商家端<\/button>/);
-assert.match(html, /id="aoOpenCpBtn"[^>]*>进入CP端<\/button>/);
-assert.match(css, /\.ao-portal-actions\s*\{[^}]*margin-left:\s*auto[^}]*display:\s*flex/s);
+assert.match(html, /id="shopLabelOpenMerchantBtn"[^>]*>进入商家端<\/button>/);
+assert.match(css, /\.shop-label-portal-actions\s*\{[^}]*margin-left:\s*auto[^}]*display:\s*flex/s);
+assert.doesNotMatch(html, /id="aoOpenMerchantBtn"/);
+assert.doesNotMatch(html, /id="aoOpenCpBtn"/);
 assert.match(renderer, /window\.electronAPI\.openMerchantWorkspace\(\)/);
 assert.match(renderer, /window\.electronAPI\.openCpWorkspace\(\)/);
 assert.match(preload, /openMerchantWorkspace:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('open-merchant-workspace'\)/);

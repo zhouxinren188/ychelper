@@ -94,15 +94,35 @@ function summarizeShopStockRows({ skus, rows, sellerId, deptId, shopId, warehous
   const expectedWarehouseNo = normalizeText(warehouseNo);
   const totals = new Map();
   const matchedSkus = new Set();
+  const candidatesBySku = new Map();
+  const mismatchReasonsBySku = new Map();
   let latestUpdateTime = '';
 
   for (const row of Array.isArray(rows) ? rows : []) {
     const sku = normalizeText(row && row.sellerGoodsSign);
     if (!requested.has(sku)) continue;
-    if (expectedSellerId && normalizeText(row.sellerId) !== expectedSellerId) continue;
-    if (expectedDeptId && normalizeText(row.deptId) !== expectedDeptId) continue;
-    if (expectedShopId && normalizeShopId(row.shopId) !== expectedShopId) continue;
-    if (expectedWarehouseNo && normalizeText(row.warehouseNo) !== expectedWarehouseNo) continue;
+
+    const candidate = {
+      sellerId: normalizeText(row.sellerId),
+      deptId: normalizeText(row.deptId),
+      shopId: normalizeText(row.shopId),
+      warehouseNo: normalizeText(row.warehouseNo)
+    };
+    const candidates = candidatesBySku.get(sku) || [];
+    if (candidates.length < 3) candidates.push(candidate);
+    candidatesBySku.set(sku, candidates);
+
+    const mismatchReasons = [];
+    if (expectedSellerId && candidate.sellerId !== expectedSellerId) mismatchReasons.push('商家不一致');
+    if (expectedDeptId && candidate.deptId !== expectedDeptId) mismatchReasons.push('事业部不一致');
+    if (expectedShopId && normalizeShopId(candidate.shopId) !== expectedShopId) mismatchReasons.push('店铺不一致');
+    if (expectedWarehouseNo && candidate.warehouseNo !== expectedWarehouseNo) mismatchReasons.push('仓库不一致');
+    if (mismatchReasons.length > 0) {
+      const existingReasons = mismatchReasonsBySku.get(sku) || new Set();
+      mismatchReasons.forEach(reason => existingReasons.add(reason));
+      mismatchReasonsBySku.set(sku, existingReasons);
+      continue;
+    }
 
     matchedSkus.add(sku);
     const stockNum = Number.parseFloat(row.stockNum);
@@ -114,9 +134,32 @@ function summarizeShopStockRows({ skus, rows, sellerId, deptId, shopId, warehous
   const inStockSkus = [];
   const zeroStockSkus = [];
   const missingSkus = [];
+  const missingReasonCounts = {
+    noRecord: 0,
+    sellerMismatch: 0,
+    deptMismatch: 0,
+    shopMismatch: 0,
+    warehouseMismatch: 0
+  };
+  const missingDiagnostics = [];
   for (const sku of normalizedSkus) {
     if (!matchedSkus.has(sku)) {
       missingSkus.push(sku);
+      const reasons = [...(mismatchReasonsBySku.get(sku) || [])];
+      if (reasons.length === 0) {
+        missingReasonCounts.noRecord++;
+        reasons.push('未返回库存记录');
+      } else {
+        if (reasons.includes('商家不一致')) missingReasonCounts.sellerMismatch++;
+        if (reasons.includes('事业部不一致')) missingReasonCounts.deptMismatch++;
+        if (reasons.includes('店铺不一致')) missingReasonCounts.shopMismatch++;
+        if (reasons.includes('仓库不一致')) missingReasonCounts.warehouseMismatch++;
+      }
+      missingDiagnostics.push({
+        sku,
+        reasons,
+        candidates: candidatesBySku.get(sku) || []
+      });
     } else if ((totals.get(sku) || 0) > 0) {
       inStockSkus.push(sku);
     } else {
@@ -133,6 +176,8 @@ function summarizeShopStockRows({ skus, rows, sellerId, deptId, shopId, warehous
     inStockSkus,
     zeroStockSkus,
     missingSkus,
+    missingReasonCounts,
+    missingDiagnostics,
     latestUpdateTime
   };
 }
