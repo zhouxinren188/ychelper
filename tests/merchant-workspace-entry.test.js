@@ -19,6 +19,15 @@ assert.match(renderer, /window\.electronAPI\.openMerchantWorkspace\(\)/);
 assert.match(renderer, /window\.electronAPI\.openCpWorkspace\(\)/);
 assert.match(preload, /openMerchantWorkspace:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('open-merchant-workspace'\)/);
 assert.match(preload, /openCpWorkspace:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('open-cp-workspace'\)/);
+assert.match(html, /id="cpLogisticsAddDepartmentBtn"[^>]*>添加事业部<\/button>/);
+assert.match(html, /id="cpLogisticsDepartmentOptions"/);
+assert.match(preload, /listCpLogisticsDepartments:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('list-cp-logistics-departments'\)/);
+assert.match(main, /ipcMain\.handle\('list-cp-logistics-departments'/);
+assert.match(renderer, /departments:\s*cpLogisticsSelectedDepartments/);
+assert.match(main, /retryDepartmentKeys[\s\S]{0,1800}targetDepartments[\s\S]{0,1200}changeDepartmentsSequentially\(client, targetDepartments/,
+  '部分失败后必须只重试失败的事业部');
+assert.match(main, /retryDepartmentKeys\s*=\s*failed\.map/,
+  '本轮失败事业部必须持久化为下一次重试范围');
 assert.match(main, /const MERCHANT_WORKSPACE_URL = 'https:\/\/o\.jdl\.com';/);
 assert.match(main, /const CP_WORKSPACE_URL = 'https:\/\/cp\.jdl\.com';/);
 assert.match(main, /ipcMain\.handle\('open-merchant-workspace'/);

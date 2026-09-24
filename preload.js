@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openMerchantWorkspace: () => ipcRenderer.invoke('open-merchant-workspace'),
   openCpWorkspace: () => ipcRenderer.invoke('open-cp-workspace'),
   getCpLogisticsSettings: () => ipcRenderer.invoke('get-cp-logistics-settings'),
+  listCpLogisticsDepartments: () => ipcRenderer.invoke('list-cp-logistics-departments'),
   saveCpLogisticsSettings: (settings) => ipcRenderer.invoke('save-cp-logistics-settings', settings),
   onCpLogisticsStatus: (callback) => {
     const listener = (event, data) => callback(data);

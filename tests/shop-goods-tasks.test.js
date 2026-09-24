@@ -299,6 +299,8 @@ assert.match(indexHtml, /src="js\/shopGoodsTaskState\.js"[\s\S]*src="js\/rendere
 
 assert.match(renderer, /async function runSmTaskQueue\(taskIds\)/,
   '必须提供任务队列执行入口');
+assert.match(renderer, /const pendingTasks = tasks\.filter[\s\S]*t\.status === 'pending'[\s\S]*t\.status === 'stopped'[\s\S]*t\.status === 'error'[\s\S]*已停止和失败任务都允许从头重试/,
+  '手动执行必须重新运行失败和已停止任务，同时跳过成功任务');
 assert.match(renderer, /for \(const task of queue\) \{\s*await executeSmTask\(task\);\s*\}/,
   '多个店铺任务必须逐个串行执行');
 assert.doesNotMatch(renderer, /Promise\.all\([^)]*executeSmTask/,
@@ -349,6 +351,16 @@ assert.match(renderer, /cfgJdLabel'[\s\S]*syncInventoryCheckAvailability\(true\)
   '库存校验选项必须跟随京配打标开关联动');
 assert.match(renderer, /inventoryCheckBeforeJdLabel: \$\('#cfgJdLabel'\)\.checked && inventoryCheckSelected/,
   '未勾选京配打标时不得保存库存校验状态');
+assert.match(indexHtml, /id="purchaseJdCheckRow"[\s\S]*name="cfgPurchaseJdCheck" value="remove" checked disabled[\s\S]*去除已打标[\s\S]*name="cfgPurchaseJdCheck" value="none" disabled[\s\S]*不操作[\s\S]*id="inventoryCheckRow"/,
+  '配置信息区域必须在库存校验前提供采购专用京配校验选项');
+assert.match(renderer, /cfgEnablePurchase'[\s\S]*syncPurchaseJdCheckAvailability\(\)/,
+  '采购京配校验选项必须跟随启用采购入库开关联动');
+assert.match(renderer, /purchaseJdLabelPolicy: \$\('#cfgEnablePurchase'\)\.checked \? purchaseJdLabelPolicy : 'none'/,
+  '未启用采购入库时不得保存京配去除策略');
+assert.match(renderer, /case 'enablePurchase':[\s\S]*resolvePurchaseJdLabelPolicy\(cfg\) === 'remove'[\s\S]*queryShopGoods\(\{ skus: task\.skus \}\)[\s\S]*filterPurchaseSkusByJdLabel[\s\S]*splitBatches\(purchaseSkus, BATCH_SIZE\)/,
+  '创建采购单前必须按配置只查询一次京配状态并使用剔除后的SKU');
+assert.match(main, /query-shop-goods'[\s\S]*\{ skus \}[\s\S]*params\.set\('shopId', ''\)/,
+  '京配状态必须按商家和SKU查询，不能误用CSP店铺编号过滤成空结果');
 assert.match(appStyles, /\.config-item input\[type="checkbox"\]:checked[\s\S]*stroke='%23fff'/,
   '配置区域选中的橙色复选框必须使用白色勾号');
 assert.match(renderer, /taskConfig\.jdLabel && taskConfig\.inventoryCheckBeforeJdLabel[\s\S]*const resolvedInventorySellerId = waitForInventory\s*\? resolveLabelTaskInventorySellerId\(shopOpt\)\s*: '';/,
@@ -512,6 +524,27 @@ assert.match(main, /ipcMain\.handle\('save-label-tasks'/,
   '主进程必须持久化待执行的打标任务');
 assert.match(main, /const autoLabelConfig =[\s\S]*autoLabelConfig[\s\S]*\};/,
   '主进程必须持久化每个店铺的自动打标配置且兼容旧记录');
+
+const purchaseFilterSource = renderer.slice(
+  renderer.indexOf('function filterPurchaseSkusByJdLabel('),
+  renderer.indexOf('function resolveLabelTaskInventorySellerId(')
+);
+const purchaseFilterScope = {};
+vm.runInNewContext(purchaseFilterSource, purchaseFilterScope);
+const purchaseFilterResult = purchaseFilterScope.filterPurchaseSkusByJdLabel(
+  ['already-master', 'not-labeled', 'missing-row', 'missing-fields'],
+  {
+    'already-master': { raw: { jdDeliver: '1', shopJdDeliver: 0 } },
+    'not-labeled': { raw: { jdDeliver: '0', shopJdDeliver: 0 } },
+    'missing-fields': { raw: { status: 1 } }
+  }
+);
+assert.deepStrictEqual([...purchaseFilterResult.removed], ['already-master'],
+  'jdDeliver为1时必须从采购单剔除');
+assert.deepStrictEqual([...purchaseFilterResult.keep], ['not-labeled', 'missing-row', 'missing-fields'],
+  '明确未打标、尚未进入云仓或缺少状态的SKU都必须保留用于创建采购单');
+assert.deepStrictEqual([...purchaseFilterResult.unresolved], ['missing-row', 'missing-fields'],
+  '未返回商品或京配字段时应留下诊断记录，但不得误删新SKU');
 
 async function testUnifiedInventoryTaskCreation() {
   const targetShop = {

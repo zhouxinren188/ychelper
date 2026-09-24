@@ -409,6 +409,9 @@ function initEventListeners() {
   $('#cfgJdLabel').addEventListener('change', () => {
     syncInventoryCheckAvailability(true);
   });
+  $('#cfgEnablePurchase').addEventListener('change', () => {
+    syncPurchaseJdCheckAvailability();
+  });
 
   // 弹窗遮罩点击关闭
   $('#modeModal').addEventListener('click', (e) => {
@@ -420,6 +423,38 @@ function initEventListeners() {
 }
 
 // ========== 添加任务 ==========
+function filterPurchaseSkusByJdLabel(skus, queryResults) {
+  const keep = [];
+  const removed = [];
+  const unresolved = [];
+  const results = queryResults && typeof queryResults === 'object' ? queryResults : {};
+
+  for (const value of Array.isArray(skus) ? skus : []) {
+    const sku = String(value || '').trim();
+    if (!sku) continue;
+    const raw = results[sku]?.raw;
+    const hasJdDeliver = raw && Object.prototype.hasOwnProperty.call(raw, 'jdDeliver');
+    if (!raw || !hasJdDeliver) {
+      unresolved.push(sku);
+      keep.push(sku);
+      continue;
+    }
+    const alreadyLabeled = raw.jdDeliver === true || Number(raw.jdDeliver) === 1;
+    if (alreadyLabeled) removed.push(sku);
+    else keep.push(sku);
+  }
+
+  return { keep, removed, unresolved };
+}
+
+function resolvePurchaseJdLabelPolicy(config) {
+  if (!config || typeof config !== 'object' || !config.enablePurchase) return 'none';
+  if (config.purchaseJdLabelPolicy === 'remove' || config.purchaseJdLabelPolicy === 'none') {
+    return config.purchaseJdLabelPolicy;
+  }
+  return config.inventoryCheckBeforeJdLabel ? 'remove' : 'none';
+}
+
 function resolveLabelTaskInventorySellerId(shopOption) {
   if (!shopOption) return '';
   const deptId = String(shopOption.deptId || '').trim();
@@ -486,7 +521,6 @@ function enqueueLabelTasks({
   if (shopId && !shopOpt) {
     return { success: false, error: '目标店铺不存在，请重新选择', taskCount: 0 };
   }
-
   // 仓库验证：仅京配步骤时可不选仓库
   if (!warehouseId && !onlyJdSteps) {
     return { success: false, error: '请选择仓库', taskCount: 0 };
@@ -668,6 +702,9 @@ function saveLogisticsPrefs() {
 // ========== 获取当前配置 ==========
 function getCurrentConfig() {
   const inventoryCheckSelected = document.querySelector('input[name="cfgInventoryCheck"]:checked')?.value === '1';
+  const purchaseJdLabelPolicy = document.querySelector('input[name="cfgPurchaseJdCheck"]:checked')?.value === 'none'
+    ? 'none'
+    : 'remove';
   return {
     importShopProduct: $('#cfgImportShopProduct').checked,
     enableShopProduct: $('#cfgEnableShopProduct').checked,
@@ -681,6 +718,7 @@ function getCurrentConfig() {
     logistics: $('#cfgLogistics').checked,
     cancelJdLabel: $('#cfgCancelJdLabel').checked,
     inventoryCheckBeforeJdLabel: $('#cfgJdLabel').checked && inventoryCheckSelected,
+    purchaseJdLabelPolicy: $('#cfgEnablePurchase').checked ? purchaseJdLabelPolicy : 'none',
     logLength: $('#logLength').value,
     logWidth: $('#logWidth').value,
     logHeight: $('#logHeight').value,
@@ -708,6 +746,9 @@ function applyConfig(config) {
   const inventoryCheckValue = config.jdLabel && config.inventoryCheckBeforeJdLabel ? '1' : '0';
   const inventoryCheckRadio = document.querySelector(`input[name="cfgInventoryCheck"][value="${inventoryCheckValue}"]`);
   if (inventoryCheckRadio) inventoryCheckRadio.checked = true;
+  const purchaseJdLabelPolicy = resolvePurchaseJdLabelPolicy(config);
+  const purchaseJdCheckRadio = document.querySelector(`input[name="cfgPurchaseJdCheck"][value="${purchaseJdLabelPolicy}"]`);
+  if (purchaseJdCheckRadio) purchaseJdCheckRadio.checked = true;
   $('#logLength').value = config.logLength || $('#logLength').value || '210';
   $('#logWidth').value = config.logWidth || $('#logWidth').value || '150';
   $('#logHeight').value = config.logHeight || $('#logHeight').value || '100';
@@ -716,6 +757,7 @@ function applyConfig(config) {
   if (purchaseQty && config.purchaseQty != null) purchaseQty.value = config.purchaseQty;
   $('#autoAccept').checked = config.autoAccept !== false;
   syncInventoryCheckAvailability(false);
+  syncPurchaseJdCheckAvailability();
   saveLogisticsPrefs();
 }
 
@@ -730,6 +772,15 @@ function syncInventoryCheckAvailability(resetWhenDisabled = false) {
     const offRadio = document.querySelector('input[name="cfgInventoryCheck"][value="0"]');
     if (offRadio) offRadio.checked = true;
   }
+}
+
+function syncPurchaseJdCheckAvailability() {
+  const enabled = $('#cfgEnablePurchase').checked;
+  const row = $('#purchaseJdCheckRow');
+  document.querySelectorAll('input[name="cfgPurchaseJdCheck"]').forEach(radio => {
+    radio.disabled = !enabled;
+  });
+  if (row) row.classList.toggle('is-disabled', !enabled);
 }
 
 // ========== 渲染任务列表 ==========
@@ -874,13 +925,17 @@ $('#deleteTaskCancelBtn').addEventListener('click', () => {
 
 // ========== 执行任务 ==========
 async function executeTasks() {
-  const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'stopped');
+  const pendingTasks = tasks.filter(t => (
+    t.status === 'pending' || t.status === 'stopped' || t.status === 'error'
+  ));
   if (pendingTasks.length === 0) {
     showToast('没有待执行的任务');
     return;
   }
-  // 将 stopped 状态的任务重置为 pending
-  pendingTasks.forEach(t => { if (t.status === 'stopped') t.status = 'pending'; });
+  // 手动点击执行时，已停止和失败任务都允许从头重试；成功任务仍会跳过。
+  pendingTasks.forEach(t => {
+    if (t.status === 'stopped' || t.status === 'error') t.status = 'pending';
+  });
   if (isExecuting) {
     showToast('任务正在执行中，请等待完成');
     return;
@@ -1578,8 +1633,31 @@ async function executeStep(step, task) {
         : suppliers[0];
       const supplierId = matchedSupplier?.supplierId || suppliers[0]?.supplierId || '';
       const departmentId = task.shopDeptId ? ('CBU' + task.shopDeptId) : (userData?.departmentId || '');
-      const batches = splitBatches(task.skus, BATCH_SIZE);
-      if (batches.length > 1) addLog('info', `[${skuLabel}] 共${task.skus.length}个SKU，分${batches.length}批上传（每批最多${BATCH_SIZE}）`);
+      let purchaseSkus = task.skus;
+      if (resolvePurchaseJdLabelPolicy(cfg) === 'remove') {
+        addLog('info', `[${skuLabel}] 创建采购单前正在校验京配状态...`);
+        const csgResult = await window.electronAPI.queryShopGoods({ skus: task.skus });
+        if (!csgResult?.success) {
+          throw new Error(`采购京配校验失败: ${csgResult?.error || '商品查询失败'}`);
+        }
+        const filtered = filterPurchaseSkusByJdLabel(task.skus, csgResult.results);
+        purchaseSkus = filtered.keep;
+        if (filtered.unresolved.length > 0) {
+          addLog('info', `[${skuLabel}] ${filtered.unresolved.length}个SKU未查到京配状态，按未打标保留创建采购单`);
+        }
+        if (filtered.removed.length > 0) {
+          addLog('info', `[${skuLabel}] 京配校验完成：已去除${filtered.removed.length}个已打标SKU，剩余${purchaseSkus.length}个创建采购单`);
+        } else {
+          addLog('info', `[${skuLabel}] 京配校验完成：未发现已打标SKU，全部${purchaseSkus.length}个继续创建采购单`);
+        }
+        if (purchaseSkus.length === 0) {
+          addLog('success', `[${skuLabel}] 全部SKU均已打标，无需创建采购单`);
+          break;
+        }
+      }
+
+      const batches = splitBatches(purchaseSkus, BATCH_SIZE);
+      if (batches.length > 1) addLog('info', `[${skuLabel}] 共${purchaseSkus.length}个SKU，分${batches.length}批上传（每批最多${BATCH_SIZE}）`);
       for (let i = 0; i < batches.length; i++) {
         const batchLabel = batches.length > 1 ? `批次${i + 1}/${batches.length}` : '';
         const result = await window.electronAPI.generateExcel({
@@ -6668,6 +6746,124 @@ function addSmLog(type, message) {
 // ========== CP物流服务定时开关 ==========
 
 let cpLogisticsViewState = { settings: null, context: null, contextMatches: false, running: false };
+let cpLogisticsSelectedDepartments = [];
+let cpLogisticsAvailableDepartments = [];
+
+function getCpLogisticsDepartmentKey(department) {
+  return String(department?.deptNo || department?.deptId || department?.deptName || '');
+}
+
+function normalizeCpLogisticsDepartments(departments) {
+  const seen = new Set();
+  return (Array.isArray(departments) ? departments : []).filter(department => {
+    const key = getCpLogisticsDepartmentKey(department);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(department => ({
+    id: String(department.id || ''),
+    logisticsServiceNo: String(department.logisticsServiceNo || ''),
+    deptId: String(department.deptId || ''),
+    deptNo: String(department.deptNo || ''),
+    deptName: String(department.deptName || ''),
+    sellerId: String(department.sellerId || ''),
+    sellerName: String(department.sellerName || '')
+  }));
+}
+
+function renderCpLogisticsSelectedDepartments() {
+  const listEl = $('#cpLogisticsSelectedDepartments');
+  if (!listEl) return;
+  listEl.replaceChildren();
+  if (cpLogisticsSelectedDepartments.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cp-logistics-departments-empty';
+    empty.textContent = '尚未添加事业部';
+    listEl.appendChild(empty);
+    return;
+  }
+  cpLogisticsSelectedDepartments.forEach(department => {
+    const chip = document.createElement('div');
+    chip.className = 'cp-logistics-department-chip';
+    const name = document.createElement('span');
+    name.textContent = department.deptName || department.deptNo || department.deptId;
+    name.title = `${department.deptName || ''}${department.deptNo ? `（${department.deptNo}）` : ''}`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `移除${name.textContent}`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      const key = getCpLogisticsDepartmentKey(department);
+      cpLogisticsSelectedDepartments = cpLogisticsSelectedDepartments.filter(item => getCpLogisticsDepartmentKey(item) !== key);
+      renderCpLogisticsSelectedDepartments();
+    });
+    chip.append(name, remove);
+    listEl.appendChild(chip);
+  });
+}
+
+function closeCpLogisticsDepartmentModal() {
+  const modal = $('#cpLogisticsDepartmentModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function renderCpLogisticsDepartmentOptions() {
+  const optionsEl = $('#cpLogisticsDepartmentOptions');
+  if (!optionsEl) return;
+  optionsEl.replaceChildren();
+  if (cpLogisticsAvailableDepartments.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cp-logistics-departments-empty';
+    empty.textContent = '当前 CP 账号没有可选择的事业部';
+    optionsEl.appendChild(empty);
+    return;
+  }
+  const selectedKeys = new Set(cpLogisticsSelectedDepartments.map(getCpLogisticsDepartmentKey));
+  cpLogisticsAvailableDepartments.forEach(department => {
+    const label = document.createElement('label');
+    label.className = 'cp-logistics-department-option';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = getCpLogisticsDepartmentKey(department);
+    checkbox.checked = selectedKeys.has(checkbox.value);
+    const name = document.createElement('span');
+    name.className = 'cp-logistics-department-option-name';
+    name.textContent = department.deptName || department.sellerName || department.deptNo;
+    const number = document.createElement('span');
+    number.className = 'cp-logistics-department-option-no';
+    number.textContent = department.deptNo || department.deptId;
+    label.append(checkbox, name, number);
+    optionsEl.appendChild(label);
+  });
+}
+
+async function openCpLogisticsDepartmentModal() {
+  const modal = $('#cpLogisticsDepartmentModal');
+  const optionsEl = $('#cpLogisticsDepartmentOptions');
+  if (!modal || !optionsEl) return;
+  modal.style.display = 'flex';
+  optionsEl.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'cp-logistics-departments-empty';
+  loading.textContent = '正在从 CP 端读取事业部...';
+  optionsEl.appendChild(loading);
+  try {
+    const result = await window.electronAPI.listCpLogisticsDepartments();
+    if (!result?.success) throw new Error(result?.error || '事业部列表读取失败');
+    cpLogisticsAvailableDepartments = normalizeCpLogisticsDepartments(result.departments);
+    renderCpLogisticsDepartmentOptions();
+  } catch (error) {
+    closeCpLogisticsDepartmentModal();
+    showToast(error.message || '事业部列表读取失败', 4500, 'error');
+  }
+}
+
+function confirmCpLogisticsDepartments() {
+  const checkedKeys = new Set([...$$('#cpLogisticsDepartmentOptions input[type="checkbox"]:checked')].map(input => input.value));
+  cpLogisticsSelectedDepartments = cpLogisticsAvailableDepartments.filter(department => checkedKeys.has(getCpLogisticsDepartmentKey(department)));
+  renderCpLogisticsSelectedDepartments();
+  closeCpLogisticsDepartmentModal();
+}
 
 function formatCpLogisticsDateTime(value) {
   const date = new Date(value || 0);
@@ -6738,7 +6934,6 @@ function renderCpLogisticsSettings(result) {
   const enabledEl = $('#cpLogisticsEnabled');
   const enabledTextEl = $('#cpLogisticsEnabledText');
   const accountEl = $('#cpLogisticsAccount');
-  const departmentEl = $('#cpLogisticsDepartment');
   const addTimeEl = $('#cpLogisticsAddTime');
   const removeTimeEl = $('#cpLogisticsRemoveTime');
   if (!enabledEl) return;
@@ -6746,9 +6941,9 @@ function renderCpLogisticsSettings(result) {
   enabledEl.checked = settings.enabled === true;
   enabledTextEl.textContent = settings.enabled ? '已开启' : '已关闭';
   const displayedAccount = settings.enabled ? (settings.username || settings.accountId) : (context.username || context.accountId);
-  const displayedDepartment = settings.enabled ? (settings.deptName || settings.deptNo) : (context.deptName || context.deptNo);
   accountEl.value = displayedAccount || '';
-  departmentEl.value = displayedDepartment || '';
+  cpLogisticsSelectedDepartments = normalizeCpLogisticsDepartments(settings.departments);
+  renderCpLogisticsSelectedDepartments();
   addTimeEl.value = settings.addTime || '00:05';
   removeTimeEl.value = settings.removeTime || '23:55';
 
@@ -6761,7 +6956,7 @@ function renderCpLogisticsSettings(result) {
   badge.textContent = statusLabels[status] || '等待中';
   badge.className = `cp-logistics-status-badge is-${status}`;
   if (settings.enabled && cpLogisticsViewState.contextMatches === false) {
-    message.textContent = '当前登录账号或事业部与固定配置不一致，任务已保留但不会执行';
+    message.textContent = '当前登录账号与保存配置不一致，任务已保留但不会执行';
     badge.textContent = '等待账号';
     badge.className = 'cp-logistics-status-badge is-waiting';
   } else {
@@ -6792,7 +6987,8 @@ async function saveCpLogisticsSettings() {
     const result = await window.electronAPI.saveCpLogisticsSettings({
       enabled: $('#cpLogisticsEnabled').checked,
       addTime: $('#cpLogisticsAddTime').value,
-      removeTime: $('#cpLogisticsRemoveTime').value
+      removeTime: $('#cpLogisticsRemoveTime').value,
+      departments: cpLogisticsSelectedDepartments
     });
     if (!result?.success) throw new Error(result?.error || '设置保存失败');
     cpLogisticsViewState.contextMatches = true;
@@ -6808,9 +7004,18 @@ async function saveCpLogisticsSettings() {
 function initCpLogisticsModule() {
   const saveBtn = $('#cpLogisticsSaveBtn');
   const openCpBtn = $('#cpLogisticsOpenCpBtn');
+  const addDepartmentBtn = $('#cpLogisticsAddDepartmentBtn');
   const enabledEl = $('#cpLogisticsEnabled');
-  if (!saveBtn || !openCpBtn || !enabledEl) return;
+  const departmentModal = $('#cpLogisticsDepartmentModal');
+  if (!saveBtn || !openCpBtn || !addDepartmentBtn || !enabledEl || !departmentModal) return;
   saveBtn.addEventListener('click', saveCpLogisticsSettings);
+  addDepartmentBtn.addEventListener('click', openCpLogisticsDepartmentModal);
+  $('#cpLogisticsDepartmentModalClose').addEventListener('click', closeCpLogisticsDepartmentModal);
+  $('#cpLogisticsDepartmentCancelBtn').addEventListener('click', closeCpLogisticsDepartmentModal);
+  $('#cpLogisticsDepartmentConfirmBtn').addEventListener('click', confirmCpLogisticsDepartments);
+  departmentModal.addEventListener('click', event => {
+    if (event.target === departmentModal) closeCpLogisticsDepartmentModal();
+  });
   enabledEl.addEventListener('change', () => {
     $('#cpLogisticsEnabledText').textContent = enabledEl.checked ? '已开启' : '已关闭';
   });

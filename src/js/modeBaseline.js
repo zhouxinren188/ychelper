@@ -16,6 +16,7 @@ const MODE_BASELINE = [
       logistics: true,
       cancelJdLabel: false,
       inventoryCheckBeforeJdLabel: true,
+      purchaseJdLabelPolicy: 'remove',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -40,6 +41,7 @@ const MODE_BASELINE = [
       logistics: true,
       cancelJdLabel: false,
       inventoryCheckBeforeJdLabel: false,
+      purchaseJdLabelPolicy: 'none',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -64,6 +66,7 @@ const MODE_BASELINE = [
       logistics: false,
       cancelJdLabel: false,
       inventoryCheckBeforeJdLabel: false,
+      purchaseJdLabelPolicy: 'none',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -88,6 +91,7 @@ const MODE_BASELINE = [
       logistics: false,
       cancelJdLabel: false,
       inventoryCheckBeforeJdLabel: false,
+      purchaseJdLabelPolicy: 'none',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -112,6 +116,7 @@ const MODE_BASELINE = [
       logistics: false,
       cancelJdLabel: true,
       inventoryCheckBeforeJdLabel: false,
+      purchaseJdLabelPolicy: 'none',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -136,6 +141,7 @@ const MODE_BASELINE = [
       logistics: false,
       cancelJdLabel: true,
       inventoryCheckBeforeJdLabel: false,
+      purchaseJdLabelPolicy: 'none',
       logLength: '210',
       logWidth: '150',
       logHeight: '100',
@@ -152,6 +158,26 @@ function cloneModeBaseline() {
     name: mode.name,
     config: { ...mode.config }
   }));
+}
+
+function resolvePurchaseJdLabelPolicy(config) {
+  if (!config || typeof config !== 'object' || !config.enablePurchase) return 'none';
+  if (config.purchaseJdLabelPolicy === 'remove' || config.purchaseJdLabelPolicy === 'none') {
+    return config.purchaseJdLabelPolicy;
+  }
+  return config.inventoryCheckBeforeJdLabel ? 'remove' : 'none';
+}
+
+function applyPurchaseJdLabelPolicyDefaults(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.modes)) return false;
+  let changed = false;
+  for (const mode of data.modes) {
+    if (!mode?.config || typeof mode.config !== 'object') continue;
+    if (mode.config.purchaseJdLabelPolicy === 'remove' || mode.config.purchaseJdLabelPolicy === 'none') continue;
+    mode.config.purchaseJdLabelPolicy = resolvePurchaseJdLabelPolicy(mode.config);
+    changed = true;
+  }
+  return changed;
 }
 
 function applyModeBaselineMigration(data) {
@@ -171,5 +197,7 @@ module.exports = {
   MODE_BASELINE_REVISION,
   MODE_BASELINE,
   cloneModeBaseline,
-  applyModeBaselineMigration
+  applyModeBaselineMigration,
+  resolvePurchaseJdLabelPolicy,
+  applyPurchaseJdLabelPolicyDefaults
 };

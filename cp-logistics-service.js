@@ -5,6 +5,7 @@ const TARGET_SERVICE_ID = '1';
 const TARGET_SHIPPER_NO = 'CYS0000010';
 const TARGET_SERVICE_LABEL = '仓配一体服务 / 青龙';
 const MIN_CHANGE_INTERVAL_MS = 3 * 60 * 1000;
+const DEPARTMENT_CHANGE_INTERVAL_MS = 6 * 1000;
 
 const SERVICE_FIELD_NAMES = new Set([
   'shipIds',
@@ -364,22 +365,16 @@ function createLogisticsListBody(start = 0, length = 100, csrfToken = '') {
 
 function findDepartmentService(rows, expected = {}) {
   const list = Array.isArray(rows) ? rows : [];
+  const expectedRecordId = text(expected.id || expected.serviceRecordId);
   const expectedDeptNo = normalizeDeptNo(expected.deptNo || expected.departmentId);
-  const expectedDeptId = normalizeDeptNo(expected.deptId || expected.id);
-  const expectedName = text(expected.deptName || expected.departmentName);
-  const matches = list.filter(row => {
-    const rowDeptNo = normalizeDeptNo(row?.deptNo);
-    const rowDeptId = normalizeDeptNo(row?.deptId);
-    if (expectedDeptNo && (rowDeptNo === expectedDeptNo || rowDeptId === expectedDeptNo)) return true;
-    if (expectedDeptId && (rowDeptId === expectedDeptId || rowDeptNo === expectedDeptId)) return true;
-    return !expectedDeptNo && !expectedDeptId && expectedName && text(row?.deptName) === expectedName;
-  });
-  if (matches.length === 0) return null;
-  if (matches.length > 1) {
-    const exactName = matches.find(row => !expectedName || text(row?.deptName) === expectedName);
-    return exactName || matches[0];
-  }
-  return matches[0];
+  const expectedDeptId = normalizeDeptNo(expected.deptId);
+  if (!expectedRecordId && !expectedDeptNo && !expectedDeptId) return null;
+  return list.find(row => {
+    if (expectedRecordId && text(row?.id) !== expectedRecordId) return false;
+    if (expectedDeptNo && normalizeDeptNo(row?.deptNo) !== expectedDeptNo) return false;
+    if (expectedDeptId && normalizeDeptNo(row?.deptId) !== expectedDeptId) return false;
+    return true;
+  }) || null;
 }
 
 function parseJson(textValue, label) {
@@ -392,6 +387,26 @@ function parseJson(textValue, label) {
 
 function isTruthyResponseValue(value) {
   return value === true || value === 1 || String(value || '').toLowerCase() === 'true';
+}
+
+async function changeDepartmentsSequentially(client, departments, action, options = {}) {
+  if (!client || typeof client.change !== 'function') throw new Error('CP物流服务客户端不可用');
+  const intervalMs = Math.max(0, Number(options.intervalMs ?? DEPARTMENT_CHANGE_INTERVAL_MS) || 0);
+  const wait = typeof options.wait === 'function'
+    ? options.wait
+    : delayMs => new Promise(resolve => setTimeout(resolve, delayMs));
+  const results = [];
+  const list = Array.isArray(departments) ? departments : [];
+  for (let index = 0; index < list.length; index += 1) {
+    const department = list[index];
+    if (index > 0 && intervalMs > 0) await wait(intervalMs);
+    try {
+      results.push({ department, success: true, result: await client.change(department, action) });
+    } catch (error) {
+      results.push({ department, success: false, error });
+    }
+  }
+  return results;
 }
 
 class CpLogisticsServiceClient {
@@ -488,6 +503,7 @@ class CpLogisticsServiceClient {
     });
     const snapshot = parseFormSnapshot(html);
     assertExpectedDepartment(snapshot.identity, expectedDepartment);
+    assertExpectedDepartment(snapshot.identity, record);
     const warehouseText = await this.request(`/logistics/getWarehouseAddService.do?id=${encodeURIComponent(snapshot.identity.id)}&_v=${this.now()}`, {
       method: 'GET',
       headers: this.commonHeaders()
@@ -556,6 +572,7 @@ class CpLogisticsServiceClient {
 
 module.exports = {
   CP_ORIGIN,
+  DEPARTMENT_CHANGE_INTERVAL_MS,
   MIN_CHANGE_INTERVAL_MS,
   TARGET_SERVICE_ID,
   TARGET_SHIPPER_NO,
@@ -564,6 +581,7 @@ module.exports = {
   assertExpectedDepartment,
   buildChangePayload,
   buildWarehouseServiceJson,
+  changeDepartmentsSequentially,
   cpDateKey,
   cpScheduledAt,
   cpScheduleDistanceMinutes,

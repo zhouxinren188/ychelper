@@ -6,20 +6,28 @@ $releaseBackup = Join-Path $releaseRoot ('backup-' + [guid]::NewGuid().ToString(
 New-Item -ItemType Directory -Path $releaseBackup -Force | Out-Null
 $releaseGuid = 'ec28313f-d784-5e52-8ed5-a59efff37e23'
 $releaseRegistry = @("HKCU\Software\$releaseGuid", "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\$releaseGuid")
+$releaseRegistryPaths = @("Registry::HKEY_CURRENT_USER\Software\$releaseGuid", "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\$releaseGuid")
+$releaseRegistryExisted = @($false, $false)
 $releaseLinks = @((Join-Path ([Environment]::GetFolderPath('Desktop')) '云仓助手.lnk'), (Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\云仓助手.lnk'))
 $releaseInstallerCache = Join-Path $env:LOCALAPPDATA 'cloud-warehouse-assistant-updater\installer.exe'
 $releaseExe = Join-Path $env:LOCALAPPDATA 'Programs\cloud-warehouse-assistant\云仓助手.exe'
 $releaseExeHash = if (Test-Path -LiteralPath $releaseExe) { (Get-FileHash -LiteralPath $releaseExe).Hash } else { '' }
 foreach ($releaseIndex in 0..1) {
-  & reg.exe export $releaseRegistry[$releaseIndex] (Join-Path $releaseBackup "registry-$releaseIndex.reg") /y | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Cannot back up exact installation registration' }
+  $releaseRegistryExisted[$releaseIndex] = Test-Path -LiteralPath $releaseRegistryPaths[$releaseIndex]
+  if ($releaseRegistryExisted[$releaseIndex]) {
+    & reg.exe export $releaseRegistry[$releaseIndex] (Join-Path $releaseBackup "registry-$releaseIndex.reg") /y | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot back up exact installation registration' }
+  }
   if (Test-Path -LiteralPath $releaseLinks[$releaseIndex]) { Copy-Item -LiteralPath $releaseLinks[$releaseIndex] -Destination (Join-Path $releaseBackup "shortcut-$releaseIndex.lnk") }
 }
 if (Test-Path -LiteralPath $releaseInstallerCache) { Copy-Item -LiteralPath $releaseInstallerCache -Destination (Join-Path $releaseBackup 'installer-cache.exe') }
 try {
   foreach ($releaseRegistryKey in $releaseRegistry) {
-    & reg.exe delete $releaseRegistryKey /f | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot isolate exact installation registration' }
+    $releaseRegistryIndex = [Array]::IndexOf($releaseRegistry, $releaseRegistryKey)
+    if (Test-Path -LiteralPath $releaseRegistryPaths[$releaseRegistryIndex]) {
+      & reg.exe delete $releaseRegistryKey /f | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'Cannot isolate exact installation registration' }
+    }
   }
   $releaseInstall = Join-Path $releaseRoot 'install'
   if (-not $ExistingFixtureRoot) {
@@ -50,9 +58,14 @@ try {
   # Only stop executables installed in this exact temporary test directory.
   Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($releaseRoot + '\') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   foreach ($releaseIndex in 0..1) {
-    & reg.exe delete $releaseRegistry[$releaseIndex] /f 2>$null | Out-Null
-    & reg.exe import (Join-Path $releaseBackup "registry-$releaseIndex.reg") | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Original installation registry restore failed' }
+    if (Test-Path -LiteralPath $releaseRegistryPaths[$releaseIndex]) {
+      & reg.exe delete $releaseRegistry[$releaseIndex] /f | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'Cannot remove isolated installation registration' }
+    }
+    if ($releaseRegistryExisted[$releaseIndex]) {
+      & reg.exe import (Join-Path $releaseBackup "registry-$releaseIndex.reg") | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'Original installation registry restore failed' }
+    }
     $releaseSavedLink = Join-Path $releaseBackup "shortcut-$releaseIndex.lnk"
     if (Test-Path -LiteralPath $releaseSavedLink) { Copy-Item -LiteralPath $releaseSavedLink -Destination $releaseLinks[$releaseIndex] -Force }
     elseif (Test-Path -LiteralPath $releaseLinks[$releaseIndex]) { Remove-Item -LiteralPath $releaseLinks[$releaseIndex] }

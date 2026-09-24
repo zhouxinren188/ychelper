@@ -25,7 +25,8 @@ const { canUseAutomation } = require('./src/js/subscriptionAccess');
 const {
   MODE_BASELINE_REVISION,
   cloneModeBaseline,
-  applyModeBaselineMigration
+  applyModeBaselineMigration,
+  applyPurchaseJdLabelPolicyDefaults
 } = require('./src/js/modeBaseline');
 const {
   buildShopStockForm,
@@ -126,9 +127,12 @@ const { launchInstallerBeforeApplicationExit } = require('./src/js/deferredInsta
 const { saveRecoveryGenerations, writeFileDurably } = require('./durable-store-file');
 const {
   CpLogisticsServiceClient,
+  DEPARTMENT_CHANGE_INTERVAL_MS,
   MIN_CHANGE_INTERVAL_MS,
   cpDateKey,
   cpScheduleDistanceMinutes,
+  changeDepartmentsSequentially,
+  findDepartmentService,
   getDueCpLogisticsActions,
   normalizeCpLogisticsTime,
   resetChangedCpScheduleCompletions
@@ -1253,8 +1257,55 @@ const CP_LOGISTICS_MAX_FAILURES_PER_DAY = 3;
 let cpLogisticsTimer = null;
 let cpLogisticsRunPromise = null;
 
+function sanitizeCpLogisticsDepartment(source = {}) {
+  const value = source && typeof source === 'object' ? source : {};
+  return {
+    id: String(value.id || value.serviceRecordId || '').slice(0, 128),
+    logisticsServiceNo: String(value.logisticsServiceNo || '').slice(0, 128),
+    deptId: String(value.deptId || value.idValue || '').slice(0, 128),
+    deptNo: String(value.deptNo || value.departmentId || '').slice(0, 128),
+    deptName: String(value.deptName || value.departmentName || '').slice(0, 256),
+    sellerId: String(value.sellerId || '').slice(0, 128),
+    sellerName: String(value.sellerName || '').slice(0, 256)
+  };
+}
+
+function cpLogisticsDepartmentKey(source = {}) {
+  return String(source.id || source.deptNo || source.deptId || '').trim().slice(0, 128);
+}
+
+function sanitizeCpLogisticsDepartments(source) {
+  const value = source && typeof source === 'object' ? source : {};
+  const hasExplicitDepartments = Array.isArray(value.departments);
+  let candidates = hasExplicitDepartments ? value.departments : [];
+  if (!hasExplicitDepartments && (value.deptNo || value.deptId || value.deptName)) {
+    candidates = [{
+      deptId: value.deptId,
+      deptNo: value.deptNo,
+      deptName: value.deptName
+    }];
+  }
+  const seen = new Set();
+  return candidates.map(sanitizeCpLogisticsDepartment).filter(item => {
+    if (!item.deptNo && !item.deptId && !item.deptName) return false;
+    const key = item.deptNo || item.deptId || item.deptName;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 100);
+}
+
+function cpLogisticsDepartmentSignature(departments) {
+  return sanitizeCpLogisticsDepartments({ departments })
+    .map(item => `${item.deptNo}|${item.deptId}|${item.deptName}`)
+    .sort()
+    .join('\n');
+}
+
 function sanitizeCpLogisticsSettings(source = {}) {
   const value = source && typeof source === 'object' ? source : {};
+  const departments = sanitizeCpLogisticsDepartments(value);
+  const primaryDepartment = departments[0] || {};
   const history = Array.isArray(value.history) ? value.history.slice(-50).map(item => ({
     time: String(item?.time || '').slice(0, 32),
     level: ['success', 'error', 'info', 'warn'].includes(item?.level) ? item.level : 'info',
@@ -1266,9 +1317,10 @@ function sanitizeCpLogisticsSettings(source = {}) {
     removeTime: normalizeCpLogisticsTime(value.removeTime, '23:55'),
     accountId: String(value.accountId || '').slice(0, 128),
     username: String(value.username || '').slice(0, 256),
-    deptId: String(value.deptId || '').slice(0, 128),
-    deptNo: String(value.deptNo || '').slice(0, 128),
-    deptName: String(value.deptName || '').slice(0, 256),
+    departments,
+    deptId: primaryDepartment.deptId || '',
+    deptNo: primaryDepartment.deptNo || '',
+    deptName: primaryDepartment.deptName || '',
     activatedAt: String(value.activatedAt || '').slice(0, 32),
     lastAddDate: String(value.lastAddDate || '').slice(0, 16),
     lastRemoveDate: String(value.lastRemoveDate || '').slice(0, 16),
@@ -1282,6 +1334,13 @@ function sanitizeCpLogisticsSettings(source = {}) {
     failureCount: Math.max(0, Math.min(CP_LOGISTICS_MAX_FAILURES_PER_DAY, Number(value.failureCount) || 0)),
     blockedDate: String(value.blockedDate || '').slice(0, 16),
     blockedAction: value.blockedAction === 'remove' ? 'remove' : value.blockedAction === 'add' ? 'add' : '',
+    retryDepartmentDate: String(value.retryDepartmentDate || '').slice(0, 16),
+    retryDepartmentAction: value.retryDepartmentAction === 'remove'
+      ? 'remove'
+      : value.retryDepartmentAction === 'add' ? 'add' : '',
+    retryDepartmentKeys: [...new Set((Array.isArray(value.retryDepartmentKeys) ? value.retryDepartmentKeys : [])
+      .map(item => String(item || '').trim().slice(0, 128))
+      .filter(Boolean))].slice(0, 100),
     history
   };
 }
@@ -1360,14 +1419,14 @@ function getCurrentCpLogisticsContext() {
     username: String(currentUsername || ''),
     deptId: String(pair.id || pair.deptId || '').trim(),
     deptNo: String(deptNo || pair.deptNo || '').trim(),
-    deptName: String(userData.selectedDeptName || pair.deptName || userData.departmentName || '').trim()
+    deptName: String(userData.selectedDeptName || pair.deptName || userData.departmentName || '').trim(),
+    departments: sanitizeCpLogisticsDepartments({ departments: pairs })
   };
 }
 
 function cpLogisticsContextMatches(settings, context) {
   return Boolean(
-    settings.accountId && context.accountId && settings.accountId === context.accountId &&
-    settings.deptNo && context.deptNo && settings.deptNo === context.deptNo
+    settings.accountId && context.accountId && settings.accountId === context.accountId
   );
 }
 
@@ -1397,60 +1456,111 @@ function saveCpLogisticsRuntime(settings, { logLevel = '', logMessage = '' } = {
 
 async function executeCpLogisticsAction(settings, context, dueAction) {
   const runDate = cpDateKey();
+  const departments = sanitizeCpLogisticsDepartments(settings);
+  const retryKeys = settings.retryDepartmentDate === runDate
+    && settings.retryDepartmentAction === dueAction.action
+    ? new Set(settings.retryDepartmentKeys)
+    : new Set();
+  const retryDepartments = retryKeys.size > 0
+    ? departments.filter(department => retryKeys.has(cpLogisticsDepartmentKey(department)))
+    : [];
+  const targetDepartments = retryDepartments.length > 0 ? retryDepartments : departments;
+  const isPartialRetry = retryDepartments.length > 0;
   let current = saveCpLogisticsRuntime({
     ...settings,
     lastStatus: 'running',
-    lastMessage: `正在为“${context.deptName || context.deptNo}”${dueAction.label}仓配一体服务`,
+    lastMessage: isPartialRetry
+      ? `正在重试 ${targetDepartments.length} 个失败事业部：${dueAction.label}仓配一体服务`
+      : `正在逐个处理 ${targetDepartments.length} 个事业部：${dueAction.label}仓配一体服务`,
     lastRunAt: new Date().toISOString(),
     nextRetryAt: ''
   }, {
     logLevel: 'info',
-    logMessage: `开始${dueAction.label}仓配一体服务，执行前将重新读取当前物流服务和仓库配置`
+    logMessage: isPartialRetry
+      ? `开始重试 ${targetDepartments.length} 个失败事业部，事业部之间间隔 ${DEPARTMENT_CHANGE_INTERVAL_MS / 1000} 秒`
+      : `开始为 ${targetDepartments.length} 个事业部逐个${dueAction.label}仓配一体服务，事业部之间间隔 ${DEPARTMENT_CHANGE_INTERVAL_MS / 1000} 秒`
   });
 
-  try {
-    const client = new CpLogisticsServiceClient({
-      session: getMerchantSession(),
-      bootstrapSession: () => loadCpWorkspace({ show: false })
-    });
-    const result = await client.change(context, dueAction.action);
-    if (activeMerchantAccountId) {
-      await cookieManager.exportCookies(getMerchantSession(), 'merchant', activeMerchantAccountId);
+  const client = new CpLogisticsServiceClient({
+    session: getMerchantSession(),
+    bootstrapSession: () => loadCpWorkspace({ show: false })
+  });
+  const outcomes = await changeDepartmentsSequentially(client, targetDepartments, dueAction.action);
+  const succeeded = outcomes.filter(outcome => outcome.success);
+  const failed = outcomes.filter(outcome => !outcome.success);
+  const changed = succeeded.some(outcome => outcome.result?.changed === true);
+  for (const outcome of outcomes) {
+    const { department, result, error } = outcome;
+    const label = department.deptName || department.deptNo || department.deptId;
+    if (outcome.success) {
+      current = loadCpLogisticsSettings();
+      current.history.push({
+        time: new Date().toISOString(),
+        level: 'success',
+        message: `${label}：${dueAction.label}${result.changed ? '成功' : '无需变更'}（${result.warehouseCount}个仓库）`
+      });
+      saveCpLogisticsRuntime(current);
+    } else {
+      current = loadCpLogisticsSettings();
+      current.history.push({
+        time: new Date().toISOString(),
+        level: 'error',
+        message: `${label}：${dueAction.label}失败：${error.message || '未知错误'}`
+      });
+      saveCpLogisticsRuntime(current);
     }
-    current = loadCpLogisticsSettings();
+  }
+
+  if (activeMerchantAccountId && cookieManager) {
+    try {
+      await cookieManager.exportCookies(getMerchantSession(), 'merchant', activeMerchantAccountId);
+    } catch (error) {
+      console.warn('[CP物流服务] Cookie持久化失败，但本次事业部操作结果已保留:', error.message);
+    }
+  }
+
+  current = loadCpLogisticsSettings();
+  if (failed.length === 0) {
     if (dueAction.action === 'add') current.lastAddDate = runDate;
     else current.lastRemoveDate = runDate;
-    if (result.changed) current.lastChangeAt = new Date().toISOString();
+    if (changed) current.lastChangeAt = new Date().toISOString();
     current.lastRunAt = new Date().toISOString();
     current.lastStatus = 'success';
-    current.lastMessage = `${dueAction.label}完成：${result.message}（${result.warehouseCount}个仓库）`;
+    current.lastMessage = `${dueAction.label}完成：${departments.length} 个事业部全部处理成功`;
     current.nextRetryAt = '';
     current.failureDate = '';
     current.failureAction = '';
     current.failureCount = 0;
     current.blockedDate = '';
     current.blockedAction = '';
+    current.retryDepartmentDate = '';
+    current.retryDepartmentAction = '';
+    current.retryDepartmentKeys = [];
     saveCpLogisticsRuntime(current, { logLevel: 'success', logMessage: current.lastMessage });
-  } catch (error) {
-    current = loadCpLogisticsSettings();
-    const sameFailure = current.failureDate === runDate && current.failureAction === dueAction.action;
-    current.failureDate = runDate;
-    current.failureAction = dueAction.action;
-    current.failureCount = sameFailure ? current.failureCount + 1 : 1;
-    current.lastRunAt = new Date().toISOString();
-    current.lastStatus = 'error';
-    current.lastMessage = `${dueAction.label}失败：${error.message || '未知错误'}`;
-    if (current.failureCount >= CP_LOGISTICS_MAX_FAILURES_PER_DAY) {
-      current.blockedDate = runDate;
-      current.blockedAction = dueAction.action;
-      current.nextRetryAt = '';
-      current.lastMessage += '；今日已停止自动重试，请检查后重新保存设置';
-    } else {
-      current.nextRetryAt = new Date(Date.now() + MIN_CHANGE_INTERVAL_MS).toISOString();
-      current.lastMessage += `；3分钟后进行第${current.failureCount + 1}次尝试`;
-    }
-    saveCpLogisticsRuntime(current, { logLevel: 'error', logMessage: current.lastMessage });
+    return;
   }
+
+  const sameFailure = current.failureDate === runDate && current.failureAction === dueAction.action;
+  current.failureDate = runDate;
+  current.failureAction = dueAction.action;
+  current.failureCount = sameFailure ? current.failureCount + 1 : 1;
+  current.lastRunAt = new Date().toISOString();
+  if (changed) current.lastChangeAt = new Date().toISOString();
+  current.lastStatus = 'error';
+  current.lastMessage = `${dueAction.label}部分失败：成功 ${succeeded.length} 个，失败 ${failed.length} 个`;
+  current.retryDepartmentDate = runDate;
+  current.retryDepartmentAction = dueAction.action;
+  current.retryDepartmentKeys = failed.map(outcome => cpLogisticsDepartmentKey(outcome.department)).filter(Boolean);
+  if (current.failureCount >= CP_LOGISTICS_MAX_FAILURES_PER_DAY) {
+    current.blockedDate = runDate;
+    current.blockedAction = dueAction.action;
+    current.nextRetryAt = '';
+    current.lastMessage += '；今日已停止自动重试，请检查后重新保存设置';
+  } else {
+    current.nextRetryAt = new Date(Date.now() + MIN_CHANGE_INTERVAL_MS).toISOString();
+    current.lastMessage += `；3分钟后进行第${current.failureCount + 1}次尝试`;
+  }
+  saveCpLogisticsRuntime(current, { logLevel: 'error', logMessage: current.lastMessage });
 }
 
 async function checkCpLogisticsSchedule() {
@@ -1462,6 +1572,7 @@ async function checkCpLogisticsSchedule() {
 
   const context = getCurrentCpLogisticsContext();
   if (!cpLogisticsContextMatches(settings, context)) return null;
+  if (settings.departments.length === 0) return null;
   const now = new Date();
   const retryAt = new Date(settings.nextRetryAt || 0);
   if (!Number.isNaN(retryAt.getTime()) && now < retryAt) return null;
@@ -3651,6 +3762,17 @@ app.whenReady().then(async () => {
     }
   }
 
+  // 只补充新增的京配校验字段，不替换模式列表，也不改动用户已有配置。
+  let supplementedPurchaseJdPolicy = false;
+  const supplementedModes = storeUpdate(data => {
+    supplementedPurchaseJdPolicy = applyPurchaseJdLabelPolicyDefaults(data);
+  });
+  if (supplementedModes && supplementedPurchaseJdPolicy) {
+    console.log('[存储] 已为旧快捷模式补充采购京配校验默认值，其他自定义配置保持不变');
+  } else if (!supplementedModes) {
+    console.error('[存储] 采购京配校验默认值补充失败，已保留原本地配置');
+  }
+
   // 恢复上次活跃的账号ID
   activeMerchantAccountId = storeGet('lastMerchantAccountId', '');
   activeWmsAccountId = storeGet('lastWmsAccountId', '');
@@ -3838,6 +3960,35 @@ ipcMain.handle('get-cp-logistics-settings', async () => {
   };
 });
 
+ipcMain.handle('list-cp-logistics-departments', async () => {
+  try {
+    assertAutomationAccess();
+    const context = getCurrentCpLogisticsContext();
+    if (!context.accountId) {
+      return { success: false, error: '请先登录可访问CP端的商家账号' };
+    }
+    const client = new CpLogisticsServiceClient({
+      session: getMerchantSession(),
+      bootstrapSession: () => loadCpWorkspace({ show: false })
+    });
+    const rows = await client.listLogisticsServices();
+    const departments = sanitizeCpLogisticsDepartments({
+      departments: rows.map(row => ({
+        id: row?.id,
+        logisticsServiceNo: row?.logisticsServiceNo,
+        deptId: row?.deptId,
+        deptNo: row?.deptNo,
+        deptName: row?.deptName,
+        sellerId: row?.sellerId,
+        sellerName: row?.sellerName
+      }))
+    });
+    return { success: true, accountId: context.accountId, username: context.username, departments };
+  } catch (error) {
+    return { success: false, error: error.message || 'CP事业部列表读取失败' };
+  }
+});
+
 ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
   try {
     assertAutomationAccess();
@@ -3850,10 +4001,36 @@ ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
     }
 
     const context = getCurrentCpLogisticsContext();
-    if (enabled && (!context.accountId || !context.deptNo || !context.deptName)) {
-      return { success: false, error: '当前登录账号的固定事业部信息不完整，请重新登录云仓助手' };
+    let departments = sanitizeCpLogisticsDepartments({ departments: requested?.departments });
+    if (enabled && !context.accountId) {
+      return { success: false, error: '请先登录可访问CP端的商家账号' };
     }
-    const bindingChanged = current.accountId !== context.accountId || current.deptNo !== context.deptNo;
+    if (enabled && departments.length === 0) {
+      return { success: false, error: '请至少添加一个需要修改的事业部' };
+    }
+    if (enabled) {
+      const client = new CpLogisticsServiceClient({
+        session: getMerchantSession(),
+        bootstrapSession: () => loadCpWorkspace({ show: false })
+      });
+      const rows = await client.listLogisticsServices();
+      departments = departments.map(department => {
+        const row = findDepartmentService(rows, department);
+        if (!row) throw new Error(`CP端未找到事业部“${department.deptName || department.deptNo}”`);
+        return sanitizeCpLogisticsDepartment({
+          id: row.id,
+          logisticsServiceNo: row.logisticsServiceNo,
+          deptId: row.deptId,
+          deptNo: row.deptNo,
+          deptName: row.deptName,
+          sellerId: row.sellerId,
+          sellerName: row.sellerName
+        });
+      });
+      departments = sanitizeCpLogisticsDepartments({ departments });
+    }
+    const bindingChanged = current.accountId !== context.accountId
+      || cpLogisticsDepartmentSignature(current.departments) !== cpLogisticsDepartmentSignature(departments);
     const scheduleChanged = current.addTime !== addTime || current.removeTime !== removeTime;
     const activationChanged = enabled && (!current.enabled || bindingChanged || scheduleChanged);
     const next = sanitizeCpLogisticsSettings({
@@ -3863,20 +4040,21 @@ ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
       removeTime,
       accountId: enabled ? context.accountId : current.accountId,
       username: enabled ? context.username : current.username,
-      deptId: enabled ? context.deptId : current.deptId,
-      deptNo: enabled ? context.deptNo : current.deptNo,
-      deptName: enabled ? context.deptName : current.deptName,
+      departments,
       activatedAt: enabled ? (activationChanged ? new Date().toISOString() : current.activatedAt) : '',
       lastStatus: enabled ? 'waiting' : 'disabled',
       lastMessage: enabled
-        ? `已绑定固定事业部“${context.deptName}”，等待设定时间`
+        ? `已添加 ${departments.length} 个事业部，等待设定时间逐个执行`
         : '定时物流服务已关闭',
       nextRetryAt: '',
       failureDate: '',
       failureAction: '',
       failureCount: 0,
       blockedDate: '',
-      blockedAction: ''
+      blockedAction: '',
+      retryDepartmentDate: '',
+      retryDepartmentAction: '',
+      retryDepartmentKeys: []
     });
     Object.assign(next, resetChangedCpScheduleCompletions(current, next, bindingChanged));
     if (bindingChanged) {
@@ -3885,7 +4063,7 @@ ipcMain.handle('save-cp-logistics-settings', async (event, requested) => {
     const saved = saveCpLogisticsRuntime(next, {
       logLevel: 'info',
       logMessage: enabled
-        ? `已保存定时设置：${addTime}添加，${removeTime}删除；固定事业部“${context.deptName}”`
+        ? `已保存定时设置：${addTime}添加，${removeTime}删除；共 ${departments.length} 个事业部`
         : '已关闭定时物流服务'
     });
     if (enabled) setTimeout(checkCpLogisticsSchedule, 500);

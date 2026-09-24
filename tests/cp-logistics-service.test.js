@@ -3,8 +3,10 @@
 const assert = require('assert');
 const {
   CpLogisticsServiceClient,
+  DEPARTMENT_CHANGE_INTERVAL_MS,
   TARGET_SHIPPER_NO,
   buildChangePayload,
+  changeDepartmentsSequentially,
   cpScheduleDistanceMinutes,
   findDepartmentService,
   getDueCpLogisticsActions,
@@ -124,6 +126,16 @@ const matched = findDepartmentService([
   { id: 'right', deptNo: 'CBU123456', deptId: '123456', deptName: '测试事业部' }
 ], { deptNo: 'CBU123456', deptName: '测试事业部' });
 assert.strictEqual(matched.id, 'right');
+
+const staleDepartmentMatch = findDepartmentService([
+  { id: 'right', deptNo: 'CBU123456', deptId: '123456', deptName: '测试事业部' }
+], { deptNo: 'CBU-OLD', deptId: 'OLD', deptName: '测试事业部' });
+assert.strictEqual(staleDepartmentMatch, null, '事业部编号失效时必须停止，禁止按名称猜测');
+assert.strictEqual(findDepartmentService([
+  { id: 'one', deptNo: 'CBU1', deptId: '1', deptName: '同名事业部' },
+  { id: 'two', deptNo: 'CBU2', deptId: '2', deptName: '同名事业部' }
+], { deptNo: 'CBU-OLD', deptId: 'OLD', deptName: '同名事业部' }), null,
+'即使事业部名称相同也不得绕过编号校验');
 
 assert.throws(
   () => mutateServiceRows([{ serviceId: '1', shipperNo: 'OTHER', fields: [] }], 'add'),
@@ -273,7 +285,28 @@ async function testCpSessionBootstrap() {
   assert.strictEqual(bootstrapCount, 1, '令牌已经存在时不应重复初始化CP会话');
 }
 
-Promise.all([testLiveRequestFlow(), testCpSessionBootstrap()])
+async function testSequentialDepartmentChanges() {
+  const calls = [];
+  const waits = [];
+  const client = {
+    async change(department, action) {
+      calls.push(`${department.deptNo}:${action}`);
+      if (department.deptNo === 'CBU2') throw new Error('模拟失败');
+      return { changed: true, warehouseCount: 1 };
+    }
+  };
+  const results = await changeDepartmentsSequentially(client, [
+    { deptNo: 'CBU1' },
+    { deptNo: 'CBU2' },
+    { deptNo: 'CBU3' }
+  ], 'add', { wait: async delayMs => waits.push(delayMs) });
+  assert.deepStrictEqual(calls, ['CBU1:add', 'CBU2:add', 'CBU3:add'], '事业部必须按选择顺序逐个执行');
+  assert.deepStrictEqual(waits, [DEPARTMENT_CHANGE_INTERVAL_MS, DEPARTMENT_CHANGE_INTERVAL_MS],
+    '相邻事业部操作之间必须保留限频安全间隔');
+  assert.deepStrictEqual(results.map(item => item.success), [true, false, true], '单个事业部失败不得阻断后续事业部');
+}
+
+Promise.all([testLiveRequestFlow(), testCpSessionBootstrap(), testSequentialDepartmentChanges()])
   .then(() => console.log('CP物流服务动态配置与添加/删除链路测试通过'))
   .catch(error => {
     console.error(error);

@@ -644,7 +644,8 @@ body {
 .logistics-gap {
   margin-left: 16px;
 }
-.inventory-check-row {
+.inventory-check-row,
+.purchase-jd-check-row {
   gap: 14px;
 }
 .config-radio {
@@ -680,11 +681,14 @@ body {
 .config-radio input[type="radio"]:checked:disabled {
   background: radial-gradient(circle at center, #aaa 0 3.5px, #f5f5f5 4px);
 }
-.inventory-check-row.is-disabled {
+.inventory-check-row.is-disabled,
+.purchase-jd-check-row.is-disabled {
   color: #aaa;
 }
 .inventory-check-row.is-disabled .config-radio,
-.inventory-check-row.is-disabled input[type="radio"] {
+.inventory-check-row.is-disabled input[type="radio"],
+.purchase-jd-check-row.is-disabled .config-radio,
+.purchase-jd-check-row.is-disabled input[type="radio"] {
   cursor: not-allowed;
 }
 
@@ -3380,7 +3384,7 @@ body {
 }
 .cp-logistics-config-grid {
   display: grid;
-  grid-template-columns: minmax(170px, .85fr) minmax(260px, 1.35fr) minmax(150px, .65fr) minmax(150px, .65fr);
+  grid-template-columns: minmax(220px, 1.4fr) minmax(170px, .8fr) minmax(170px, .8fr);
   gap: 12px;
   margin-top: 14px;
 }
@@ -3423,6 +3427,122 @@ body {
 }
 .cp-logistics-time-remove {
   border-left: 3px solid #e67e22;
+}
+.cp-logistics-departments-panel {
+  margin-top: 13px;
+  padding: 11px 12px;
+  border: 1px solid #dce5ee;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+.cp-logistics-departments-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.cp-logistics-departments-header > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.cp-logistics-departments-header strong {
+  color: #35495b;
+  font-size: 12px;
+}
+.cp-logistics-departments-header span,
+.cp-logistics-department-modal-tip {
+  color: #8a97a4;
+  font-size: 11px;
+}
+.cp-logistics-selected-departments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 30px;
+  margin-top: 9px;
+}
+.cp-logistics-department-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 7px 0 10px;
+  border: 1px solid #cfe1ef;
+  border-radius: 999px;
+  background: #f0f7fc;
+  color: #35637f;
+  font-size: 11px;
+}
+.cp-logistics-department-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-logistics-department-chip button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #7890a2;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 18px;
+}
+.cp-logistics-department-chip button:hover {
+  background: #dcecf7;
+  color: #d34e43;
+}
+.cp-logistics-departments-empty {
+  width: 100%;
+  padding: 7px 0;
+  color: #9aa6b2;
+  font-size: 11px;
+  text-align: center;
+}
+.cp-logistics-department-modal {
+  width: min(640px, calc(100vw - 48px));
+}
+.cp-logistics-department-modal-tip {
+  margin: 0 0 10px;
+}
+.cp-logistics-department-options {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #e2e8ef;
+  border-radius: 6px;
+}
+.cp-logistics-department-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 8px 11px;
+  border-bottom: 1px solid #eef2f5;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.cp-logistics-department-option:last-child {
+  border-bottom: 0;
+}
+.cp-logistics-department-option:hover {
+  background: #f7fafc;
+}
+.cp-logistics-department-option-name {
+  overflow: hidden;
+  color: #34495e;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-logistics-department-option-no {
+  color: #8b98a6;
+  font-size: 10px;
 }
 .cp-logistics-settings-footer {
   display: flex;

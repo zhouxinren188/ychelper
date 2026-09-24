@@ -219,6 +219,17 @@
                   <span>毛重</span>
                   <input type="number" id="logWeight" class="logistics-input" value="0.5" step="0.1" min="0.01" /> <span>kg</span>
                 </div>
+                <div class="logistics-row purchase-jd-check-row is-disabled" id="purchaseJdCheckRow">
+                  <span>京配校验：</span>
+                  <label class="config-radio">
+                    <input type="radio" name="cfgPurchaseJdCheck" value="remove" checked disabled />
+                    <span>去除已打标</span>
+                  </label>
+                  <label class="config-radio">
+                    <input type="radio" name="cfgPurchaseJdCheck" value="none" disabled />
+                    <span>不操作</span>
+                  </label>
+                </div>
                 <div class="logistics-row inventory-check-row is-disabled" id="inventoryCheckRow">
                   <span>校验库存：</span>
                   <label class="config-radio">
@@ -706,12 +717,8 @@
 
             <div class="cp-logistics-config-grid">
               <label class="cp-logistics-config-field cp-logistics-account-field">
-                <span>登录账号</span>
+                <span>CP登录账号</span>
                 <input type="text" id="cpLogisticsAccount" readonly placeholder="尚未登录">
-              </label>
-              <label class="cp-logistics-config-field cp-logistics-department-field">
-                <span>固定事业部</span>
-                <input type="text" id="cpLogisticsDepartment" readonly placeholder="尚未获取">
               </label>
               <label class="cp-logistics-time-field cp-logistics-time-add">
                 <span>每日添加时间</span>
@@ -723,6 +730,19 @@
                 <input type="time" id="cpLogisticsRemoveTime" value="23:55">
                 <small>到点只删除仓配一体服务</small>
               </label>
+            </div>
+
+            <div class="cp-logistics-departments-panel">
+              <div class="cp-logistics-departments-header">
+                <div>
+                  <strong>需要修改的事业部</strong>
+                  <span>到达设定时间后，软件按下列顺序逐个操作</span>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" id="cpLogisticsAddDepartmentBtn">添加事业部</button>
+              </div>
+              <div class="cp-logistics-selected-departments" id="cpLogisticsSelectedDepartments">
+                <div class="cp-logistics-departments-empty">尚未添加事业部</div>
+              </div>
             </div>
 
             <div class="cp-logistics-settings-footer">
@@ -739,7 +759,7 @@
             <div class="cp-logistics-card-header cp-logistics-runtime-header">
               <div>
                 <h2>运行状态</h2>
-                <p>软件运行且当前登录账号与固定事业部一致时自动执行</p>
+                <p>软件运行且当前登录账号与保存账号一致时，对已添加事业部逐个执行</p>
               </div>
               <span class="cp-logistics-status-badge is-idle" id="cpLogisticsStatusBadge">未启用</span>
             </div>
@@ -762,6 +782,25 @@
               <div class="cp-logistics-log-empty">暂无执行记录</div>
             </div>
           </section>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-overlay workspace-centered" id="cpLogisticsDepartmentModal" style="display:none">
+        <div class="modal modal-md cp-logistics-department-modal">
+          <div class="modal-header">
+            <span>选择需要修改的事业部</span>
+            <button class="modal-close" id="cpLogisticsDepartmentModalClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="cp-logistics-department-modal-tip">以下事业部来自当前 CP 登录账号的“商家物流服务”列表。</p>
+            <div class="cp-logistics-department-options" id="cpLogisticsDepartmentOptions">
+              <div class="cp-logistics-departments-empty">正在读取事业部...</div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn" id="cpLogisticsDepartmentCancelBtn">取消</button>
+              <button type="button" class="btn btn-primary" id="cpLogisticsDepartmentConfirmBtn">确认添加</button>
+            </div>
           </div>
         </div>
       </div>
