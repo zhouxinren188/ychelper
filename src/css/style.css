@@ -2357,6 +2357,12 @@ body {
 .ao-table tbody tr:hover {
   background: #fffaf5;
 }
+/* 表格数据默认跟随 body 禁止选择；放开业务文本，便于复制单号和异常信息。 */
+#aoOrderTable tbody td:nth-child(n+2):nth-child(-n+10) {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
 /* 暂停原因列可换行 */
 .ao-table td:nth-child(8) {
   white-space: normal;

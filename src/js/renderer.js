@@ -3524,6 +3524,7 @@ function getSmShopStateLabel(state) {
   if (state === 'online') return '在线';
   if (state === 'offline') return '离线';
   if (state === 'checking') return '检测中';
+  if (state === 'login-open') return '等待登录';
   return '检测失败';
 }
 
@@ -4879,31 +4880,45 @@ async function saveSmShop() {
 // ========== 店铺登录 ==========
 
 async function openShopAccountAction(account, preferBackend) {
-  updateSmLoginStatus(false, '', 'checking');
-  const switchResult = await window.electronAPI.switchShopAccount(account);
-
-  if (preferBackend && switchResult && switchResult.loggedIn) {
-    updateSmLoginStatus(true, switchResult.shopName || account.name || account.username || '', 'online');
-    const openResult = await window.electronAPI.openShopBackend(account.id);
-    if (openResult && openResult.success) {
-      addSmLog('success', `已进入店铺后台：${account.name || account.username}`);
-      return;
+  // “进入后台”需要先确认现有会话仍有效；“重新登录”则直接打开登录窗口，
+  // 不再先跑一次状态检测后把界面闪成“检测中 → 离线”。
+  if (preferBackend) {
+    updateSmLoginStatus(false, '', 'checking');
+    try {
+      const switchResult = await window.electronAPI.switchShopAccount(account);
+      if (switchResult && switchResult.loggedIn) {
+        updateSmLoginStatus(true, switchResult.shopName || account.name || account.username || '', 'online');
+        const openResult = await window.electronAPI.openShopBackend(account.id);
+        if (openResult && openResult.success) {
+          addSmLog('success', `已进入店铺后台：${account.name || account.username}`);
+          return;
+        }
+        addSmLog('info', openResult?.error || '店铺登录状态已失效，正在重新登录');
+      }
+    } catch (error) {
+      addSmLog('info', `店铺登录状态验证失败，正在重新登录：${error.message || '未知错误'}`);
     }
-    addSmLog('info', openResult?.error || '店铺登录状态已失效，正在重新登录');
   }
 
-  updateSmLoginStatus(false, '', 'offline');
+  updateSmLoginStatus(false, '', 'login-open');
   addSmLog('info', `正在重新登录店铺：${account.name || account.username}...`);
-  const loginResult = await window.electronAPI.openShopLogin({
-    id: account.id,
-    username: account.username,
-    password: account.password,
-    name: account.name,
-    autoSend: account.autoSend
-  });
+  let loginResult;
+  try {
+    loginResult = await window.electronAPI.openShopLogin({
+      id: account.id,
+      username: account.username,
+      password: account.password,
+      name: account.name,
+      autoSend: account.autoSend
+    });
+  } catch (error) {
+    loginResult = { success: false, error: error.message || '店铺登录窗口打开失败' };
+  }
   if (loginResult?.success === false) {
     updateSmLoginStatus(false, '', 'offline');
     addSmLog('error', loginResult.error || '店铺登录窗口打开失败');
+  } else {
+    addSmLog('info', '店铺登录窗口已打开，完成登录后会自动更新在线状态');
   }
 }
 
@@ -4942,6 +4957,9 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
     } else if (smSelectedShopState === 'online') {
       loginBtn.textContent = '进入后台';
       loginBtn.disabled = smQueryRunning;
+    } else if (smSelectedShopState === 'login-open') {
+      loginBtn.textContent = '重新打开登录';
+      loginBtn.disabled = smQueryRunning;
     } else {
       loginBtn.textContent = '重新登录';
       loginBtn.disabled = smQueryRunning;
@@ -4967,7 +4985,9 @@ function updateSmLoginStatus(loggedIn, shopName, state) {
     smStatusDot.className = `sm-shop-status-inline ${visualState}`;
     smStatusDot.textContent = smSelectedShopState === 'empty'
       ? '未选择'
-      : getSmShopStateLabel(visualState);
+      : smSelectedShopState === 'login-open'
+        ? getSmShopStateLabel('login-open')
+        : getSmShopStateLabel(visualState);
     const queryBtn = $('#smQueryBtn');
     if (queryBtn) queryBtn.disabled = true;
   }

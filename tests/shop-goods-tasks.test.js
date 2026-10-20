@@ -31,17 +31,44 @@ const taskStyles = fs.readFileSync(path.join(root, 'src', 'css', 'shop-goods-tas
 const appStyles = fs.readFileSync(path.join(root, 'src', 'css', 'style.css'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const officialInfoCapture = fs.readFileSync(
+  path.join(root, 'src', 'js', 'shopOfficialInfoCapture.js'),
+  'utf8'
+);
 
 assert.match(main, /const MAX_SHOP_ACCOUNTS = 1000;/,
   '快速打标应允许保存最多1000个店铺账号');
 assert.match(main, /list\.length >= MAX_SHOP_ACCOUNTS[\s\S]*最多保存\$\{MAX_SHOP_ACCOUNTS\}个店铺账号/,
   '新增店铺必须使用统一的快速打标店铺上限');
-assert.match(main, /NavigationFacade\.findShopInfo/,
+assert.match(officialInfoCapture, /NavigationFacade\.findShopInfo/,
   '登录店铺后必须通过官方店铺资料接口获取真实名称');
+assert.match(officialInfoCapture, /Network\.responseReceived/,
+  '必须监听京麦页面自己发出的官方店铺资料响应');
+assert.match(officialInfoCapture, /Network\.getResponseBody/,
+  '必须直接接收京麦页面自己发出的官方店铺资料响应');
+assert.doesNotMatch(officialInfoCapture, /ParamsSign|getJsToken|querySelector|textContent|document\.title/,
+  '店铺资料获取不得自行复制签名或读取页面DOM兜底');
+assert.doesNotMatch(main, /requestShopOfficialInfoWithRetry|buildShopOfficialInfoRequestScript/,
+  '主流程不得再等待页面动态签名组件');
+assert.doesNotMatch(main, /await officialInfoCapture\.ready/,
+  '店铺资料监听初始化不得阻塞登录页首次导航');
+assert.match(main, /officialInfoCapture\.ready\.catch[\s\S]*shopLoginWindow\.loadURL\('https:\/\/shop\.jd\.com'\)/,
+  '登录窗口必须在后台启动监听后立即加载京麦页面');
 assert.match(main, /officialLoginAccount: officialInfo\.loginAccount[\s\S]*vendorId: vendorIdentity\.vendorId[\s\S]*officialShopId: officialInfo\.officialShopId/,
   '店铺账号必须分别保存登录账号、商家ID和店铺ID');
 assert.match(main, /const vendorId = String\(identity\?\.currentVendor\?\.vendorId \|\| ''\)\.trim\(\)/,
   '商品导入所需商家ID必须来自免h5st的登录身份接口');
+const validateShopSessionStart = main.indexOf('async function validateShopSession() {');
+const validateShopSessionEnd = main.indexOf('function buildShopLoginAutofillScript', validateShopSessionStart);
+assert(validateShopSessionStart >= 0 && validateShopSessionEnd > validateShopSessionStart,
+  '缺少店铺会话校验函数');
+const validateShopSessionSource = main.slice(validateShopSessionStart, validateShopSessionEnd);
+assert.doesNotMatch(validateShopSessionSource, /requestShopOfficialInfoWithRetry|ensureShopPageWindow/,
+  '选择店铺时不得加载后台页面或重复请求店铺资料接口');
+assert.match(validateShopSessionSource, /storedVendorId && storedVendorId !== currentVendorId/,
+  '选择店铺时必须核对已保存vendorId与当前登录身份');
+assert.match(main, /const identityBindingMatches = vendorIdentity\.state === 'authenticated'[\s\S]*currentVendorId === storedVendorId[\s\S]*storedShopName/,
+  '重新登录已有店铺时应通过vendorId恢复已绑定的店铺资料');
 assert.match(main, /const vendorIdMap = \{\};[\s\S]*老版本账号没有单独保存 vendorId[\s\S]*\{ \.\.\.account, vendorId \}/,
   '在线状态检测必须为旧账号自动补齐vendorId');
 assert.doesNotMatch(main, /MyShopInfoProvider\.getShopCardInfo|SHOP_CARD_H5ST_APP_ID/,
@@ -56,6 +83,19 @@ assert.match(renderer, /runSmShopSubmission\(saveSmShop\)/,
   '保存店铺按钮必须通过防重复提交入口执行');
 assert.match(renderer, /runSmShopSubmission\(handleSmEditShopLogin\)/,
   '登录并保存按钮必须通过防重复提交入口执行');
+const shopAccountAction = renderer.match(
+  /async function openShopAccountAction\(account, preferBackend\) \{([\s\S]*?)\n\}/
+);
+assert(shopAccountAction, '缺少店铺登录与进入后台的统一操作入口');
+assert.match(shopAccountAction[1], /if \(preferBackend\) \{[\s\S]*switchShopAccount\(account\)/,
+  '只有进入后台时才应先检测现有店铺会话');
+assert(shopAccountAction[1].indexOf('if (preferBackend)')
+  < shopAccountAction[1].indexOf('switchShopAccount(account)'),
+  '重新登录不得在打开登录窗口前先触发账号状态检测');
+assert.match(renderer, /updateSmLoginStatus\(false, '', 'login-open'\)[\s\S]*openShopLogin/,
+  '重新登录时应显示等待登录，而不是先标记为离线');
+assert.match(renderer, /smSelectedShopState === 'login-open'[\s\S]*重新打开登录/,
+  '登录窗口打开后应允许用户重新打开窗口');
 
 const task = createTask({
   accountId: 'shop-1',

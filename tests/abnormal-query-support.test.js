@@ -20,6 +20,12 @@ const {
 } = require('../abnormal-query-support');
 
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+const styleSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'css', 'style.css'), 'utf8');
+assert.match(
+  styleSource,
+  /#aoOrderTable tbody td:nth-child\(n\+2\):nth-child\(-n\+10\)\s*\{[^}]*user-select:\s*text;/s,
+  '异常订单表格的业务文本必须允许鼠标选择复制'
+);
 assert.strictEqual(EXCEPTION_QUERY_TIMEOUT_MS, 1000, '单次异常来源请求必须在1秒后超时');
 assert.strictEqual(EXCEPTION_QUERY_MAX_RETRIES, 3, '异常来源超时后必须重试3次');
 assert.strictEqual(EXCEPTION_QUERY_RETRY_DELAY_MS, 200, '异常来源重试间隔必须为200毫秒');
