@@ -34,14 +34,18 @@ assert.match(main, /ipcMain\.handle\('open-merchant-workspace'/);
 assert.match(main, /let merchantWorkspaceWindow = null;/);
 assert.match(main, /merchantWorkspaceWindow = new BrowserWindow\(/);
 assert.match(main, /const target = merchantWorkspaceWindow;/);
-assert.match(main, /if \(shouldLoad[\s\S]*?await target\.loadURL\(MERCHANT_WORKSPACE_URL\);/);
-assert.match(main, /if \(!target\.isMaximized\(\)\) target\.maximize\(\);\s*target\.show\(\);\s*target\.focus\(\);/,
-  '用户进入商家端时窗口必须默认最大化');
+assert.match(main, /preparePortalWindowForVisibleLoad\(target\);\s*if \(shouldLoad[\s\S]*?await target\.loadURL\(MERCHANT_WORKSPACE_URL\);/,
+  '商家端必须在页面加载前最大化窗口');
+assert.match(main, /target\.show\(\);\s*target\.focus\(\);\s*await refreshPortalWindowLayout\(target\);/,
+  '商家端显示后必须通知京东页面按最大化视口重新布局');
 assert.match(main, /ipcMain\.handle\('open-cp-workspace'/);
 assert.match(main, /const merchantPartition = getMerchantPartition\(\);/);
-assert.match(main, /await target\.loadURL\(CP_WORKSPACE_URL\);/);
-assert.match(main, /if \(show\) \{[\s\S]*?target\.maximize\(\);[\s\S]*?target\.show\(\);[\s\S]*?target\.focus\(\);/,
-  '用户进入CP端时窗口必须默认最大化，后台会话初始化不得显示窗口');
+assert.match(main, /if \(show\) preparePortalWindowForVisibleLoad\(target\);\s*await target\.loadURL\(CP_WORKSPACE_URL\);/,
+  'CP端可见打开时必须在页面加载前最大化窗口');
+assert.match(main, /if \(show\) \{\s*target\.show\(\);\s*target\.focus\(\);\s*await refreshPortalWindowLayout\(target\);\s*\}/,
+  'CP端显示后必须刷新布局，后台会话初始化不得显示窗口');
+assert.match(main, /currentWindow\.dispatchEvent\(new Event\('resize'\)\)/,
+  '京东工作台必须向主页面和内嵌页面发送视口变化事件');
 assert.match(main, /preservedJdPageWindow\.on\('close',[\s\S]*?event\.preventDefault\(\);[\s\S]*?preservedJdPageWindow\.hide\(\);/);
 assert.match(preload, /cancelJdLabelRequest:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('cancel-jd-label-request'\)/);
 assert.match(main, /const JD_LABEL_AJAX_TIMEOUT_MS = 30000;/);

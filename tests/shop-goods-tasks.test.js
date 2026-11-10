@@ -385,20 +385,30 @@ assert.match(main, /ipcMain\.handle\('query-shop-stock'[\s\S]*activeSellerId !==
   '库存查询必须阻止使用其他商家账号的Cookie');
 assert.match(renderer, /enable && task\.waitForInventoryBeforeLabel[\s\S]*waitForInventoryBeforeJdLabel\(task, skuLabel\)/,
   '库存门禁只能在京配打标生效前执行');
+assert.match(renderer, /const LABEL_STOCK_READY_SETTLE_DELAY_MS = 60000/,
+  '库存全部就绪后必须保留60秒同步缓冲时间');
+assert.match(renderer, /result\?\.success && result\.ready[\s\S]*等待\$\{settleSeconds\}秒同步缓冲后开始京配打标[\s\S]*while \(settleElapsed < LABEL_STOCK_READY_SETTLE_DELAY_MS && !stopRequested\)[\s\S]*库存同步缓冲等待完成，开始京配打标[\s\S]*return true/,
+  '库存门禁必须在就绪后等待60秒再放行京配打标，并允许停止任务中断等待');
 assert.match(indexHtml, /id="inventoryCheckRow"[\s\S]*name="cfgInventoryCheck" value="1" disabled[\s\S]*校验（AB仓推荐）[\s\S]*name="cfgInventoryCheck" value="0" checked disabled[\s\S]*不校验[\s\S]*步骤延时/,
   '主界面必须在步骤延时前提供默认不校验的库存选项');
 assert.match(renderer, /cfgJdLabel'[\s\S]*syncInventoryCheckAvailability\(true\)/,
   '库存校验选项必须跟随京配打标开关联动');
 assert.match(renderer, /inventoryCheckBeforeJdLabel: \$\('#cfgJdLabel'\)\.checked && inventoryCheckSelected/,
   '未勾选京配打标时不得保存库存校验状态');
-assert.match(indexHtml, /id="purchaseJdCheckRow"[\s\S]*name="cfgPurchaseJdCheck" value="remove" checked disabled[\s\S]*去除已打标[\s\S]*name="cfgPurchaseJdCheck" value="none" disabled[\s\S]*不操作[\s\S]*id="inventoryCheckRow"/,
-  '配置信息区域必须在库存校验前提供采购专用京配校验选项');
+assert.match(indexHtml, /id="purchaseJdCheckRow"[\s\S]*name="cfgPurchaseJdCheck" value="remove" checked disabled[\s\S]*去除已打标[\s\S]*name="cfgPurchaseJdCheck" value="cancel" disabled[\s\S]*取消京配[\s\S]*name="cfgPurchaseJdCheck" value="none" disabled[\s\S]*不操作[\s\S]*id="inventoryCheckRow"/,
+  '配置信息区域必须在库存校验前提供去除、取消和不操作三种采购京配策略');
 assert.match(renderer, /cfgEnablePurchase'[\s\S]*syncPurchaseJdCheckAvailability\(\)/,
   '采购京配校验选项必须跟随启用采购入库开关联动');
 assert.match(renderer, /purchaseJdLabelPolicy: \$\('#cfgEnablePurchase'\)\.checked \? purchaseJdLabelPolicy : 'none'/,
   '未启用采购入库时不得保存京配去除策略');
 assert.match(renderer, /case 'enablePurchase':[\s\S]*resolvePurchaseJdLabelPolicy\(cfg\) === 'remove'[\s\S]*queryShopGoods\(\{ skus: task\.skus \}\)[\s\S]*filterPurchaseSkusByJdLabel[\s\S]*splitBatches\(purchaseSkus, BATCH_SIZE\)/,
   '创建采购单前必须按配置只查询一次京配状态并使用剔除后的SKU');
+assert.match(renderer, /resolvePurchaseJdLabelPolicy\(cfg\) === 'cancel'[\s\S]*key: 'cancelJdLabelBeforePurchase'[\s\S]*key: 'enablePurchase'[\s\S]*key: 'jdLabel'/,
+  '取消京配策略必须排在采购入库和重新打标之前');
+assert.match(renderer, /case 'cancelJdLabelBeforePurchase':[\s\S]*cancelBeforePurchase[\s\S]*jdSuccessCount !== task\.skus\.length[\s\S]*已停止后续采购和重新打标/,
+  '采购前取消京配未全部成功时必须阻止后续采购和重新打标');
+assert.match(renderer, /for \(const task of pendingTasks\) \{[\s\S]*task\.hasLabelFailure = false;[\s\S]*task\.failedLabelSkus = \[\];[\s\S]*task\.status = 'running';/,
+  '失败任务从头重试时必须清除上一次打标失败状态');
 assert.match(main, /query-shop-goods'[\s\S]*\{ skus \}[\s\S]*params\.set\('shopId', ''\)/,
   '京配状态必须按商家和SKU查询，不能误用CSP店铺编号过滤成空结果');
 assert.match(appStyles, /\.config-item input\[type="checkbox"\]:checked[\s\S]*stroke='%23fff'/,
@@ -525,8 +535,16 @@ assert.match(appStyles, /\.mode-list-actions \.mode-action-btn\s*\{[\s\S]{0,180}
   '模式编辑和删除按钮必须使用一致的固定尺寸');
 assert.match(appStyles, /\.mode-list-item\.is-dragging\s*\{[\s\S]*position:\s*fixed;[\s\S]*will-change:\s*transform;/,
   '拖动项必须作为浮层通过 transform 跟随指针');
-assert.match(renderer, /purchaseQty\.value = config\.purchaseQty[\s\S]*autoAccept[^\n]*config\.autoAccept/,
-  '应用模式时必须恢复采购数量和自动验收配置');
+assert.match(renderer, /purchaseQty\.value = config\.purchaseQty[\s\S]*setWmsAutoAcceptanceEnabled\(config\.autoAccept !== false, \{ promptLogin: true \}\)/,
+  '应用模式时必须通过统一状态入口恢复采购数量和自动验收配置');
+assert.match(renderer, /function renderWmsAutoAcceptanceState\(\)[\s\S]*autoAcceptCheckbox\.checked = wmsAutoMode[\s\S]*关闭自动验收[\s\S]*wms-btn-auto-active/,
+  '自动验收运行状态必须同时渲染到打标页复选框和仓库端按钮');
+assert.match(renderer, /wmsAutoBtn\.addEventListener\('click',[\s\S]*setWmsAutoAcceptanceEnabled\(!wmsAutoMode\)[\s\S]*autoAcceptCheckbox\.addEventListener\('change',[\s\S]*setWmsAutoAcceptanceEnabled\(autoAcceptCheckbox\.checked, \{ promptLogin: true \}\)/,
+  '两个自动验收入口必须复用同一状态切换函数');
+assert.match(renderer, /function updateWmsLoginStatus\(loggedIn,[\s\S]*if \(!loggedIn\) setWmsAutoAcceptanceEnabled\(false\)/,
+  'WMS 登录失效后必须关闭自动验收并同步两个入口');
+assert.match(renderer, /上架储位号为空，已自动停止[\s\S]*setWmsAutoAcceptanceEnabled\(false\)/,
+  '自动验收异常停止时也必须同步两个入口');
 
 [
   'getShopGoodsTasks',

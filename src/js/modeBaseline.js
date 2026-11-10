@@ -162,7 +162,7 @@ function cloneModeBaseline() {
 
 function resolvePurchaseJdLabelPolicy(config) {
   if (!config || typeof config !== 'object' || !config.enablePurchase) return 'none';
-  if (config.purchaseJdLabelPolicy === 'remove' || config.purchaseJdLabelPolicy === 'none') {
+  if (['remove', 'cancel', 'none'].includes(config.purchaseJdLabelPolicy)) {
     return config.purchaseJdLabelPolicy;
   }
   return config.inventoryCheckBeforeJdLabel ? 'remove' : 'none';
@@ -173,7 +173,7 @@ function applyPurchaseJdLabelPolicyDefaults(data) {
   let changed = false;
   for (const mode of data.modes) {
     if (!mode?.config || typeof mode.config !== 'object') continue;
-    if (mode.config.purchaseJdLabelPolicy === 'remove' || mode.config.purchaseJdLabelPolicy === 'none') continue;
+    if (['remove', 'cancel', 'none'].includes(mode.config.purchaseJdLabelPolicy)) continue;
     mode.config.purchaseJdLabelPolicy = resolvePurchaseJdLabelPolicy(mode.config);
     changed = true;
   }

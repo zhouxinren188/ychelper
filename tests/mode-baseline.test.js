@@ -50,6 +50,7 @@ const customizedModes = {
     { name: '自定义AB', config: { enablePurchase: true, inventoryCheckBeforeJdLabel: true, stepDelay: 37 } },
     { name: '自定义普通入仓', config: { enablePurchase: true, inventoryCheckBeforeJdLabel: false, purchaseQty: 23 } },
     { name: '用户已选择去除', config: { enablePurchase: true, purchaseJdLabelPolicy: 'remove', logLength: '999' } },
+    { name: '用户已选择取消', config: { enablePurchase: true, purchaseJdLabelPolicy: 'cancel', purchaseQty: 31 } },
     { name: '不采购', config: { enablePurchase: false, jdLabel: true } }
   ]
 };
@@ -57,13 +58,16 @@ assert.strictEqual(applyPurchaseJdLabelPolicyDefaults(customizedModes), true, '�
 assert.strictEqual(customizedModes.modes[0].config.purchaseJdLabelPolicy, 'remove', '开启库存校验的采购模式应去除已打标');
 assert.strictEqual(customizedModes.modes[1].config.purchaseJdLabelPolicy, 'none', '其他采购模式应默认不操作');
 assert.strictEqual(customizedModes.modes[2].config.purchaseJdLabelPolicy, 'remove', '用户已明确选择的策略必须保留');
-assert.strictEqual(customizedModes.modes[3].config.purchaseJdLabelPolicy, 'none', '未采购模式应补为不操作');
+assert.strictEqual(customizedModes.modes[3].config.purchaseJdLabelPolicy, 'cancel', '用户已明确选择的采购前取消策略必须保留');
+assert.strictEqual(customizedModes.modes[4].config.purchaseJdLabelPolicy, 'none', '未采购模式应补为不操作');
 assert.strictEqual(customizedModes.modes[0].config.stepDelay, 37, '补字段不得覆盖用户自定义延时');
 assert.strictEqual(customizedModes.modes[1].config.purchaseQty, 23, '补字段不得覆盖用户自定义采购数量');
 assert.strictEqual(customizedModes.modes[2].config.logLength, '999', '补字段不得覆盖其他自定义配置');
+assert.strictEqual(customizedModes.modes[3].config.purchaseQty, 31, '保留取消京配策略时不得覆盖其他自定义配置');
 assert.strictEqual(applyPurchaseJdLabelPolicyDefaults(customizedModes), false, '字段已存在时重复启动不得再次修改');
 assert.strictEqual(resolvePurchaseJdLabelPolicy({ enablePurchase: true, inventoryCheckBeforeJdLabel: true }), 'remove');
 assert.strictEqual(resolvePurchaseJdLabelPolicy({ enablePurchase: true, inventoryCheckBeforeJdLabel: false }), 'none');
+assert.strictEqual(resolvePurchaseJdLabelPolicy({ enablePurchase: true, purchaseJdLabelPolicy: 'cancel' }), 'cancel');
 
 assert.match(
   mainSource,

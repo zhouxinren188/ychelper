@@ -1614,6 +1614,43 @@ function destroyCpPageWindow() {
   cpPageWindow = null;
 }
 
+function preparePortalWindowForVisibleLoad(target) {
+  if (!target || target.isDestroyed()) return;
+  if (!target.isMaximized()) target.maximize();
+}
+
+async function refreshPortalWindowLayout(target) {
+  if (!target || target.isDestroyed()) return;
+  try {
+    await target.webContents.executeJavaScript(`
+      (() => {
+        const refreshWindow = currentWindow => {
+          try {
+            currentWindow.dispatchEvent(new Event('resize'));
+          } catch (_) {}
+
+          let frames = [];
+          try {
+            frames = Array.from(currentWindow.document.querySelectorAll('iframe'));
+          } catch (_) {}
+          frames.forEach(frame => {
+            try {
+              if (frame.contentWindow) refreshWindow(frame.contentWindow);
+            } catch (_) {}
+          });
+        };
+
+        refreshWindow(window);
+        window.setTimeout(() => refreshWindow(window), 200);
+        window.setTimeout(() => refreshWindow(window), 800);
+        return true;
+      })();
+    `, true);
+  } catch (error) {
+    console.warn('刷新京东工作台窗口布局失败:', error.message);
+  }
+}
+
 function getOrCreateCpPageWindow() {
   if (cpPageWindow && !cpPageWindow.isDestroyed()) return cpPageWindow;
   const webPreferences = {
@@ -1639,6 +1676,7 @@ function getOrCreateCpPageWindow() {
 
 async function loadCpWorkspace({ show = false } = {}) {
   const target = getOrCreateCpPageWindow();
+  if (show) preparePortalWindowForVisibleLoad(target);
   await target.loadURL(CP_WORKSPACE_URL);
   if (target.isDestroyed()) throw new Error('CP端窗口已关闭');
   const loadedUrl = target.webContents.getURL();
@@ -1646,9 +1684,9 @@ async function loadCpWorkspace({ show = false } = {}) {
     throw new Error('CP登录已失效，请重新登录云仓助手');
   }
   if (show) {
-    if (!target.isMaximized()) target.maximize();
     target.show();
     target.focus();
+    await refreshPortalWindowLayout(target);
   }
   return target;
 }
@@ -3919,15 +3957,16 @@ ipcMain.handle('open-merchant-workspace', async event => {
     }
 
     const target = merchantWorkspaceWindow;
+    preparePortalWindowForVisibleLoad(target);
     if (shouldLoad || !target.webContents.getURL() || target.webContents.getURL() === 'about:blank') {
       await target.loadURL(MERCHANT_WORKSPACE_URL);
     }
     if (target.isDestroyed()) {
       return { success: false, error: '商家端窗口已关闭，请重新登录云仓助手' };
     }
-    if (!target.isMaximized()) target.maximize();
     target.show();
     target.focus();
+    await refreshPortalWindowLayout(target);
     return { success: true };
   } catch (error) {
     console.warn('打开商家端失败:', error.message);

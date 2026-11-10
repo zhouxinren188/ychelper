@@ -449,7 +449,7 @@ function filterPurchaseSkusByJdLabel(skus, queryResults) {
 
 function resolvePurchaseJdLabelPolicy(config) {
   if (!config || typeof config !== 'object' || !config.enablePurchase) return 'none';
-  if (config.purchaseJdLabelPolicy === 'remove' || config.purchaseJdLabelPolicy === 'none') {
+  if (['remove', 'cancel', 'none'].includes(config.purchaseJdLabelPolicy)) {
     return config.purchaseJdLabelPolicy;
   }
   return config.inventoryCheckBeforeJdLabel ? 'remove' : 'none';
@@ -702,8 +702,9 @@ function saveLogisticsPrefs() {
 // ========== 获取当前配置 ==========
 function getCurrentConfig() {
   const inventoryCheckSelected = document.querySelector('input[name="cfgInventoryCheck"]:checked')?.value === '1';
-  const purchaseJdLabelPolicy = document.querySelector('input[name="cfgPurchaseJdCheck"]:checked')?.value === 'none'
-    ? 'none'
+  const selectedPurchaseJdLabelPolicy = document.querySelector('input[name="cfgPurchaseJdCheck"]:checked')?.value;
+  const purchaseJdLabelPolicy = ['remove', 'cancel', 'none'].includes(selectedPurchaseJdLabelPolicy)
+    ? selectedPurchaseJdLabelPolicy
     : 'remove';
   return {
     importShopProduct: $('#cfgImportShopProduct').checked,
@@ -755,7 +756,7 @@ function applyConfig(config) {
   $('#logWeight').value = config.logWeight || $('#logWeight').value || '0.5';
   $('#stepDelay').value = config.stepDelay || $('#stepDelay').value || 10;
   if (purchaseQty && config.purchaseQty != null) purchaseQty.value = config.purchaseQty;
-  $('#autoAccept').checked = config.autoAccept !== false;
+  setWmsAutoAcceptanceEnabled(config.autoAccept !== false, { promptLogin: true });
   syncInventoryCheckAvailability(false);
   syncPurchaseJdCheckAvailability();
   saveLogisticsPrefs();
@@ -951,6 +952,9 @@ async function executeTasks() {
   for (const task of pendingTasks) {
     if (stopRequested) break;
 
+    // 每次从头执行都以本次结果为准，避免上一次失败留下的标记让成功重试仍显示“部分成功”。
+    task.hasLabelFailure = false;
+    task.failedLabelSkus = [];
     task.status = 'running';
     renderTaskTable();
     await persistLabelTasks();
@@ -1099,6 +1103,9 @@ function getTaskSteps(task) {
   if (cfg.enableMasterData) steps.push({ key: 'enableMasterData', name: '启用商品主数据' });
   if (cfg.logistics) steps.push({ key: 'logistics', name: '维护物流属性' });
   if (cfg.inventoryRatio) steps.push({ key: 'inventoryRatio', name: '维护库存比例' });
+  if (cfg.enablePurchase && resolvePurchaseJdLabelPolicy(cfg) === 'cancel') {
+    steps.push({ key: 'cancelJdLabelBeforePurchase', name: '采购前取消京配' });
+  }
   if (cfg.enablePurchase) steps.push({ key: 'enablePurchase', name: '启用采购入库' });
   if (cfg.jdLabel) steps.push({ key: 'jdLabel', name: '京配打标生效' });
   if (cfg.cancelJdLabel) steps.push({ key: 'cancelJdLabel', name: '取消京配打标' });
@@ -1113,6 +1120,7 @@ function getTaskSteps(task) {
 }
 
 const LABEL_STOCK_CHECK_INTERVAL_MS = 10000;
+const LABEL_STOCK_READY_SETTLE_DELAY_MS = 60000;
 
 async function waitForInventoryBeforeJdLabel(task, skuLabel) {
   if (!task.inventorySellerId || !task.shopDeptId || !task.shopId || !task.warehouseId) {
@@ -1139,7 +1147,21 @@ async function waitForInventoryBeforeJdLabel(task, skuLabel) {
     if (stopRequested) return false;
 
     if (result?.success && result.ready) {
-      addLog('success', `[${skuLabel}] 库存已全部就绪（${result.inStockCount}/${result.total}），开始京配打标`);
+      const settleSeconds = Math.round(LABEL_STOCK_READY_SETTLE_DELAY_MS / 1000);
+      addLog(
+        'success',
+        `[${skuLabel}] 库存已全部就绪（${result.inStockCount}/${result.total}），等待${settleSeconds}秒同步缓冲后开始京配打标`
+      );
+
+      let settleElapsed = 0;
+      while (settleElapsed < LABEL_STOCK_READY_SETTLE_DELAY_MS && !stopRequested) {
+        const waitMs = Math.min(200, LABEL_STOCK_READY_SETTLE_DELAY_MS - settleElapsed);
+        await sleep(waitMs);
+        settleElapsed += waitMs;
+      }
+      if (stopRequested) return false;
+
+      addLog('success', `[${skuLabel}] 库存同步缓冲等待完成，开始京配打标`);
       return true;
     }
     if (result?.fatal) {
@@ -1682,8 +1704,10 @@ async function executeStep(step, task) {
       break;
     }
 
+    case 'cancelJdLabelBeforePurchase':
     case 'jdLabel':
     case 'cancelJdLabel': {
+      const cancelBeforePurchase = step.key === 'cancelJdLabelBeforePurchase';
       const enable = step.key === 'jdLabel';
       const label = enable ? '生效' : '取消';
 
@@ -1838,6 +1862,11 @@ async function executeStep(step, task) {
         } else {
           addLog('warn', `[${skuLabel}] 请手动复制失败SKU，点击"打开输出目录"保存后重新导入`);
         }
+      }
+      if (cancelBeforePurchase && (jdFailCount > 0 || jdSuccessCount !== task.skus.length)) {
+        throw new Error(
+          `采购前取消京配未全部成功（计划${task.skus.length}个，成功${jdSuccessCount}个），已停止后续采购和重新打标`
+        );
       }
       break;
     }
@@ -2352,6 +2381,58 @@ const wmsAccountArrow = $('#wmsAccountArrow');
 const wmsAccountDropdown = $('#wmsAccountDropdown');
 let wmsAccountsList = [];
 
+function renderWmsAutoAcceptanceState() {
+  const autoAcceptCheckbox = $('#autoAccept');
+  if (autoAcceptCheckbox) autoAcceptCheckbox.checked = wmsAutoMode;
+  if (!wmsAutoBtn) return;
+  wmsAutoBtn.textContent = wmsAutoMode ? '关闭自动验收' : '开启自动验收';
+  wmsAutoBtn.classList.toggle('wms-btn-auto-active', wmsAutoMode);
+}
+
+function setWmsAutoAcceptanceEnabled(enabled, { promptLogin = false } = {}) {
+  const shouldEnable = Boolean(enabled);
+
+  if (!shouldEnable) {
+    const wasEnabled = wmsAutoMode;
+    wmsAutoMode = false;
+    if (wmsAutoTimer) {
+      clearInterval(wmsAutoTimer);
+      wmsAutoTimer = null;
+    }
+    renderWmsAutoAcceptanceState();
+    if (wasEnabled) addWmsLog('info', '自动验收已关闭');
+    return true;
+  }
+
+  if (!wmsLoggedIn) {
+    renderWmsAutoAcceptanceState();
+    if (promptLogin) $('#wmsConfirmModal').style.display = 'flex';
+    else addWmsLog('warn', '请先登录 WMS 系统');
+    return false;
+  }
+
+  const locationNo = wmsLocationInput ? wmsLocationInput.value.trim() : '';
+  if (!locationNo) {
+    renderWmsAutoAcceptanceState();
+    addWmsLog('warn', '请先填写上架储位号');
+    return false;
+  }
+
+  if (!wmsAutoMode) {
+    wmsAutoMode = true;
+    if (wmsAutoTimer) clearInterval(wmsAutoTimer);
+    renderWmsAutoAcceptanceState();
+    addWmsLog('success', '自动验收已开启，每 1 分钟扫描一次待验收单据');
+    runAutoAcceptance();
+    wmsAutoTimer = setInterval(() => {
+      runAutoAcceptance();
+    }, WMS_AUTO_INTERVAL);
+  } else {
+    renderWmsAutoAcceptanceState();
+  }
+  return true;
+}
+
 // WMS 账号下拉相关函数
 function renderWmsAccountDropdown() {
   if (!wmsAccountDropdown) return;
@@ -2592,41 +2673,7 @@ function initWmsEventListeners() {
 
   // 开启/关闭自动验收
   wmsAutoBtn.addEventListener('click', () => {
-    if (!wmsLoggedIn) {
-      addWmsLog('warn', '请先登录 WMS 系统');
-      return;
-    }
-    const locationNo = wmsLocationInput ? wmsLocationInput.value.trim() : '';
-    if (!locationNo && !wmsAutoMode) {
-      addWmsLog('warn', '请先填写上架储位号');
-      return;
-    }
-
-    if (wmsAutoMode) {
-      // 关闭自动验收
-      wmsAutoMode = false;
-      if (wmsAutoTimer) {
-        clearInterval(wmsAutoTimer);
-        wmsAutoTimer = null;
-      }
-      wmsAutoBtn.textContent = '开启自动验收';
-      wmsAutoBtn.classList.remove('wms-btn-auto-active');
-      $('#autoAccept').checked = false;
-      addWmsLog('info', '自动验收已关闭');
-    } else {
-      // 开启自动验收
-      wmsAutoMode = true;
-      wmsAutoBtn.textContent = '关闭自动验收';
-      wmsAutoBtn.classList.add('wms-btn-auto-active');
-      $('#autoAccept').checked = true;
-      addWmsLog('success', '自动验收已开启，每 1 分钟扫描一次待验收单据');
-      // 立即执行一次
-      runAutoAcceptance();
-      // 设置定时器
-      wmsAutoTimer = setInterval(() => {
-        runAutoAcceptance();
-      }, WMS_AUTO_INTERVAL);
-    }
+    setWmsAutoAcceptanceEnabled(!wmsAutoMode);
   });
 
   // 监听 WMS 登录成功通知
@@ -2647,24 +2694,7 @@ function initWmsEventListeners() {
   const autoAcceptCheckbox = $('#autoAccept');
 
   autoAcceptCheckbox.addEventListener('change', () => {
-    if (autoAcceptCheckbox.checked) {
-      if (!wmsLoggedIn) {
-        autoAcceptCheckbox.checked = false;
-        $('#wmsConfirmModal').style.display = 'flex';
-        return;
-      }
-      if (!wmsAutoMode) {
-        wmsAutoBtn.click();
-        // 如果验证失败（如储位号未填），wmsAutoMode不会变，恢复checkbox
-        if (!wmsAutoMode) {
-          autoAcceptCheckbox.checked = false;
-        }
-      }
-    } else {
-      if (wmsAutoMode) {
-        wmsAutoBtn.click();
-      }
-    }
+    setWmsAutoAcceptanceEnabled(autoAcceptCheckbox.checked, { promptLogin: true });
   });
 
   $('#wmsConfirmModalClose').addEventListener('click', () => {
@@ -2684,6 +2714,9 @@ function initWmsEventListeners() {
 function updateWmsLoginStatus(loggedIn, warehouseName, warehouseNo) {
   wmsLoggedIn = loggedIn;
   wmsWarehouseNo = loggedIn ? (warehouseNo || wmsWarehouseNo) : '';
+
+  if (!loggedIn) setWmsAutoAcceptanceEnabled(false);
+  else renderWmsAutoAcceptanceState();
 
   if (loggedIn) {
     wmsStatusDot.classList.add('online');
@@ -2973,10 +3006,7 @@ async function runAutoAcceptance() {
   const locationNo = wmsLocationInput ? wmsLocationInput.value.trim() : '';
   if (!locationNo) {
     addWmsLog('warn', '[自动验收] 上架储位号为空，已自动停止');
-    wmsAutoMode = false;
-    if (wmsAutoTimer) { clearInterval(wmsAutoTimer); wmsAutoTimer = null; }
-    wmsAutoBtn.textContent = '开启自动验收';
-    wmsAutoBtn.classList.remove('wms-btn-auto-active');
+    setWmsAutoAcceptanceEnabled(false);
     return;
   }
 
